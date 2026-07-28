@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -38,20 +39,29 @@ type Deployment struct {
 	Actor     string `json:"-"`
 }
 
-// DeploymentStore persists configured deployments (a JSON file today). Save
-// upserts by owner+repo+branch, so re-deploying updates the record rather than
-// duplicating it.
+// DeploymentStore persists configured deployments. Save upserts by
+// owner+repo+environment, so re-deploying an environment updates its record
+// rather than duplicating it.
 type DeploymentStore interface {
 	List() ([]Deployment, error)
 	Save(d Deployment) error
 }
 
-// DeploymentDeleter forgets a tracked deployment by its app name: it removes
-// the deployment record and its append-only event history, returning whether a
-// record existed to remove. It only drops mountabo's tracking; it never touches
-// the running app or the committed workflow.
+// DeploymentDeleter forgets a tracked deployment by its identity (owner, repo,
+// environment): it removes the deployment record and its append-only event
+// history, returning whether a record existed to remove. It only drops
+// mountabo's tracking; it never touches the running app or the committed workflow.
 type DeploymentDeleter interface {
-	DeleteByApp(app string) (removed bool, err error)
+	Delete(owner, repo, environment string) (removed bool, err error)
+}
+
+// DeploymentPortSetter updates a deployment's recorded published port, without
+// touching its release history, so a port an operator declares later (e.g. when
+// attaching a domain) is recorded and the deployment and its domain agree. It
+// reports whether a row was actually updated (false = no such deployment), so a
+// row that vanished between lookup and update is not mistaken for success.
+type DeploymentPortSetter interface {
+	SetPort(owner, repo, environment string, port int) (updated bool, err error)
 }
 
 // ContainerTeardown stops and removes an app's running container(s) on a server
@@ -137,10 +147,10 @@ type Release struct {
 	PrevReleaseID *int64
 }
 
-// ReleaseReader reads a target's release history from the append-only log: the
-// most recent releases (newest first, capped to limit) and the total count.
+// ReleaseReader reads an environment's release history from the append-only log:
+// the most recent releases (newest first, capped to limit) and the total count.
 type ReleaseReader interface {
-	Releases(owner, repo, branch string, limit int) (releases []Release, total int, err error)
+	Releases(owner, repo, environment string, limit int) (releases []Release, total int, err error)
 }
 
 // ReleaseView is one release shaped for the UI timeline. The JSON key stays
@@ -160,6 +170,9 @@ type DeploymentStatus struct {
 	App    string `json:"app"`
 	Repo   string `json:"repo"`
 	Branch string `json:"branch"`
+	// Environment is the first-class environment this deployment targets
+	// (production, staging, ...); it and App together identify the deployment.
+	Environment string `json:"environment"`
 	// WorkflowURL is the deploy workflow file's Actions page on github.com (where
 	// the run history lives). This is the value the field previously named "url"
 	// carried; it was renamed so its meaning is explicit alongside LiveURL.
@@ -216,6 +229,7 @@ type MonitorService struct {
 	repoFiles   RepoFileDeleter
 	repoEnvs    RepoEnvironmentDeleter
 	repoKeys    RepoKeyDeleter
+	ports       DeploymentPortSetter
 	locker      *DeployLocker
 	log         *slog.Logger
 }
@@ -230,30 +244,47 @@ type MonitorService struct {
 // Together they undo everything the deploy created on GitHub. The deleter then
 // forgets mountabo's tracking. locker is the shared deploy lock, read to surface
 // lock state and cleared by the recovery action.
-func NewMonitorService(deployments DeploymentStore, releases ReleaseReader, deleter DeploymentDeleter, tokens TokenStore, runs WorkflowRunLister, servers ServerStore, vault SecretVault, teardown ContainerTeardown, repoFiles RepoFileDeleter, repoEnvs RepoEnvironmentDeleter, repoKeys RepoKeyDeleter, locker *DeployLocker, log *slog.Logger) *MonitorService {
+func NewMonitorService(deployments DeploymentStore, releases ReleaseReader, deleter DeploymentDeleter, tokens TokenStore, runs WorkflowRunLister, servers ServerStore, vault SecretVault, teardown ContainerTeardown, repoFiles RepoFileDeleter, repoEnvs RepoEnvironmentDeleter, repoKeys RepoKeyDeleter, ports DeploymentPortSetter, locker *DeployLocker, log *slog.Logger) *MonitorService {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &MonitorService{deployments: deployments, releases: releases, deleter: deleter, tokens: tokens, runs: runs, servers: servers, vault: vault, teardown: teardown, repoFiles: repoFiles, repoEnvs: repoEnvs, repoKeys: repoKeys, locker: locker, log: log}
+	return &MonitorService{deployments: deployments, releases: releases, deleter: deleter, tokens: tokens, runs: runs, servers: servers, vault: vault, teardown: teardown, repoFiles: repoFiles, repoEnvs: repoEnvs, repoKeys: repoKeys, ports: ports, locker: locker, log: log}
 }
 
-// ClearLock force-releases the deploy lock for app (the "clear stuck lock"
-// recovery action) and reports whether a lock was actually held.
-func (s *MonitorService) ClearLock(app string) bool {
-	return s.locker.Clear(app)
+// ClearLock force-releases the deploy lock for a deployment (owner, repo,
+// environment) — the "clear stuck lock" recovery action — and reports whether a
+// lock was actually held.
+func (s *MonitorService) ClearLock(owner, repo, environment string) bool {
+	return s.locker.Clear(lockKey(owner, repo, environment))
 }
 
-// Delete tears a deployment down by its app name: it stops and removes the app's
-// container(s) on its server over SSH and deletes the committed deploy workflow
-// and deploy.sh from the repo, then forgets mountabo's tracking (the deployment
-// record and its append-only deploy history). The teardown is best-effort: its
-// failures are logged but never block removing the record, so a user is never
-// stuck with an undeletable deployment. ErrDeploymentNotFound is returned when
-// no tracked deployment has that app.
-func (s *MonitorService) Delete(ctx context.Context, app string) error {
+// SetPort records the published port for the deployment identified by its full
+// identity (owner, repo, environment). It is how a domain attached after deploy
+// tells mountabo which port the app serves on, so the domain associates with the
+// deployment. ErrDeploymentNotFound when no such deployment exists (including if
+// it vanished between the store write and now).
+func (s *MonitorService) SetPort(owner, repo, environment string, port int) error {
+	updated, err := s.ports.SetPort(owner, repo, environment, port)
+	if err != nil {
+		return fmt.Errorf("set deployment port: %w", err)
+	}
+	if !updated {
+		return ErrDeploymentNotFound
+	}
+	return nil
+}
+
+// Delete tears a deployment down by its identity (owner, repo, environment): it
+// stops and removes the app's container(s) on its server over SSH and deletes the
+// committed deploy workflow and deploy.sh from the repo, then forgets mountabo's
+// tracking (the deployment record and its append-only deploy history). The
+// teardown is best-effort: its failures are logged but never block removing the
+// record, so a user is never stuck with an undeletable deployment.
+// ErrDeploymentNotFound is returned when no such deployment exists.
+func (s *MonitorService) Delete(ctx context.Context, owner, repo, environment string) error {
 	// Load the record first so the teardown knows which server and repo files to
 	// reach. A missing record is the not-found case; a store read failure is real.
-	dep, found, err := s.lookup(app)
+	dep, found, err := s.lookup(owner, repo, environment)
 	if err != nil {
 		return fmt.Errorf("look up deployment: %w", err)
 	}
@@ -263,7 +294,7 @@ func (s *MonitorService) Delete(ctx context.Context, app string) error {
 
 	s.tearDown(ctx, dep)
 
-	removed, err := s.deleter.DeleteByApp(app)
+	removed, err := s.deleter.Delete(dep.Owner, dep.Repo, dep.Environment)
 	if err != nil {
 		return fmt.Errorf("delete deployment: %w", err)
 	}
@@ -275,15 +306,16 @@ func (s *MonitorService) Delete(ctx context.Context, app string) error {
 	return nil
 }
 
-// lookup finds the tracked deployment for app. found is false when no deployment
-// has that app.
-func (s *MonitorService) lookup(app string) (Deployment, bool, error) {
+// lookup finds the tracked deployment by its identity (owner, repo,
+// environment) — unique, unlike an app name, which two repos can share. found is
+// false when no deployment matches.
+func (s *MonitorService) lookup(owner, repo, environment string) (Deployment, bool, error) {
 	deployments, err := s.deployments.List()
 	if err != nil {
 		return Deployment{}, false, fmt.Errorf("list deployments: %w", err)
 	}
 	for _, d := range deployments {
-		if d.App == app {
+		if d.Owner == owner && d.Repo == repo && d.Environment == environment {
 			return d, true, nil
 		}
 	}
@@ -423,11 +455,11 @@ func (s *MonitorService) History(ctx context.Context) ([]DeploymentStatus, error
 			// Best-effort per deployment: a repo that's deleted, lacks
 			// permission, or has no runs yet still appears, just without runs.
 			runs, _ := s.runs.ListWorkflowRuns(gctx, token, d.Owner, d.Repo, d.WorkflowFile, d.Branch, monitorRunLimit)
-			releases, total, _ := s.releases.Releases(d.Owner, d.Repo, d.Branch, monitorEventLimit)
+			releases, total, _ := s.releases.Releases(d.Owner, d.Repo, d.Environment, monitorEventLimit)
 			status := buildStatus(d, serversByID[d.ServerID], runs, releases, total)
-			// Overlay the live deploy-lock state (keyed by app) so the card can show
-			// a lock indicator while a deploy to this target is in flight.
-			if since, locked := s.locker.Held(d.App); locked {
+			// Overlay the live deploy-lock state (keyed by app + environment) so the
+			// card can show a lock indicator while a deploy to this target is in flight.
+			if since, locked := s.locker.Held(lockKey(d.Owner, d.Repo, d.Environment)); locked {
 				status.Locked = true
 				status.LockedSince = relativeTime(since)
 			}
@@ -448,9 +480,10 @@ func buildStatus(d Deployment, server Server, runs []WorkflowRun, releases []Rel
 		App:         d.App,
 		Repo:        d.Owner + "/" + d.Repo,
 		Branch:      d.Branch,
+		Environment: d.Environment,
 		ServerID:    d.ServerID,
 		WorkflowURL: fmt.Sprintf("https://github.com/%s/%s/actions/workflows/%s", d.Owner, d.Repo, d.WorkflowFile),
-		LiveURL:     liveURL(server),
+		LiveURL:     liveURL(server, d.Port),
 		Port:        d.Port,
 		Status:      "idle",
 		LastDeploy:  "n/a",
@@ -522,14 +555,33 @@ func commitURL(owner, repo, sha string) string {
 // app's port. The port is taken from a domain's upstream when one is set;
 // absent that it is unknown, so it is omitted (a plain host URL). It returns ""
 // when the server (and so its address) is unknown.
-func liveURL(server Server) string {
-	if len(server.Domains) > 0 {
-		return "https://" + server.Domains[0].Host
+func liveURL(server Server, port int) string {
+	// Prefer the domain that fronts THIS deployment — the one whose nginx upstream
+	// is the deployment's published port — not just the server's first domain
+	// (a server can host several deployments, each with its own domain).
+	if d, ok := domainForPort(server, port); ok {
+		return "https://" + d.Host
 	}
 	if server.IP == "" {
 		return ""
 	}
 	return "http://" + server.IP
+}
+
+// domainForPort returns the server domain whose nginx upstream is port, so a
+// deployment is matched to its own domain. No match (including port 0, meaning
+// the deployment has no recorded port) returns ok=false.
+func domainForPort(server Server, port int) (Domain, bool) {
+	if port <= 0 {
+		return Domain{}, false
+	}
+	want := strconv.Itoa(port)
+	for _, d := range server.Domains {
+		if d.Upstream == want {
+			return d, true
+		}
+	}
+	return Domain{}, false
 }
 
 // runStatus collapses GitHub's status+conclusion into the UI's three states.

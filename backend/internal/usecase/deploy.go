@@ -18,6 +18,11 @@ import (
 // their values can be stored as secrets.
 var secretName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// envNameSafe matches a path-safe environment name: letters, digits, dot, dash,
+// underscore. The environment is a URL path segment in the deployment API, so it
+// must not contain slashes or spaces.
+var envNameSafe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
 // ErrDeployInProgress is returned when a deploy to a target is rejected because
 // another deploy to the same target (app) is already in flight.
 var ErrDeployInProgress = errors.New("deploy already in progress for this target")
@@ -188,15 +193,22 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 		return fmt.Errorf("server must be set up before deploying")
 	}
 
-	// Serialize deploys to the same target so two concurrent runs (a double
-	// click, two tabs, a reconnecting client) never race on the same repo files
-	// and secrets. Held only for this local operation; released on return, so a
-	// client disconnect (ctx cancel) also frees it. A wedged deploy is recovered
-	// via the "clear stuck lock" action.
-	if !s.locker.TryAcquire(in.App) {
+	// The environment is the deployment's identity; it defaults to the branch when
+	// the operator leaves it blank (back-compat with pre-environment deploys).
+	env := strings.TrimSpace(in.Environment)
+	if env == "" {
+		env = strings.TrimSpace(in.Branch)
+	}
+
+	// Serialize deploys to the same target (app within an environment) so two
+	// concurrent runs (a double click, two tabs, a reconnecting client) never race
+	// on the same repo files and secrets. Held only for this local operation;
+	// released on return, so a client disconnect (ctx cancel) also frees it. A
+	// wedged deploy is recovered via the "clear stuck lock" action.
+	if !s.locker.TryAcquire(lockKey(in.Owner, in.Repo, env)) {
 		return ErrDeployInProgress
 	}
-	defer s.locker.Release(in.App)
+	defer s.locker.Release(lockKey(in.Owner, in.Repo, env))
 
 	token, err := s.tokens.Load()
 	if err != nil {
@@ -213,10 +225,6 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 
 	cfg := buildConfig(in)
 	cfg.DeployKeyFile = deployKeyFileName(in.Owner, in.Repo)
-	env := cfg.Environment
-	if env == "" {
-		env = cfg.Branch
-	}
 
 	progress(out, "writing %s", workflow.DeployScriptPath)
 	if err := s.repo.PutFile(ctx, token, in.Owner, in.Repo, in.Branch, workflow.DeployScriptPath, workflow.DeployScript(cfg), "mountabo: add deploy script"); err != nil {
@@ -289,7 +297,7 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 		Branch:       in.Branch,
 		Environment:  env,
 		ServerID:     in.ServerID,
-		WorkflowFile: fmt.Sprintf("mountabo-deploy-%s.yml", in.Branch),
+		WorkflowFile: workflow.FileName(env),
 		Port:         primaryPort(in.Ports),
 		CreatedAt:    time.Now().UTC(),
 		CommitSHA:    commitSHA,
@@ -328,6 +336,18 @@ func validateDeploy(in DeployInput) error {
 	}
 	if strings.TrimSpace(in.DeployDir) == "" {
 		return fmt.Errorf("deploy directory is required")
+	}
+	// The environment names the deployment and becomes a URL path segment in the
+	// deployment API (/api/deployments/{owner}/{repo}/{environment}/...), so it
+	// must be path-safe. It defaults to the branch, which can contain a slash
+	// (feature/foo) — reject that here rather than storing a record that the
+	// per-environment routes can't address.
+	env := strings.TrimSpace(in.Environment)
+	if env == "" {
+		env = strings.TrimSpace(in.Branch)
+	}
+	if !envNameSafe.MatchString(env) {
+		return fmt.Errorf("environment name %q must be letters, numbers, dots, dashes or underscores (no slashes or spaces); name the environment explicitly if your branch contains a slash", env)
 	}
 	for _, v := range in.EnvVars {
 		if k := strings.TrimSpace(v.Key); k != "" && !secretName.MatchString(k) {

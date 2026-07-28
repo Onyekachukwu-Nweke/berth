@@ -90,7 +90,7 @@ func TestMonitorHistory_EnrichesWithRuns(t *testing.T) {
 	}}
 	servers := newMemServerStore()
 	_ = servers.Save(Server{ID: "s1", IP: "203.0.113.7"})
-	svc := NewMonitorService(deps, releases, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, runs, servers, newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, NewDeployLocker(), nil)
+	svc := NewMonitorService(deps, releases, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, runs, servers, newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
 
 	got, err := svc.History(context.Background())
 	if err != nil {
@@ -142,11 +142,11 @@ func TestMonitorHistory_EnrichesWithRuns(t *testing.T) {
 
 func TestMonitorHistory_SurfacesDeployLockAndClears(t *testing.T) {
 	deps := &fakeDeploymentStore{saved: []Deployment{
-		{App: "shop", Owner: "acme", Repo: "shop", Branch: "main", ServerID: "s1", WorkflowFile: "mountabo-deploy-main.yml"},
+		{App: "shop", Owner: "acme", Repo: "shop", Branch: "main", Environment: "production", ServerID: "s1", WorkflowFile: "mountabo-deploy-production.yml"},
 	}}
 	locker := NewDeployLocker()
-	locker.TryAcquire("shop") // a deploy to this app is in flight
-	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, locker, nil)
+	locker.TryAcquire(lockKey("acme", "shop", "production")) // a deploy to this environment is in flight
+	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, locker, nil)
 
 	got, err := svc.History(context.Background())
 	if err != nil {
@@ -160,7 +160,7 @@ func TestMonitorHistory_SurfacesDeployLockAndClears(t *testing.T) {
 	}
 
 	// ClearLock frees it, and a subsequent read shows it unlocked.
-	if !svc.ClearLock("shop") {
+	if !svc.ClearLock("acme", "shop", "production") {
 		t.Error("ClearLock should report it cleared a held lock")
 	}
 	got, err = svc.History(context.Background())
@@ -172,8 +172,43 @@ func TestMonitorHistory_SurfacesDeployLockAndClears(t *testing.T) {
 	}
 }
 
+// TestLiveURL_MatchesDeploymentsOwnDomain guards that a deployment's live URL is
+// the domain whose upstream is ITS port — not just the server's first domain
+// (a server can front several deployments, each with its own domain).
+func TestLiveURL_MatchesDeploymentsOwnDomain(t *testing.T) {
+	server := Server{IP: "203.0.113.7", Domains: []Domain{
+		{Host: "other.example.com", Upstream: "8080"},
+		{Host: "meals.example.com", Upstream: "9090"},
+	}}
+	if got := liveURL(server, 9090); got != "https://meals.example.com" {
+		t.Errorf("liveURL(port 9090) = %q, want its own domain", got)
+	}
+	// A deployment with no recorded port (0) claims no domain — falls back to IP,
+	// rather than borrowing the server's first domain.
+	if got := liveURL(server, 0); got != "http://203.0.113.7" {
+		t.Errorf("liveURL(port 0) = %q, want the server IP fallback", got)
+	}
+}
+
+func TestMonitorSetPort_RecordsPortForAppEnvironment(t *testing.T) {
+	deps := &fakeDeploymentStore{saved: []Deployment{
+		{App: "shop", Owner: "acme", Repo: "shop", Environment: "production", ServerID: "s1"},
+	}}
+	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
+
+	if err := svc.SetPort("acme", "shop", "production", 8010); err != nil {
+		t.Fatalf("SetPort: %v", err)
+	}
+	if deps.saved[0].Port != 8010 {
+		t.Errorf("recorded port = %d, want 8010", deps.saved[0].Port)
+	}
+	if err := svc.SetPort("acme", "shop", "staging", 8010); !errors.Is(err, ErrDeploymentNotFound) {
+		t.Errorf("SetPort for a missing environment = %v, want ErrDeploymentNotFound", err)
+	}
+}
+
 func TestMonitorHistory_EmptyWithoutDeployments(t *testing.T) {
-	svc := NewMonitorService(&fakeDeploymentStore{}, fakeReleaseReader{}, &fakeDeploymentStore{}, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, NewDeployLocker(), nil)
+	svc := NewMonitorService(&fakeDeploymentStore{}, fakeReleaseReader{}, &fakeDeploymentStore{}, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, &fakeDeploymentStore{}, NewDeployLocker(), nil)
 	got, err := svc.History(context.Background())
 	if err != nil {
 		t.Fatalf("History: %v", err)
@@ -185,7 +220,7 @@ func TestMonitorHistory_EmptyWithoutDeployments(t *testing.T) {
 
 func TestMonitorHistory_NotConnected(t *testing.T) {
 	deps := &fakeDeploymentStore{saved: []Deployment{{Owner: "a", Repo: "r", Branch: "main"}}}
-	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadErr: ErrNotConnected}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, NewDeployLocker(), nil)
+	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadErr: ErrNotConnected}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
 	if _, err := svc.History(context.Background()); !errors.Is(err, ErrNotConnected) {
 		t.Fatalf("want ErrNotConnected, got %v", err)
 	}
@@ -193,7 +228,7 @@ func TestMonitorHistory_NotConnected(t *testing.T) {
 
 func TestMonitorDelete_TearsDownContainerWorkflowAndRecord(t *testing.T) {
 	deps := &fakeDeploymentStore{saved: []Deployment{
-		{App: "shop", Owner: "acme", Repo: "shop", Branch: "main", ServerID: "s1", WorkflowFile: "mountabo-deploy-main.yml"},
+		{App: "shop", Owner: "acme", Repo: "shop", Branch: "main", Environment: "production", ServerID: "s1", WorkflowFile: "mountabo-deploy-production.yml"},
 	}}
 	servers := newMemServerStore()
 	_ = servers.Save(Server{ID: "s1", IP: "203.0.113.7", SSHPort: 22, Status: StatusReady})
@@ -201,9 +236,9 @@ func TestMonitorDelete_TearsDownContainerWorkflowAndRecord(t *testing.T) {
 	_ = vault.SaveSecret(privateKeyKey("s1"), "KEY-PEM")
 	teardown := &fakeContainerTeardown{}
 	files := &fakeRepoFileDeleter{}
-	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, servers, vault, teardown, files, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, NewDeployLocker(), nil)
+	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, servers, vault, teardown, files, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
 
-	if err := svc.Delete(context.Background(), "shop"); err != nil {
+	if err := svc.Delete(context.Background(), "acme", "shop", "production"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
@@ -212,7 +247,7 @@ func TestMonitorDelete_TearsDownContainerWorkflowAndRecord(t *testing.T) {
 		t.Errorf("container teardown = %v, want [shop]", teardown.removed)
 	}
 	// Both committed artifacts were deleted from the repo.
-	wantFiles := []string{"acme/shop:deploy.sh", "acme/shop:.github/workflows/mountabo-deploy-main.yml"}
+	wantFiles := []string{"acme/shop:deploy.sh", "acme/shop:.github/workflows/mountabo-deploy-production.yml"}
 	if len(files.deleted) != len(wantFiles) {
 		t.Fatalf("deleted files = %v, want %v", files.deleted, wantFiles)
 	}
@@ -229,15 +264,15 @@ func TestMonitorDelete_TearsDownContainerWorkflowAndRecord(t *testing.T) {
 
 func TestMonitorDelete_NotFound(t *testing.T) {
 	deps := &fakeDeploymentStore{}
-	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, NewDeployLocker(), nil)
-	if err := svc.Delete(context.Background(), "missing"); !errors.Is(err, ErrDeploymentNotFound) {
+	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
+	if err := svc.Delete(context.Background(), "acme", "shop", "missing"); !errors.Is(err, ErrDeploymentNotFound) {
 		t.Fatalf("want ErrDeploymentNotFound, got %v", err)
 	}
 }
 
 func TestMonitorDelete_RemovesRecordEvenWhenTeardownFails(t *testing.T) {
 	deps := &fakeDeploymentStore{saved: []Deployment{
-		{App: "shop", Owner: "acme", Repo: "shop", Branch: "main", ServerID: "s1", WorkflowFile: "mountabo-deploy-main.yml"},
+		{App: "shop", Owner: "acme", Repo: "shop", Branch: "main", Environment: "production", ServerID: "s1", WorkflowFile: "mountabo-deploy-production.yml"},
 	}}
 	servers := newMemServerStore()
 	_ = servers.Save(Server{ID: "s1", IP: "203.0.113.7", SSHPort: 22, Status: StatusReady})
@@ -247,9 +282,9 @@ func TestMonitorDelete_RemovesRecordEvenWhenTeardownFails(t *testing.T) {
 	// still be removed so the user is never stuck.
 	teardown := &fakeContainerTeardown{err: errors.New("ssh down")}
 	files := &fakeRepoFileDeleter{err: errors.New("github down")}
-	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, servers, vault, teardown, files, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, NewDeployLocker(), nil)
+	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, servers, vault, teardown, files, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
 
-	if err := svc.Delete(context.Background(), "shop"); err != nil {
+	if err := svc.Delete(context.Background(), "acme", "shop", "production"); err != nil {
 		t.Fatalf("Delete should succeed despite soft teardown failures, got %v", err)
 	}
 	if got, _ := deps.List(); len(got) != 0 {

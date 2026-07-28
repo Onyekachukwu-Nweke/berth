@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS deployments (
 	server_id TEXT NOT NULL,
 	workflow_file TEXT NOT NULL,
 	port INTEGER NOT NULL DEFAULT 0,
+	root_dir TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	PRIMARY KEY (owner, repo, environment)
 );
@@ -96,6 +97,13 @@ func OpenSQLite(path string) (*sql.DB, error) {
 		!strings.Contains(err.Error(), "duplicate column") {
 		_ = db.Close()
 		return nil, fmt.Errorf("add port column: %w", err)
+	}
+	// Migrate databases created before the root_dir column existed (same idempotent
+	// ALTER pattern). Old rows default to '' = repo root, their prior behavior.
+	if _, err := db.Exec(`ALTER TABLE deployments ADD COLUMN root_dir TEXT NOT NULL DEFAULT ''`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		_ = db.Close()
+		return nil, fmt.Errorf("add root_dir column: %w", err)
 	}
 	// Migrate databases created before deploy_events carried release fields. Same
 	// idempotent ALTER pattern: a "duplicate column" error means a current-schema
@@ -166,16 +174,18 @@ func migrateDeploymentsKey(db *sql.DB) error {
 		server_id TEXT NOT NULL,
 		workflow_file TEXT NOT NULL,
 		port INTEGER NOT NULL DEFAULT 0,
+		root_dir TEXT NOT NULL DEFAULT '',
 		created_at TEXT NOT NULL,
 		PRIMARY KEY (owner, repo, environment)
 	)`); err != nil {
 		return fmt.Errorf("create rebuilt table: %w", err)
 	}
 	// OR REPLACE + ORDER BY created_at ASC: rows are inserted oldest-first, so on
-	// an (owner, repo, environment) conflict the latest deploy wins.
+	// an (owner, repo, environment) conflict the latest deploy wins. root_dir was
+	// added by the ALTER above (defaults to '') before this rebuild runs.
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO deployments_new
-		(owner, repo, branch, id, app, environment, server_id, workflow_file, port, created_at)
-		SELECT owner, repo, branch, id, app, environment, server_id, workflow_file, port, created_at
+		(owner, repo, branch, id, app, environment, server_id, workflow_file, port, root_dir, created_at)
+		SELECT owner, repo, branch, id, app, environment, server_id, workflow_file, port, root_dir, created_at
 		FROM deployments ORDER BY created_at ASC`); err != nil {
 		return fmt.Errorf("copy rows: %w", err)
 	}
@@ -209,7 +219,7 @@ func NewDeploymentSQL(db *sql.DB) *DeploymentSQL {
 
 // List returns the current deployments (one per target), oldest first.
 func (s *DeploymentSQL) List() ([]usecase.Deployment, error) {
-	rows, err := s.db.Query(`SELECT id, app, owner, repo, branch, environment, server_id, workflow_file, port, created_at
+	rows, err := s.db.Query(`SELECT id, app, owner, repo, branch, environment, server_id, workflow_file, port, root_dir, created_at
 		FROM deployments ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("query deployments: %w", err)
@@ -220,7 +230,7 @@ func (s *DeploymentSQL) List() ([]usecase.Deployment, error) {
 	for rows.Next() {
 		var d usecase.Deployment
 		var createdAt string
-		if err := rows.Scan(&d.ID, &d.App, &d.Owner, &d.Repo, &d.Branch, &d.Environment, &d.ServerID, &d.WorkflowFile, &d.Port, &createdAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.App, &d.Owner, &d.Repo, &d.Branch, &d.Environment, &d.ServerID, &d.WorkflowFile, &d.Port, &d.RootDir, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan deployment: %w", err)
 		}
 		d.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -248,15 +258,16 @@ func (s *DeploymentSQL) Save(d usecase.Deployment) error {
 	// Keep the original id and created_at on conflict (first-deploy time), so
 	// the deploy_events log carries the per-deploy history instead.
 	if _, err := tx.Exec(`INSERT INTO deployments
-		(owner, repo, branch, id, app, environment, server_id, workflow_file, port, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		(owner, repo, branch, id, app, environment, server_id, workflow_file, port, root_dir, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(owner, repo, environment) DO UPDATE SET
 			branch = excluded.branch,
 			app = excluded.app,
 			server_id = excluded.server_id,
 			workflow_file = excluded.workflow_file,
-			port = excluded.port`,
-		d.Owner, d.Repo, d.Branch, d.ID, d.App, d.Environment, d.ServerID, d.WorkflowFile, d.Port,
+			port = excluded.port,
+			root_dir = excluded.root_dir`,
+		d.Owner, d.Repo, d.Branch, d.ID, d.App, d.Environment, d.ServerID, d.WorkflowFile, d.Port, d.RootDir,
 		createdAt.UTC().Format(time.RFC3339)); err != nil {
 		return fmt.Errorf("upsert deployment: %w", err)
 	}

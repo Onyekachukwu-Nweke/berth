@@ -106,10 +106,31 @@ func run() error {
 	// deploys per target; the monitor reads it to surface lock state and clears it
 	// for the "clear stuck lock" recovery action.
 	deployLocker := usecase.NewDeployLocker()
+	// Env-secret values mountabo set are persisted encrypted at rest in the same
+	// SQLite DB (envelope encryption: a random data key encrypts the rows, wrapped
+	// by a master key from MOUNTABO_SECRET_KEY or a 0600 key file in the data dir),
+	// so the secrets tab can reveal/edit them and drift against GitHub is
+	// detectable. Resolution failures are fatal — mountabo refuses to run
+	// half-configured rather than silently losing revealability.
+	masterKey, err := repository.LoadMasterKey(cfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("resolve secret master key: %w", err)
+	}
+	secretStore, err := repository.NewEncryptedSecretStore(db, masterKey)
+	if err != nil {
+		return fmt.Errorf("open encrypted secret store: %w", err)
+	}
+	// The secrets service: GitHub is authoritative for which names are configured
+	// (and their updated times); the encrypted store holds the revealable values
+	// mountabo created. The deploy flow reuses it (as a SecretRecorder) to record
+	// the operator env vars it sets, and teardown reuses the store (as a
+	// SecretClearer) to drop an environment's values when it's removed.
+	secretsSvc := usecase.NewSecretsService(keyStore, deploymentStore, ghClient, ghClient, ghClient, secretStore, ghClient)
+	secretsHandler := httpadapter.NewSecretsHandler(secretsSvc, logger)
 	// The deploy flow also mints a per-repo read-only deploy key: ssh generates
 	// the keypair and installs the private half on the server; github registers
 	// the public half on the repo.
-	deploySvc := usecase.NewDeployService(serverStore, keyStore, keyStore, ghClient, ghClient, ghClient, deploymentStore, sshClient, ghClient, sshClient, ghClient, ghClient, deployLocker)
+	deploySvc := usecase.NewDeployService(serverStore, keyStore, keyStore, ghClient, ghClient, ghClient, deploymentStore, sshClient, ghClient, sshClient, ghClient, ghClient, secretsSvc, deployLocker)
 	deployHandler := httpadapter.NewDeployHandler(deploySvc, logger)
 
 	// Compose the monitor: configured deployments (SQLite store) enriched with
@@ -119,7 +140,7 @@ func run() error {
 	// on its server (keychain key), github removes the committed deploy workflow +
 	// deploy.sh from the repo (keychain token), and the SQLite store then forgets
 	// its tracking. Teardown is best-effort and logged.
-	monitorSvc := usecase.NewMonitorService(deploymentStore, deploymentStore, deploymentStore, keyStore, ghClient, serverStore, keyStore, sshClient, ghClient, ghClient, ghClient, deploymentStore, deployLocker, logger)
+	monitorSvc := usecase.NewMonitorService(deploymentStore, deploymentStore, deploymentStore, keyStore, ghClient, serverStore, keyStore, sshClient, ghClient, ghClient, ghClient, deploymentStore, secretStore, deployLocker, logger)
 	// App health: probe whether a deployed app is responding by curling it from
 	// its own server over SSH (the same ssh.Client + server store + keychain key
 	// the metrics/logs services use), so the card shows real up/down status.
@@ -137,7 +158,7 @@ func run() error {
 	aiCommandSvc := usecase.NewAICommandService(aiClient)
 	terminalHandler := httpadapter.NewTerminalHandler(serverExecSvc, aiCommandSvc, logger)
 
-	router := httpadapter.NewRouter(githubHandler, serversHandler, deployHandler, monitorHandler, terminalHandler)
+	router := httpadapter.NewRouter(githubHandler, serversHandler, deployHandler, monitorHandler, secretsHandler, terminalHandler)
 	srv := httpadapter.NewServer(cfg, router)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

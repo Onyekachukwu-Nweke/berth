@@ -249,6 +249,50 @@ func TestDeploymentSQL_RecordsReleasesAndLinksPrevious(t *testing.T) {
 	}
 }
 
+// TestOpenSQLite_MigratesRootDir proves a database whose deployments table
+// predates the root_dir column is migrated in place: opening it adds the column
+// and existing rows read back with the empty-string (repo-root) default.
+func TestOpenSQLite_MigratesRootDir(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pre-rootdir.db")
+
+	// Build an environment-keyed deployments table without root_dir and seed a row.
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE deployments (
+		owner TEXT NOT NULL, repo TEXT NOT NULL, branch TEXT NOT NULL, id TEXT NOT NULL,
+		app TEXT NOT NULL, environment TEXT NOT NULL, server_id TEXT NOT NULL,
+		workflow_file TEXT NOT NULL, port INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL, PRIMARY KEY (owner, repo, environment)
+	)`); err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	if _, err := legacy.Exec(`INSERT INTO deployments
+		(owner, repo, branch, id, app, environment, server_id, workflow_file, port, created_at)
+		VALUES ('acme','shop','main','dep1','shop','production','s1','wf.yml',3000,'2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+	_ = legacy.Close()
+
+	db, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite on pre-root_dir db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	deployments, err := NewDeploymentSQL(db).List()
+	if err != nil {
+		t.Fatalf("List after migration: %v", err)
+	}
+	if len(deployments) != 1 {
+		t.Fatalf("want 1 deployment, got %d", len(deployments))
+	}
+	if d := deployments[0]; d.RootDir != "" || d.Environment != "production" || d.Port != 3000 {
+		t.Errorf("migrated row = %+v, want empty root_dir and preserved fields", d)
+	}
+}
+
 // TestOpenSQLite_MigratesLegacyDeployEvents proves an old database whose
 // deploy_events table predates the release columns is migrated in place: opening
 // it adds the columns without error and existing rows read back with defaults.

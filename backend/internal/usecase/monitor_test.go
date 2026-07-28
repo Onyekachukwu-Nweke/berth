@@ -70,6 +70,18 @@ func (f *fakeRepoKeyDeleter) DeleteDeployKey(_ context.Context, _ Token, owner, 
 	return f.err
 }
 
+// fakeSecretClearer records every (owner, repo, environment) whose local secret
+// values teardown was asked to drop.
+type fakeSecretClearer struct {
+	cleared []string
+	err     error
+}
+
+func (f *fakeSecretClearer) ClearSecretValues(owner, repo, environment string) error {
+	f.cleared = append(f.cleared, owner+"/"+repo+":"+environment)
+	return f.err
+}
+
 func TestMonitorHistory_EnrichesWithRuns(t *testing.T) {
 	deps := &fakeDeploymentStore{saved: []Deployment{
 		{App: "shop", Owner: "acme", Repo: "shop", Branch: "main", ServerID: "s1", WorkflowFile: "mountabo-deploy-main.yml"},
@@ -90,7 +102,7 @@ func TestMonitorHistory_EnrichesWithRuns(t *testing.T) {
 	}}
 	servers := newMemServerStore()
 	_ = servers.Save(Server{ID: "s1", IP: "203.0.113.7"})
-	svc := NewMonitorService(deps, releases, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, runs, servers, newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
+	svc := NewMonitorService(deps, releases, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, runs, servers, newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, &fakeSecretClearer{}, NewDeployLocker(), nil)
 
 	got, err := svc.History(context.Background())
 	if err != nil {
@@ -146,7 +158,7 @@ func TestMonitorHistory_SurfacesDeployLockAndClears(t *testing.T) {
 	}}
 	locker := NewDeployLocker()
 	locker.TryAcquire(lockKey("acme", "shop", "production")) // a deploy to this environment is in flight
-	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, locker, nil)
+	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, &fakeSecretClearer{}, locker, nil)
 
 	got, err := svc.History(context.Background())
 	if err != nil {
@@ -194,7 +206,7 @@ func TestMonitorSetPort_RecordsPortForAppEnvironment(t *testing.T) {
 	deps := &fakeDeploymentStore{saved: []Deployment{
 		{App: "shop", Owner: "acme", Repo: "shop", Environment: "production", ServerID: "s1"},
 	}}
-	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
+	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, &fakeSecretClearer{}, NewDeployLocker(), nil)
 
 	if err := svc.SetPort("acme", "shop", "production", 8010); err != nil {
 		t.Fatalf("SetPort: %v", err)
@@ -208,7 +220,7 @@ func TestMonitorSetPort_RecordsPortForAppEnvironment(t *testing.T) {
 }
 
 func TestMonitorHistory_EmptyWithoutDeployments(t *testing.T) {
-	svc := NewMonitorService(&fakeDeploymentStore{}, fakeReleaseReader{}, &fakeDeploymentStore{}, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, &fakeDeploymentStore{}, NewDeployLocker(), nil)
+	svc := NewMonitorService(&fakeDeploymentStore{}, fakeReleaseReader{}, &fakeDeploymentStore{}, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, &fakeDeploymentStore{}, &fakeSecretClearer{}, NewDeployLocker(), nil)
 	got, err := svc.History(context.Background())
 	if err != nil {
 		t.Fatalf("History: %v", err)
@@ -220,7 +232,7 @@ func TestMonitorHistory_EmptyWithoutDeployments(t *testing.T) {
 
 func TestMonitorHistory_NotConnected(t *testing.T) {
 	deps := &fakeDeploymentStore{saved: []Deployment{{Owner: "a", Repo: "r", Branch: "main"}}}
-	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadErr: ErrNotConnected}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
+	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadErr: ErrNotConnected}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, &fakeSecretClearer{}, NewDeployLocker(), nil)
 	if _, err := svc.History(context.Background()); !errors.Is(err, ErrNotConnected) {
 		t.Fatalf("want ErrNotConnected, got %v", err)
 	}
@@ -236,7 +248,7 @@ func TestMonitorDelete_TearsDownContainerWorkflowAndRecord(t *testing.T) {
 	_ = vault.SaveSecret(privateKeyKey("s1"), "KEY-PEM")
 	teardown := &fakeContainerTeardown{}
 	files := &fakeRepoFileDeleter{}
-	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, servers, vault, teardown, files, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
+	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, servers, vault, teardown, files, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, &fakeSecretClearer{}, NewDeployLocker(), nil)
 
 	if err := svc.Delete(context.Background(), "acme", "shop", "production"); err != nil {
 		t.Fatalf("Delete: %v", err)
@@ -264,7 +276,7 @@ func TestMonitorDelete_TearsDownContainerWorkflowAndRecord(t *testing.T) {
 
 func TestMonitorDelete_NotFound(t *testing.T) {
 	deps := &fakeDeploymentStore{}
-	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
+	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, &fakeSecretClearer{}, NewDeployLocker(), nil)
 	if err := svc.Delete(context.Background(), "acme", "shop", "missing"); !errors.Is(err, ErrDeploymentNotFound) {
 		t.Fatalf("want ErrDeploymentNotFound, got %v", err)
 	}
@@ -282,7 +294,7 @@ func TestMonitorDelete_RemovesRecordEvenWhenTeardownFails(t *testing.T) {
 	// still be removed so the user is never stuck.
 	teardown := &fakeContainerTeardown{err: errors.New("ssh down")}
 	files := &fakeRepoFileDeleter{err: errors.New("github down")}
-	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, servers, vault, teardown, files, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
+	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, servers, vault, teardown, files, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, &fakeSecretClearer{}, NewDeployLocker(), nil)
 
 	if err := svc.Delete(context.Background(), "acme", "shop", "production"); err != nil {
 		t.Fatalf("Delete should succeed despite soft teardown failures, got %v", err)

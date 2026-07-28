@@ -125,6 +125,22 @@ func (f fakeAccountFetcher) Account(_ context.Context, _ Token) (Account, error)
 	return Account{Login: f.login}, f.err
 }
 
+// fakeSecretRecorder records the operator env-var values a deploy set, capturing
+// what was recorded (and optionally failing) so a test can assert the deploy
+// stores them without failing on a store error.
+type fakeSecretRecorder struct {
+	recorded map[string]string
+	err      error
+}
+
+func (f *fakeSecretRecorder) RecordSet(_ context.Context, _ Token, _, _, _ string, values map[string]string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.recorded = values
+	return nil
+}
+
 type fakeTokenStore struct {
 	token Token
 	err   error
@@ -140,7 +156,7 @@ func readyDeployFixture(t *testing.T) (*memServerStore, *fakeVault, *fakeRepoWri
 	_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady})
 	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
 	repo, envs, secrets := &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}
-	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, repo, envs, secrets, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, fakeAccountFetcher{login: "octocat"}, NewDeployLocker())
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, repo, envs, secrets, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, fakeAccountFetcher{login: "octocat"}, &fakeSecretRecorder{}, NewDeployLocker())
 	return store, vault, repo, envs, secrets, svc
 }
 
@@ -245,7 +261,7 @@ func TestDeploy_RecordsReleaseCommitAndActor(t *testing.T) {
 	_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady})
 	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
 	history := &fakeDeploymentStore{}
-	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, history, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, fakeAccountFetcher{login: "octocat"}, NewDeployLocker())
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, history, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, fakeAccountFetcher{login: "octocat"}, &fakeSecretRecorder{}, NewDeployLocker())
 
 	if err := svc.Deploy(context.Background(), deployInput(), new(strings.Builder)); err != nil {
 		t.Fatalf("Deploy: %v", err)
@@ -266,7 +282,7 @@ func TestDeploy_ReleaseMetadataFailureIsNonFatal(t *testing.T) {
 	// Both the commit resolve and the actor lookup fail; the deploy must still
 	// succeed and record a release, just with the fields left empty.
 	metaErr := errors.New("github unavailable")
-	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, history, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{err: metaErr}, fakeAccountFetcher{err: metaErr}, NewDeployLocker())
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, history, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{err: metaErr}, fakeAccountFetcher{err: metaErr}, &fakeSecretRecorder{}, NewDeployLocker())
 
 	if err := svc.Deploy(context.Background(), deployInput(), new(strings.Builder)); err != nil {
 		t.Fatalf("Deploy should not fail on release-metadata errors: %v", err)
@@ -284,7 +300,7 @@ func TestDeploy_LockRejectsConcurrentAndReleasesAfter(t *testing.T) {
 	_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady})
 	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
 	locker := NewDeployLocker()
-	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, fakeAccountFetcher{login: "octocat"}, locker)
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, fakeAccountFetcher{login: "octocat"}, &fakeSecretRecorder{}, locker)
 	in := deployInput()
 
 	// A deploy to the same app is in flight (lock held): the second is rejected.
@@ -308,7 +324,7 @@ func TestDeploy_LockRejectsConcurrentAndReleasesAfter(t *testing.T) {
 func TestDeploy_RequiresReadyServer(t *testing.T) {
 	store, vault := newMemServerStore(), newFakeVault()
 	_ = store.Save(Server{ID: "s1", Status: StatusProbed})
-	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, fakeAccountFetcher{login: "octocat"}, NewDeployLocker())
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, fakeAccountFetcher{login: "octocat"}, &fakeSecretRecorder{}, NewDeployLocker())
 
 	if err := svc.Deploy(context.Background(), deployInput(), new(strings.Builder)); err == nil {
 		t.Fatal("expected an error deploying to a server that is not ready")
@@ -332,7 +348,7 @@ func TestDeploy_NotConnected(t *testing.T) {
 	store, vault := newMemServerStore(), newFakeVault()
 	_ = store.Save(Server{ID: "s1", Status: StatusReady})
 	_ = vault.SaveSecret(privateKeyKey("s1"), "KEY")
-	svc := NewDeployService(store, vault, fakeTokenStore{err: ErrNotConnected}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, fakeAccountFetcher{login: "octocat"}, NewDeployLocker())
+	svc := NewDeployService(store, vault, fakeTokenStore{err: ErrNotConnected}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, fakeAccountFetcher{login: "octocat"}, &fakeSecretRecorder{}, NewDeployLocker())
 
 	err := svc.Deploy(context.Background(), deployInput(), new(strings.Builder))
 	if err == nil {
@@ -385,7 +401,7 @@ func TestDeploy_RegistersAndInstallsDeployKey(t *testing.T) {
 	_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady, Fingerprint: "fp"})
 	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
 	mgr, inst := &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}
-	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, mgr, inst, fakeRefResolver{sha: "abc1234def"}, fakeAccountFetcher{login: "octocat"}, NewDeployLocker())
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, mgr, inst, fakeRefResolver{sha: "abc1234def"}, fakeAccountFetcher{login: "octocat"}, &fakeSecretRecorder{}, NewDeployLocker())
 
 	if err := svc.Deploy(context.Background(), deployInput(), new(strings.Builder)); err != nil {
 		t.Fatalf("Deploy: %v", err)
@@ -412,7 +428,7 @@ func TestDeploy_ReusesStoredDeployKey(t *testing.T) {
 	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
 	_ = vault.SaveSecret(deployKeyVaultKey("acme", "shop"), "EXISTING-DEPLOY-KEY")
 	mgr, inst := &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}
-	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, mgr, inst, fakeRefResolver{sha: "abc1234def"}, fakeAccountFetcher{login: "octocat"}, NewDeployLocker())
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, mgr, inst, fakeRefResolver{sha: "abc1234def"}, fakeAccountFetcher{login: "octocat"}, &fakeSecretRecorder{}, NewDeployLocker())
 
 	if err := svc.Deploy(context.Background(), deployInput(), new(strings.Builder)); err != nil {
 		t.Fatalf("Deploy: %v", err)

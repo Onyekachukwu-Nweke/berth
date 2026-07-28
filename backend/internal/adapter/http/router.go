@@ -27,12 +27,15 @@ import nethttp "net/http"
 //	GET    /api/deployments          deploy history (configured deployments + their Actions runs)
 //	GET    /api/deployments/{owner}/{repo}/{environment}/health  probe whether the deployed app is responding (curl over SSH), reporting up/down + HTTP status
 //	PUT    /api/deployments/{owner}/{repo}/{environment}/port  record the app's published port (so a domain attached later associates with the deployment)
+//	GET    /api/deployments/{owner}/{repo}/{environment}/secrets  list the environment's configured secrets (GitHub names/updatedAt + mountabo's revealable values with ?includeValues=true) and .env.example vars not yet set
+//	PUT    /api/deployments/{owner}/{repo}/{environment}/secrets  set operator secrets on the environment (GitHub + local encrypted store)
+//	DELETE /api/deployments/{owner}/{repo}/{environment}/secrets/{name}  remove one operator secret (GitHub + local value)
 //	DELETE /api/deployments/{owner}/{repo}/{environment}/lock  force-release a stuck deploy lock for a deployment (recovery)
 //	DELETE /api/deployments/{owner}/{repo}/{environment}     forget mountabo's tracking of a deployment (its record + deploy history); does not stop the container or remove the workflow
 //	POST   /api/servers/{id}/exec    run one shell command on the server (over SSH), returns output + exit code
 //	POST   /api/ai/command           suggest a shell command for a plain-English request (Claude), advisory only
 //	DELETE /api/servers/{id}         remove a server and destroy its secrets
-func NewRouter(gh *GitHubHandler, sv *ServersHandler, dep *DeployHandler, mon *MonitorHandler, term *TerminalHandler) *nethttp.ServeMux {
+func NewRouter(gh *GitHubHandler, sv *ServersHandler, dep *DeployHandler, mon *MonitorHandler, sec *SecretsHandler, term *TerminalHandler) *nethttp.ServeMux {
 	mux := nethttp.NewServeMux()
 	mux.HandleFunc("POST /api/github/exchange", gh.Exchange)
 	mux.HandleFunc("GET /api/github/status", gh.Status)
@@ -69,6 +72,9 @@ func NewRouter(gh *GitHubHandler, sv *ServersHandler, dep *DeployHandler, mon *M
 	mux.HandleFunc("GET /api/deployments", mon.Deployments)
 	mux.HandleFunc("GET /api/deployments/{owner}/{repo}/{environment}/health", mon.Health)
 	mux.HandleFunc("PUT /api/deployments/{owner}/{repo}/{environment}/port", mon.SetPort)
+	mux.HandleFunc("GET /api/deployments/{owner}/{repo}/{environment}/secrets", sec.List)
+	mux.HandleFunc("PUT /api/deployments/{owner}/{repo}/{environment}/secrets", sec.Set)
+	mux.HandleFunc("DELETE /api/deployments/{owner}/{repo}/{environment}/secrets/{name}", sec.Delete)
 	mux.HandleFunc("DELETE /api/deployments/{owner}/{repo}/{environment}/lock", mon.ClearLock)
 	mux.HandleFunc("DELETE /api/deployments/{owner}/{repo}/{environment}", mon.Delete)
 

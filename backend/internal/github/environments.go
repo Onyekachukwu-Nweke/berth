@@ -11,6 +11,8 @@ import (
 var (
 	_ usecase.EnvManager             = (*Client)(nil)
 	_ usecase.EnvSecretSetter        = (*Client)(nil)
+	_ usecase.EnvSecretLister        = (*Client)(nil)
+	_ usecase.EnvSecretDeleter       = (*Client)(nil)
 	_ usecase.RepoEnvironmentDeleter = (*Client)(nil)
 )
 
@@ -60,13 +62,12 @@ func (c *Client) SetEnvSecrets(ctx context.Context, t usecase.Token, owner, repo
 		return fmt.Errorf("build github client: %w", err)
 	}
 
-	repository, _, err := api.Repositories.Get(ctx, owner, repo)
+	id, err := repoID(ctx, api, owner, repo)
 	if err != nil {
-		return fmt.Errorf("look up %s/%s: %w", owner, repo, err)
+		return err
 	}
-	repoID := int(repository.GetID())
 
-	pubKey, _, err := api.Actions.GetEnvPublicKey(ctx, repoID, environment)
+	pubKey, _, err := api.Actions.GetEnvPublicKey(ctx, id, environment)
 	if err != nil {
 		return fmt.Errorf("get public key for environment %q on %s/%s: %w", environment, owner, repo, err)
 	}
@@ -76,7 +77,7 @@ func (c *Client) SetEnvSecrets(ctx context.Context, t usecase.Token, owner, repo
 		if err != nil {
 			return fmt.Errorf("encrypt secret %q: %w", secret.Name, err)
 		}
-		if _, err := api.Actions.CreateOrUpdateEnvSecret(ctx, repoID, environment, &gogithub.EncryptedSecret{
+		if _, err := api.Actions.CreateOrUpdateEnvSecret(ctx, id, environment, &gogithub.EncryptedSecret{
 			Name:           secret.Name,
 			KeyID:          pubKey.GetKeyID(),
 			EncryptedValue: encrypted,
@@ -85,4 +86,60 @@ func (c *Client) SetEnvSecrets(ctx context.Context, t usecase.Token, owner, repo
 		}
 	}
 	return nil
+}
+
+// ListEnvSecrets returns the names + last-updated times of the Actions secrets on
+// owner/repo's environment (never their values). Pages through every secret so
+// the configured-name view is complete, not just the first page.
+func (c *Client) ListEnvSecrets(ctx context.Context, t usecase.Token, owner, repo, environment string) ([]usecase.SecretInfo, error) {
+	api, err := gogithub.NewClient(gogithub.WithAuthToken(t.AccessToken))
+	if err != nil {
+		return nil, fmt.Errorf("build github client: %w", err)
+	}
+	repoID, err := repoID(ctx, api, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+
+	opts := &gogithub.ListOptions{PerPage: 100}
+	out := []usecase.SecretInfo{}
+	for {
+		secrets, resp, err := api.Actions.ListEnvSecrets(ctx, repoID, environment, opts)
+		if err != nil {
+			return nil, fmt.Errorf("list secrets for environment %q on %s/%s: %w", environment, owner, repo, err)
+		}
+		for _, s := range secrets.Secrets {
+			out = append(out, usecase.SecretInfo{Name: s.GetName(), UpdatedAt: s.UpdatedAt.Time})
+		}
+		if resp == nil || resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return out, nil
+}
+
+// DeleteEnvSecret removes one Actions secret from owner/repo's environment.
+func (c *Client) DeleteEnvSecret(ctx context.Context, t usecase.Token, owner, repo, environment, name string) error {
+	api, err := gogithub.NewClient(gogithub.WithAuthToken(t.AccessToken))
+	if err != nil {
+		return fmt.Errorf("build github client: %w", err)
+	}
+	id, err := repoID(ctx, api, owner, repo)
+	if err != nil {
+		return err
+	}
+	if _, err := api.Actions.DeleteEnvSecret(ctx, id, environment, name); err != nil {
+		return fmt.Errorf("delete secret %q on environment %q of %s/%s: %w", name, environment, owner, repo, err)
+	}
+	return nil
+}
+
+// repoID resolves owner/repo to the numeric id GitHub's env-secret API is keyed by.
+func repoID(ctx context.Context, api *gogithub.Client, owner, repo string) (int, error) {
+	repository, _, err := api.Repositories.Get(ctx, owner, repo)
+	if err != nil {
+		return 0, fmt.Errorf("look up %s/%s: %w", owner, repo, err)
+	}
+	return int(repository.GetID()), nil
 }

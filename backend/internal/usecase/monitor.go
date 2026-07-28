@@ -31,6 +31,10 @@ type Deployment struct {
 	// publish), in which case the health check falls back to the domain.
 	Port      int       `json:"port"`
 	CreatedAt time.Time `json:"createdAt"`
+	// RootDir is where the app's compose/Dockerfile lives in the repo (repo root
+	// when empty), persisted so per-environment tooling (e.g. .env.example
+	// detection) reads the right directory rather than assuming the root.
+	RootDir string `json:"rootDir"`
 	// CommitSHA and Actor describe the release this deploy created: the branch
 	// head being deployed and the GitHub login that triggered it. They are
 	// recorded onto the appended release event by DeploymentStore.Save, not
@@ -62,6 +66,12 @@ type DeploymentDeleter interface {
 // row that vanished between lookup and update is not mistaken for success.
 type DeploymentPortSetter interface {
 	SetPort(owner, repo, environment string, port int) (updated bool, err error)
+}
+
+// SecretClearer removes an environment's locally-stored secret values, so
+// teardown doesn't leave them behind after the environment is deleted.
+type SecretClearer interface {
+	ClearSecretValues(owner, repo, environment string) error
 }
 
 // ContainerTeardown stops and removes an app's running container(s) on a server
@@ -218,20 +228,21 @@ const (
 // It also tears a deployment down on request: stopping its container(s) on the
 // server, removing its committed deploy workflow, and forgetting its tracking.
 type MonitorService struct {
-	deployments DeploymentStore
-	releases    ReleaseReader
-	deleter     DeploymentDeleter
-	tokens      TokenStore
-	runs        WorkflowRunLister
-	servers     ServerStore
-	vault       SecretVault
-	teardown    ContainerTeardown
-	repoFiles   RepoFileDeleter
-	repoEnvs    RepoEnvironmentDeleter
-	repoKeys    RepoKeyDeleter
-	ports       DeploymentPortSetter
-	locker      *DeployLocker
-	log         *slog.Logger
+	deployments   DeploymentStore
+	releases      ReleaseReader
+	deleter       DeploymentDeleter
+	tokens        TokenStore
+	runs          WorkflowRunLister
+	servers       ServerStore
+	vault         SecretVault
+	teardown      ContainerTeardown
+	repoFiles     RepoFileDeleter
+	repoEnvs      RepoEnvironmentDeleter
+	repoKeys      RepoKeyDeleter
+	ports         DeploymentPortSetter
+	secretClearer SecretClearer
+	locker        *DeployLocker
+	log           *slog.Logger
 }
 
 // NewMonitorService wires the service to its ports. The server store is read to
@@ -244,11 +255,11 @@ type MonitorService struct {
 // Together they undo everything the deploy created on GitHub. The deleter then
 // forgets mountabo's tracking. locker is the shared deploy lock, read to surface
 // lock state and cleared by the recovery action.
-func NewMonitorService(deployments DeploymentStore, releases ReleaseReader, deleter DeploymentDeleter, tokens TokenStore, runs WorkflowRunLister, servers ServerStore, vault SecretVault, teardown ContainerTeardown, repoFiles RepoFileDeleter, repoEnvs RepoEnvironmentDeleter, repoKeys RepoKeyDeleter, ports DeploymentPortSetter, locker *DeployLocker, log *slog.Logger) *MonitorService {
+func NewMonitorService(deployments DeploymentStore, releases ReleaseReader, deleter DeploymentDeleter, tokens TokenStore, runs WorkflowRunLister, servers ServerStore, vault SecretVault, teardown ContainerTeardown, repoFiles RepoFileDeleter, repoEnvs RepoEnvironmentDeleter, repoKeys RepoKeyDeleter, ports DeploymentPortSetter, secretClearer SecretClearer, locker *DeployLocker, log *slog.Logger) *MonitorService {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &MonitorService{deployments: deployments, releases: releases, deleter: deleter, tokens: tokens, runs: runs, servers: servers, vault: vault, teardown: teardown, repoFiles: repoFiles, repoEnvs: repoEnvs, repoKeys: repoKeys, ports: ports, locker: locker, log: log}
+	return &MonitorService{deployments: deployments, releases: releases, deleter: deleter, tokens: tokens, runs: runs, servers: servers, vault: vault, teardown: teardown, repoFiles: repoFiles, repoEnvs: repoEnvs, repoKeys: repoKeys, ports: ports, secretClearer: secretClearer, locker: locker, log: log}
 }
 
 // ClearLock force-releases the deploy lock for a deployment (owner, repo,
@@ -350,6 +361,11 @@ func (s *MonitorService) removeEnvironment(ctx context.Context, dep Deployment) 
 	}
 	if err := s.repoEnvs.DeleteEnvironment(ctx, token, dep.Owner, dep.Repo, dep.Environment); err != nil {
 		s.log.Warn("teardown: delete deployment environment failed", "app", dep.App, "repo", dep.Owner+"/"+dep.Repo, "env", dep.Environment, "err", err)
+	}
+	// Drop the locally-stored (encrypted) secret values so they don't outlive the
+	// environment. Best-effort like the rest of teardown.
+	if err := s.secretClearer.ClearSecretValues(dep.Owner, dep.Repo, dep.Environment); err != nil {
+		s.log.Warn("teardown: clear local env secrets failed", "app", dep.App, "repo", dep.Owner+"/"+dep.Repo, "env", dep.Environment, "err", err)
 	}
 }
 

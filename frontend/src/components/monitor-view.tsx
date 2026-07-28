@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/badge";
 import { ServerAvatar } from "@/components/server-avatar";
@@ -43,6 +43,13 @@ import { type DomainPreview, fetchDomainPreview } from "@/lib/domain-preview";
 import { type DashboardTool, installedDashboards, openDashboard } from "@/lib/dashboards";
 import { type AppHealth, clearDeployLock, deleteDeployment, fetchAppHealth, setDeploymentPort } from "@/lib/app-health";
 import { getRepoBranches } from "@/lib/branches";
+import {
+  type DeploymentSecret,
+  type DeploymentSecrets,
+  deleteDeploymentSecret,
+  fetchDeploymentSecrets,
+  setDeploymentSecrets,
+} from "@/lib/secrets";
 import { type UptimeKumaAdmin, fetchUptimeKumaAdmin, resetUptimeKumaAdmin } from "@/lib/uptime-kuma-admin";
 
 const runColor: Record<RunStatus, string> = {
@@ -365,6 +372,9 @@ export function MonitorView({
                   server={server}
                   metrics={m}
                   health={health[key]}
+                  siblings={deployments.filter(
+                    (x) => x.repo === d.repo && x.environment !== d.environment,
+                  )}
                   onAddDomain={(server, value) =>
                     setConfirmDomain({ server, mode: "add", value })
                   }
@@ -633,6 +643,7 @@ function ExpandedCard({
   server,
   metrics: m,
   health,
+  siblings,
   onAddDomain,
   onRemoveDomain,
   onDelete,
@@ -642,6 +653,8 @@ function ExpandedCard({
   server?: ServerView;
   metrics: ServerMetrics | null | undefined;
   health: AppHealth | null | undefined;
+  // The repo's other environments, for the secrets-compare row.
+  siblings: Deployment[];
   onAddDomain: (server: ServerView, value: DomainFormValue) => void;
   onRemoveDomain: (server: ServerView, host: string) => void;
   onDelete: () => void;
@@ -689,6 +702,7 @@ function ExpandedCard({
   // collapsible-section visibility rules.
   type TabKey =
     | "environments"
+    | "secrets"
     | "walkthrough"
     | "runs"
     | "logs"
@@ -696,9 +710,20 @@ function ExpandedCard({
     | "domains"
     | "timeline";
 
+  // Per-environment secrets, fetched lazily once the tab is opened (with values,
+  // so the panel can reveal them). Kept here so the tab label can show the count
+  // and a mutation in the panel can refetch through reloadSecrets.
+  const [secrets, setSecrets] = useState<DeploymentSecrets | null>(null);
+  const reloadSecrets = useCallback(() => {
+    fetchDeploymentSecrets(owner, repo, d.environment, true).then(setSecrets);
+  }, [owner, repo, d.environment]);
+
   const timelineCount = d.timeline?.length ?? 0;
   const tabs: { key: TabKey; label: string }[] = [
     { key: "environments", label: "environments" },
+    ...(server && d.environment
+      ? [{ key: "secrets" as const, label: `secrets${secrets ? ` (${secrets.secrets.length})` : ""}` }]
+      : []),
     { key: "walkthrough", label: "deploy walkthrough" },
     { key: "runs", label: `recent runs (${d.runs.length})` },
     { key: "logs", label: "container logs" },
@@ -729,6 +754,18 @@ function ExpandedCard({
     });
     return () => ctrl.abort();
   }, [tab, branches, owner, repo]);
+
+  // Pull the environment's secrets lazily, once the secrets tab is opened, with
+  // values so the panel can reveal them. setState only fires from the resolved
+  // callback, matching the branches fetch above.
+  useEffect(() => {
+    if (tab !== "secrets" || secrets !== null) return;
+    const ctrl = new AbortController();
+    fetchDeploymentSecrets(owner, repo, d.environment, true, ctrl.signal).then((data) => {
+      if (!ctrl.signal.aborted && data) setSecrets(data);
+    });
+    return () => ctrl.abort();
+  }, [tab, secrets, owner, repo, d.environment]);
 
   // Branches the operator can pick from: everything except the current one
   // (re-deploying the same branch creates a duplicate environment, not a new
@@ -899,6 +936,20 @@ function ExpandedCard({
           </div>
         )}
 
+        {/* per-environment secrets: what Actions has configured (GitHub is
+            authoritative for the names), with mountabo's revealable values for
+            the ones it set, plus drift, .env.example gaps, and a sibling compare. */}
+        {tab === "secrets" && server && d.environment && (
+          <SecretsPanel
+            owner={owner}
+            repo={repo}
+            environment={d.environment}
+            data={secrets}
+            reload={reloadSecrets}
+            siblings={siblings}
+          />
+        )}
+
         {/* step-by-step deploy walkthrough from GitHub Actions */}
         {tab === "walkthrough" && (
           <RunWalkthrough owner={owner} repo={repo} branch={d.branch} environment={d.environment} latestStatus={latest?.status} />
@@ -995,6 +1046,403 @@ function ExpandedCard({
         </div>
       </div>
     </div>
+  );
+}
+
+// secretUpdatedLabel renders a secret's GitHub updated-at as a short relative
+// time ("3d ago"), or "" when there is no server timestamp (a value known only
+// locally, e.g. one removed on GitHub).
+function secretUpdatedLabel(iso: string): string {
+  if (!iso) return "";
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return "";
+  const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (secs >= 86400) return `${Math.floor(secs / 86400)}d ago`;
+  if (secs >= 3600) return `${Math.floor(secs / 3600)}h ago`;
+  if (secs >= 60) return `${Math.floor(secs / 60)}m ago`;
+  return "just now";
+}
+
+// The drift badge for a secret's status: how its GitHub state diverged from
+// mountabo's local record.
+const secretStatusBadge: Record<string, { tone: "blue" | "gray" | "red"; label: string }> = {
+  stale: { tone: "blue", label: "changed on github" },
+  setOutsideMountabo: { tone: "gray", label: "set outside mountabo" },
+  removedOnGitHub: { tone: "red", label: "removed on github" },
+};
+
+const secretInputCls =
+  "min-w-0 flex-1 rounded-md border border-line bg-bg px-3 py-2 font-mono text-[13px] text-cream placeholder:text-faint focus:border-line-strong focus:outline-none";
+
+// SecretsPanel is the per-environment secrets tab. GitHub is authoritative for
+// which names are configured; mountabo reveals the values it set, flags drift
+// (changed on GitHub / set outside mountabo / removed on GitHub), surfaces
+// .env.example variables not yet configured, and compares against the repo's
+// other environments (names only). Managed connection secrets are read-only.
+function SecretsPanel({
+  owner,
+  repo,
+  environment,
+  data,
+  reload,
+  siblings,
+}: {
+  owner: string;
+  repo: string;
+  environment: string;
+  data: DeploymentSecrets | null;
+  reload: () => void;
+  siblings: Deployment[];
+}) {
+  const [revealed, setRevealed] = useState<Set<string>>(new Set());
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newValue, setNewValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<{ tone: "warn" | "error"; text: string } | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+
+  // Sibling environments' configured secret names (never values) for the compare
+  // row. Keyed on a serialized identity string so it refetches only when the set
+  // of siblings actually changes, not on every parent re-render.
+  const [siblingNames, setSiblingNames] = useState<Record<string, string[]>>({});
+  const compareKey = siblings.map((s) => `${s.repo} ${s.environment}`).join("|");
+  useEffect(() => {
+    if (!compareKey) return;
+    let live = true;
+    const targets = compareKey.split("|").map((entry) => {
+      const [full, env] = entry.split(" ");
+      const [o, r] = splitRepo(full);
+      return { owner: o, repo: r, environment: env };
+    });
+    Promise.all(
+      targets.map((t) =>
+        fetchDeploymentSecrets(t.owner, t.repo, t.environment, false).then((d) => ({
+          env: t.environment,
+          names: d?.secrets.map((x) => x.name) ?? [],
+        })),
+      ),
+    ).then((results) => {
+      if (!live) return;
+      const map: Record<string, string[]> = {};
+      for (const res of results) map[res.env] = res.names;
+      setSiblingNames(map);
+    });
+    return () => {
+      live = false;
+    };
+  }, [compareKey]);
+
+  // write sets or updates one secret, surfacing a partial sync (set on GitHub but
+  // not stored locally) as a warning rather than a plain success. Returns whether
+  // the value was fully synced, so callers only clear their form on real success.
+  async function write(name: string, value: string): Promise<boolean> {
+    if (!name.trim() || !value) return false;
+    setBusy(true);
+    setNotice(null);
+    const res = await setDeploymentSecrets(owner, repo, environment, [{ key: name.trim(), value }]);
+    setBusy(false);
+    if (!res) {
+      setNotice({ tone: "error", text: "couldn't set that secret — check you're connected and the name isn't managed." });
+      return false;
+    }
+    reload();
+    if (res.partial) {
+      setNotice({ tone: "warn", text: res.message || "set on github, but not saved locally — it won't be revealable here." });
+      return false;
+    }
+    return true;
+  }
+
+  async function remove(name: string) {
+    setBusy(true);
+    setNotice(null);
+    const ok = await deleteDeploymentSecret(owner, repo, environment, name);
+    setBusy(false);
+    setConfirmRemove(null);
+    if (!ok) {
+      setNotice({ tone: "error", text: `couldn't remove ${name}.` });
+      return;
+    }
+    reload();
+  }
+
+  function toggleReveal(name: string) {
+    setRevealed((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
+
+  if (data === null) {
+    return <p className="text-[14px] text-muted">reading secrets from github…</p>;
+  }
+
+  const configured = new Set(data.secrets.map((s) => s.name));
+  // Names a sibling environment has that this one doesn't, grouped by env.
+  const compare = Object.entries(siblingNames)
+    .map(([env, names]) => ({ env, missing: names.filter((n) => !configured.has(n)) }))
+    .filter((row) => row.missing.length > 0);
+
+  return (
+    <div className="space-y-5">
+      {notice && (
+        <div
+          className={`rounded-lg border px-4 py-3 text-[13px] ${
+            notice.tone === "warn"
+              ? "border-blue/30 bg-blue/[0.06] text-blue"
+              : "border-red-400/40 bg-red-400/[0.06] text-red-300"
+          }`}
+        >
+          {notice.text}
+        </div>
+      )}
+
+      {/* configured secrets: managed ones read-only, operator ones revealable/editable */}
+      {data.secrets.length === 0 ? (
+        <p className="text-[14px] text-muted">no secrets configured on this environment yet.</p>
+      ) : (
+        <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
+          {data.secrets.map((s) => (
+            <SecretRow
+              key={s.name}
+              secret={s}
+              revealed={revealed.has(s.name)}
+              editing={editing === s.name}
+              editValue={editValue}
+              busy={busy}
+              onToggleReveal={() => toggleReveal(s.name)}
+              onStartEdit={() => {
+                setEditing(s.name);
+                setEditValue("");
+              }}
+              onEditValue={setEditValue}
+              onCancelEdit={() => setEditing(null)}
+              onSaveEdit={async () => {
+                if (await write(s.name, editValue)) setEditing(null);
+              }}
+              onRemove={() => setConfirmRemove(s.name)}
+            />
+          ))}
+        </ul>
+      )}
+
+      {/* add a new operator secret (written to GitHub + the local encrypted store) */}
+      <form
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (await write(newName, newValue)) {
+            setNewName("");
+            setNewValue("");
+          }
+        }}
+        className="rounded-xl border border-dashed border-line bg-surface/40 p-4"
+      >
+        <p className="text-[12px] uppercase tracking-wide text-muted">add a secret</p>
+        <p className="mt-1 text-[13px] leading-6 text-body">
+          sets it on the github environment and stores the value here so you can reveal and reuse it.
+        </p>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+          <input
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="NAME"
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            className={secretInputCls}
+          />
+          <input
+            value={newValue}
+            onChange={(e) => setNewValue(e.target.value)}
+            placeholder="value"
+            type="password"
+            autoComplete="new-password"
+            spellCheck={false}
+            className={secretInputCls}
+          />
+          <button
+            type="submit"
+            disabled={busy || newName.trim() === "" || newValue === ""}
+            className="shrink-0 rounded-md border border-lime/50 bg-lime/[0.08] px-4 py-2 text-[13px] font-medium text-lime transition-colors hover:bg-lime/[0.16] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            add secret
+          </button>
+        </div>
+      </form>
+
+      {/* .env.example variables not configured on this environment */}
+      {data.missing.length > 0 && (
+        <div className="rounded-xl border border-line bg-surface px-4 py-3">
+          <p className="text-[12px] uppercase tracking-wide text-muted">missing from .env.example</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {data.missing.map((name) => (
+              <button
+                key={name}
+                onClick={() => setNewName(name)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 font-mono text-[12px] text-cream transition-colors hover:border-lime/50 hover:text-lime"
+              >
+                {name} <span className="text-muted">+ add</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* compare: variable names the repo's other environments have but this lacks */}
+      {compare.length > 0 && (
+        <div className="rounded-xl border border-line bg-surface px-4 py-3">
+          <p className="text-[12px] uppercase tracking-wide text-muted">in other environments, not here</p>
+          <ul className="mt-2 space-y-2">
+            {compare.map((row) => (
+              <li key={row.env} className="flex flex-wrap items-center gap-2 text-[13px]">
+                <Badge tone="lime-solid">{row.env}</Badge>
+                {row.missing.map((name) => (
+                  <button
+                    key={name}
+                    onClick={() => setNewName(name)}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 font-mono text-[12px] text-cream transition-colors hover:border-lime/50 hover:text-lime"
+                  >
+                    {name} <span className="text-muted">+ add</span>
+                  </button>
+                ))}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {confirmRemove && (
+        <ConfirmAction
+          title={`remove ${confirmRemove}?`}
+          summary={
+            <>
+              this deletes <span className="text-cream">{confirmRemove}</span> from the github{" "}
+              <span className="text-cream">{environment}</span> environment and clears its stored value.
+              deployments that read it will lose it on their next run.
+            </>
+          }
+          steps={[
+            `delete the secret ${confirmRemove} from the ${environment} environment on github`,
+            "clear the locally stored value for it",
+          ]}
+          confirmLabel="remove secret"
+          destructive
+          onConfirm={() => remove(confirmRemove)}
+          onCancel={() => setConfirmRemove(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// SecretRow renders one configured secret: managed ones are read-only, operator
+// ones can be revealed, edited (set a new value), or removed.
+function SecretRow({
+  secret: s,
+  revealed,
+  editing,
+  editValue,
+  busy,
+  onToggleReveal,
+  onStartEdit,
+  onEditValue,
+  onCancelEdit,
+  onSaveEdit,
+  onRemove,
+}: {
+  secret: DeploymentSecret;
+  revealed: boolean;
+  editing: boolean;
+  editValue: string;
+  busy: boolean;
+  onToggleReveal: () => void;
+  onStartEdit: () => void;
+  onEditValue: (v: string) => void;
+  onCancelEdit: () => void;
+  onSaveEdit: () => void;
+  onRemove: () => void;
+}) {
+  const updated = secretUpdatedLabel(s.updatedAt);
+  const drift = s.status ? secretStatusBadge[s.status] : undefined;
+  return (
+    <li className="flex flex-col gap-2 px-4 py-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <span className="font-mono text-[13px] text-cream">{s.name}</span>
+        {s.managed && <Badge tone="gray">managed</Badge>}
+        {drift && (
+          <Badge tone={drift.tone} dot>
+            {drift.label}
+          </Badge>
+        )}
+        {updated && <span className="text-[12px] text-muted">updated {updated}</span>}
+      </div>
+
+      {s.managed ? (
+        <p className="text-[12px] text-muted">set by mountabo when it configured this deployment — read-only.</p>
+      ) : editing ? (
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <input
+            value={editValue}
+            onChange={(e) => onEditValue(e.target.value)}
+            placeholder="new value"
+            type="password"
+            autoComplete="new-password"
+            spellCheck={false}
+            className={secretInputCls}
+            autoFocus
+          />
+          <button
+            onClick={onSaveEdit}
+            disabled={busy || editValue === ""}
+            className="shrink-0 rounded-md border border-lime/50 bg-lime/[0.08] px-4 py-2 text-[13px] font-medium text-lime transition-colors hover:bg-lime/[0.16] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            save
+          </button>
+          <button
+            onClick={onCancelEdit}
+            className="shrink-0 rounded-md border border-line px-4 py-2 text-[13px] text-muted transition-colors hover:text-cream"
+          >
+            cancel
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-3">
+          {s.hasLocalValue ? (
+            <>
+              <code className="min-w-0 flex-1 truncate rounded-md border border-line bg-bg px-3 py-1.5 font-mono text-[13px] text-cream">
+                {revealed ? s.value || "" : "••••••••••••"}
+              </code>
+              <button
+                onClick={onToggleReveal}
+                className="shrink-0 rounded-md border border-line px-3 py-1.5 text-[12px] text-muted transition-colors hover:text-cream"
+              >
+                {revealed ? "hide" : "reveal"}
+              </button>
+            </>
+          ) : (
+            <span className="flex-1 text-[12px] text-muted">
+              no value stored here{s.status === "setOutsideMountabo" ? " — it was set outside mountabo" : ""}.
+            </span>
+          )}
+          <button
+            onClick={onStartEdit}
+            className="shrink-0 rounded-md border border-line px-3 py-1.5 text-[12px] text-muted transition-colors hover:text-cream"
+          >
+            edit
+          </button>
+          <button
+            onClick={onRemove}
+            className="shrink-0 rounded-md border border-red-400/50 px-3 py-1.5 text-[12px] text-red-300 transition-colors hover:bg-red-400/10"
+          >
+            remove
+          </button>
+        </div>
+      )}
+    </li>
   );
 }
 

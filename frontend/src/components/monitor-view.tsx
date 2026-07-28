@@ -83,6 +83,45 @@ function deploymentKey(d: Deployment | undefined): string {
   return d ? JSON.stringify([d.repo, d.environment]) : "";
 }
 
+// Environments sort production first, then staging, then the rest alphabetically,
+// so a repo card lists its targets in operational priority.
+const ENV_ORDER: Record<string, number> = { production: 0, staging: 1 };
+function envRank(env: string): number {
+  return env in ENV_ORDER ? ENV_ORDER[env] : 2;
+}
+
+// RepoGroup collects one repository's environments (each a Deployment) under a
+// single card — the environment is the first-class unit, and a repo owns several.
+type RepoGroup = { repo: string; owner: string; app: string; environments: Deployment[] };
+
+// groupByRepo turns the flat per-environment list into one group per repository.
+// The app label is deterministic: the production environment's app name, else the
+// first environment's, so environments disagreeing never flickers the title.
+function groupByRepo(deployments: Deployment[]): RepoGroup[] {
+  const groups = new Map<string, Deployment[]>();
+  for (const d of deployments) {
+    const list = groups.get(d.repo);
+    if (list) list.push(d);
+    else groups.set(d.repo, [d]);
+  }
+  return Array.from(groups.entries()).map(([repo, envs]) => {
+    const environments = [...envs].sort(
+      (a, b) =>
+        envRank(a.environment) - envRank(b.environment) || a.environment.localeCompare(b.environment),
+    );
+    const [owner] = splitRepo(repo);
+    const headline = environments.find((e) => e.environment === "production") ?? environments[0];
+    return { repo, owner, app: headline?.app ?? repo, environments };
+  });
+}
+
+// defaultEnv picks the environment a repo card opens to: production if present,
+// else the first by ordering.
+function defaultEnv(group: RepoGroup): string {
+  const prod = group.environments.find((e) => e.environment === "production");
+  return (prod ?? group.environments[0])?.environment ?? "";
+}
+
 // How often to re-poll the GitHub run walkthrough while a run is in progress.
 const STEP_POLL_MS = 4000;
 
@@ -104,13 +143,16 @@ export function MonitorView({
   const ownerParam = params.get("owner");
   const repoParam = params.get("repo");
   const envParam = params.get("environment");
+  // A card is one repository; `open` is the open repo ("owner/repo"), and
+  // selectedEnvByRepo tracks which environment chip is active within each card.
   const [open, setOpen] = useState<string>(() => {
     const fullRepo = ownerParam && repoParam ? `${ownerParam}/${repoParam}` : "";
-    const match = deployments.find(
-      (d) => d.repo === fullRepo && (!envParam || d.environment === envParam),
-    );
-    return deploymentKey(match ?? deployments[0]);
+    const match = deployments.find((d) => d.repo === fullRepo);
+    return (match ?? deployments[0])?.repo ?? "";
   });
+  const [selectedEnvByRepo, setSelectedEnvByRepo] = useState<Record<string, string>>(() =>
+    ownerParam && repoParam && envParam ? { [`${ownerParam}/${repoParam}`]: envParam } : {},
+  );
   const [refreshing, startRefresh] = useTransition();
   const [metrics, setMetrics] = useState<Record<string, ServerMetrics | null>>({});
   const [serverList, setServerList] = useState<ServerView[]>(servers);
@@ -130,22 +172,33 @@ export function MonitorView({
   const [portAssocError, setPortAssocError] = useState<string | null>(null);
   const [deletedKeys, setDeletedKeys] = useState<Set<string>>(new Set());
   const visibleDeployments = deployments.filter((d) => !deletedKeys.has(deploymentKey(d)));
+  const repoGroups = groupByRepo(visibleDeployments);
 
-  // The currently open deployment, resolved from its (app, environment) key.
-  const openDeployment = visibleDeployments.find((d) => deploymentKey(d) === open);
+  // The open repo group and, within it, the selected environment's deployment.
+  // The selection falls back to the default when unset or no longer present (e.g.
+  // after the selected environment was deleted).
+  const openGroup = repoGroups.find((g) => g.repo === open);
+  const selectedEnv =
+    openGroup && openGroup.environments.some((e) => e.environment === selectedEnvByRepo[open])
+      ? selectedEnvByRepo[open]
+      : openGroup
+        ? defaultEnv(openGroup)
+        : "";
+  const openDeployment = openGroup?.environments.find((e) => e.environment === selectedEnv);
+  const openKey = deploymentKey(openDeployment);
 
-  // Probe the open deployment's health on demand (no daemon), keyed by (app,
-  // environment) so it is fetched once per open until a refresh clears the cache.
-  // setState only runs in the resolved callback, never synchronously in the body.
+  // Probe the open deployment's health on demand (no daemon), keyed by (repo,
+  // environment) so switching the environment chip re-probes the newly selected
+  // one. setState only runs in the resolved callback, never synchronously.
   useEffect(() => {
-    if (!openDeployment || open in health) return;
+    if (!openDeployment || openKey in health) return;
     const ctrl = new AbortController();
     const [owner, repo] = splitRepo(openDeployment.repo);
     fetchAppHealth(owner, repo, openDeployment.environment, ctrl.signal).then((h) =>
-      setHealth((prev) => ({ ...prev, [open]: h })),
+      setHealth((prev) => ({ ...prev, [openKey]: h })),
     );
     return () => ctrl.abort();
-  }, [open, health, openDeployment]);
+  }, [openKey, health, openDeployment]);
 
   // confirmDeployDelete forgets a deployment's tracking, drops its card locally,
   // then refreshes to re-pull authoritative state. Runs from an event handler.
@@ -170,15 +223,18 @@ export function MonitorView({
 
   // Live streams (add domain / remove domain) for the open card. Each only
   // opens after its ConfirmAction gate is confirmed.
+  // The add variant captures the deployment it was launched from, so a domain's
+  // port is linked to that environment even if the operator switches the
+  // environment chip while the (streamed) domain setup is still running.
   const [domainTarget, setDomainTarget] = useState<
-    | { server: ServerView; mode: "add"; value: DomainFormValue }
+    | { server: ServerView; mode: "add"; value: DomainFormValue; deployment: Deployment }
     | { server: ServerView; mode: "remove"; host: string }
     | null
   >(null);
 
   // Confirmation gates. Nothing touches a server until one is confirmed.
   const [confirmDomain, setConfirmDomain] = useState<
-    | { server: ServerView; mode: "add"; value: DomainFormValue }
+    | { server: ServerView; mode: "add"; value: DomainFormValue; deployment: Deployment }
     | { server: ServerView; mode: "remove"; host: string }
     | null
   >(null);
@@ -188,7 +244,9 @@ export function MonitorView({
   // the fetch was attempted but returned nothing.
   const [previewState, setPreviewState] = useState<{ host: string; data: DomainPreview | null } | null>(null);
 
+  const repoCount = new Set(visibleDeployments.map((d) => d.repo)).size;
   const liveCount = visibleDeployments.filter((d) => d.status === "live").length;
+  const failingCount = visibleDeployments.filter((d) => d.status === "failing").length;
   const openServerId = openDeployment?.serverId ?? "";
 
   // Read the open deployment's server metrics on demand (no daemon), keyed by
@@ -271,43 +329,36 @@ export function MonitorView({
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-[1100px] flex-1 flex-col px-4 pb-16 pt-10 sm:px-6 sm:pt-16 lg:px-8">
-      <div className="rise flex items-start justify-between gap-4 sm:gap-6">
+    <main className="mx-auto flex w-full max-w-[1100px] flex-1 flex-col px-4 pb-16 pt-8 sm:px-6 sm:pt-10 lg:px-8">
+      {/* Dashboard-first header: state and actions in the first viewport, no hero.
+          The summary line is operational — repositories and environments are
+          distinct counts, and idle is neither live nor failing. */}
+      <div className="rise flex items-center justify-between gap-4">
         <div>
-          <p className="label">deployments · {stamp}</p>
-          <h1 className="mt-6 text-4xl font-extrabold leading-[1.02] tracking-tight text-cream sm:text-5xl sm:leading-[0.98] lg:text-6xl">
-            every deployment,
-            <br />
-            and how it is <span className="italic text-lime">running.</span>
-          </h1>
-          <p className="mt-6 max-w-2xl text-[16px] leading-8 text-body">
-            open a deployment to walk its github actions run, read its container logs, watch host metrics,
-            open its monitoring dashboards, and manage its domains. mountabo reads it all when you open it:
-            there is no daemon, nothing phones home.
+          <h1 className="text-2xl font-bold tracking-tight text-cream sm:text-3xl">deployments</h1>
+          <p className="mt-1.5 text-[13px] text-muted">
+            <span className="font-semibold text-cream">{repoCount}</span>{" "}
+            {repoCount === 1 ? "repository" : "repositories"}
+            {" · "}
+            <span className="font-semibold text-cream">{visibleDeployments.length}</span>{" "}
+            {visibleDeployments.length === 1 ? "environment" : "environments"}
+            {" · "}
+            <span className="font-semibold text-blue">{liveCount}</span> live
+            {" · "}
+            <span className={`font-semibold ${failingCount > 0 ? "text-red-400" : "text-muted"}`}>
+              {failingCount}
+            </span>{" "}
+            failing
+            <span className="text-faint"> · {stamp}</span>
           </p>
         </div>
         <button
           onClick={refresh}
           disabled={refreshing}
-          className="mt-2 flex shrink-0 items-center gap-2 rounded-md border border-line px-3 py-2 text-[12px] text-lime transition-colors hover:bg-lime/10 disabled:opacity-60"
+          className="flex shrink-0 items-center gap-2 rounded-md border border-line px-3 py-2 text-[12px] text-lime transition-colors hover:bg-lime/10 disabled:opacity-60"
         >
           <Refresh className={refreshing ? "animate-spin" : ""} /> {refreshing ? "refreshing…" : "refresh"}
         </button>
-      </div>
-
-      <div
-        className="rise mt-10 flex items-center gap-6 border-y border-line py-6 text-[13px] sm:gap-10"
-        style={{ animationDelay: "70ms" }}
-      >
-        <Summary value={String(visibleDeployments.length)} label="apps" />
-        <span className="h-10 w-px bg-line" />
-        <Summary value={String(liveCount)} label="live" tone="blue" />
-        <span className="h-10 w-px bg-line" />
-        <Summary
-          value={String(visibleDeployments.length - liveCount)}
-          label="needs attention"
-          tone={visibleDeployments.length - liveCount > 0 ? "red" : "muted"}
-        />
       </div>
 
       {portAssocError && (
@@ -323,67 +374,96 @@ export function MonitorView({
         </div>
       )}
 
-      <div className="rise mt-8 flex flex-col gap-5" style={{ animationDelay: "120ms" }}>
-        {visibleDeployments.length === 0 && (
+      <div className="rise mt-6 flex flex-col gap-5" style={{ animationDelay: "80ms" }}>
+        {repoGroups.length === 0 && (
           <p className="rounded-2xl border border-dashed border-line px-6 py-16 text-center text-[14px] text-muted">
             nothing deployed yet. connect a repository to a server and your live status shows up here.
           </p>
         )}
-        {visibleDeployments.map((d) => {
-          const server = serverById.get(d.serverId);
-          const key = deploymentKey(d);
-          const isOpen = open === key;
-          const m = metrics[d.serverId]; // undefined = still reading, else last good reading
-          const latest = d.runs[0];
+        {repoGroups.map((group) => {
+          const isOpen = open === group.repo;
+          // Headline environment (production, else first): its server avatars the
+          // card and titles it.
+          const headline =
+            group.environments.find((e) => e.environment === "production") ?? group.environments[0];
+          const headlineServer = serverById.get(headline?.serverId ?? "");
+          const anyLocked = group.environments.some((e) => e.locked);
+          // Collapsed activity is repo-wide, not just production's: the deploy
+          // count sums every environment, and the run strip / "last deploy" track
+          // the most operationally-notable environment — a failing one first, then
+          // one mid-deploy, else the headline — so a broken or fresher staging is
+          // never hidden behind a healthy production. (No absolute timestamps reach
+          // the client, so "notable" stands in for a true most-recent sort.)
+          const totalDeploys = group.environments.reduce((n, e) => n + (e.deploys ?? 0), 0);
+          const activityEnv =
+            group.environments.find((e) => e.status === "failing") ??
+            group.environments.find((e) => e.locked) ??
+            headline;
           return (
-            <section key={key} className="relative overflow-hidden rounded-2xl border border-line bg-surface">
+            <section key={group.repo} className="relative overflow-hidden rounded-2xl border border-line bg-surface">
               <button
-                onClick={() => setOpen(isOpen ? "" : key)}
+                onClick={() => setOpen(isOpen ? "" : group.repo)}
                 className="flex w-full items-center gap-4 px-6 py-5 pr-16 text-left"
                 aria-expanded={isOpen}
               >
                 <ChevronRight className={`text-muted transition-transform ${isOpen ? "rotate-90" : ""}`} />
-                {server && <ServerAvatar seed={server.name} />}
+                {headlineServer && <ServerAvatar seed={headlineServer.name} />}
                 <div className="min-w-0 flex-1">
-                  <span className="flex flex-wrap items-center gap-3">
-                    <span className="text-[18px] font-semibold text-cream">{d.app}</span>
-                    {d.environment && <Badge tone="lime-solid">{d.environment}</Badge>}
-                    <Badge tone={statusTone[d.status]} dot>
-                      {d.status}
-                    </Badge>
-                    <HealthPill health={health[key]} />
-                    {latest && <LatestRunPill status={latest.status} />}
-                    {d.locked && <LockPill since={d.lockedSince} />}
+                  <span className="flex flex-wrap items-center gap-2.5">
+                    <span className="text-[18px] font-semibold text-cream">{group.app}</span>
+                    {/* Per-environment status pills — the source of truth for which
+                        environments exist and which is failing (red dot). */}
+                    {group.environments.map((e) => (
+                      <Badge key={e.environment} tone={statusTone[e.status]} dot>
+                        {e.environment}
+                      </Badge>
+                    ))}
+                    {anyLocked && <LockPill />}
                   </span>
                   <span className="mt-1.5 block truncate text-[13px] text-muted">
-                    {d.repo} · {d.branch} · {server?.name ?? d.serverId}
+                    {group.repo} · {group.environments.length}{" "}
+                    {group.environments.length === 1 ? "environment" : "environments"}
                   </span>
                 </div>
-                <RunStrip runs={d.runs} />
-                <div className="hidden text-right sm:block">
-                  <span className="block text-[18px] font-semibold text-cream">{d.deploys ?? 0}</span>
-                  <span className="block text-[11px] text-muted">deploys · last {d.lastDeploy}</span>
-                </div>
+                {activityEnv && <RunStrip runs={activityEnv.runs} />}
+                {activityEnv && (
+                  <div className="hidden text-right sm:block">
+                    <span className="block text-[18px] font-semibold text-cream">{totalDeploys}</span>
+                    <span className="block text-[11px] text-muted">deploys · last {activityEnv.lastDeploy}</span>
+                  </div>
+                )}
               </button>
 
-              {isOpen && (
-                <ExpandedCard
-                  deployment={d}
-                  server={server}
-                  metrics={m}
-                  health={health[key]}
-                  siblings={deployments.filter(
-                    (x) => x.repo === d.repo && x.environment !== d.environment,
-                  )}
-                  onAddDomain={(server, value) =>
-                    setConfirmDomain({ server, mode: "add", value })
-                  }
-                  onRemoveDomain={(server, host) =>
-                    setConfirmDomain({ server, mode: "remove", host })
-                  }
-                  onDelete={() => setConfirmDelete(d)}
-                  onClearLock={() => setConfirmClearLock(d)}
-                />
+              {isOpen && openDeployment && (
+                <>
+                  <EnvironmentSwitcher
+                    group={group}
+                    selectedEnv={openDeployment.environment}
+                    onSelect={(env) =>
+                      setSelectedEnvByRepo((prev) => ({ ...prev, [group.repo]: env }))
+                    }
+                  />
+                  {/* Keyed by (repo, environment) so switching the environment chip
+                      remounts the card — resetting its env-scoped state (loaded
+                      secrets, active tab, logs) instead of showing the previous
+                      environment's data against the new one. */}
+                  <ExpandedCard
+                    key={openKey}
+                    deployment={openDeployment}
+                    server={serverById.get(openDeployment.serverId)}
+                    metrics={metrics[openDeployment.serverId]}
+                    health={health[openKey]}
+                    siblings={group.environments.filter(
+                      (e) => e.environment !== openDeployment.environment,
+                    )}
+                    onAddDomain={(server, value) =>
+                      setConfirmDomain({ server, mode: "add", value, deployment: openDeployment })
+                    }
+                    onRemoveDomain={(server, host) => setConfirmDomain({ server, mode: "remove", host })}
+                    onDelete={() => setConfirmDelete(openDeployment)}
+                    onClearLock={() => setConfirmClearLock(openDeployment)}
+                  />
+                </>
               )}
             </section>
           );
@@ -409,18 +489,18 @@ export function MonitorView({
             if (!ok) return;
             if (domainTarget.mode === "add") {
               recordDomainAdd(domainTarget.server.id, domainTarget.value);
-              // Record the domain's port as the open deployment's port so the
-              // domain associates with it (the card matches domain→deployment by
-              // port). The domain is already live on the server; if this link
-              // fails, surface it — otherwise the domain silently won't show here.
-              if (openDeployment) {
-                const [owner, repo] = splitRepo(openDeployment.repo);
-                const linked = await setDeploymentPort(owner, repo, openDeployment.environment, Number(domainTarget.value.upstream));
-                if (!linked) {
-                  setPortAssocError(
-                    `${domainTarget.value.host} is live on the server, but linking it to ${openDeployment.app} (${openDeployment.environment}) failed. re-add the domain, or set the app port, or it won't show on this card.`,
-                  );
-                }
+              // Record the domain's port as the port of the deployment this flow
+              // was launched from (captured in domainTarget, so switching the
+              // environment chip mid-stream can't retarget it). The card matches
+              // domain→deployment by port; if this link fails, surface it —
+              // otherwise the domain silently won't show on that environment.
+              const dep = domainTarget.deployment;
+              const [owner, repo] = splitRepo(dep.repo);
+              const linked = await setDeploymentPort(owner, repo, dep.environment, Number(domainTarget.value.upstream));
+              if (!linked) {
+                setPortAssocError(
+                  `${domainTarget.value.host} is live on the server, but linking it to ${dep.app} (${dep.environment}) failed. re-add the domain, or set the app port, or it won't show on this card.`,
+                );
               }
             } else recordDomainRemove(domainTarget.server.id, domainTarget.host);
             startRefresh(() => router.refresh());
@@ -553,32 +633,6 @@ export function MonitorView({
   );
 }
 
-// HealthPill is the prominent up/down indicator on a deployment card, from the
-// SSH-based app probe. undefined while it is still being read, null when the
-// probe could not reach the backend (shown as "health unknown"). Otherwise it
-// shows healthy (any HTTP response) or unhealthy (no response), with the HTTP
-// status when there is one.
-function HealthPill({ health }: { health: AppHealth | null | undefined }) {
-  if (health === undefined) {
-    return <Badge tone="gray">checking health</Badge>;
-  }
-  if (health === null) {
-    return <Badge tone="gray">health unknown</Badge>;
-  }
-  if (health.reachable) {
-    return (
-      <Badge tone="blue" dot>
-        healthy{health.status ? ` · ${health.status}` : ""}
-      </Badge>
-    );
-  }
-  return (
-    <Badge tone="red" dot>
-      unhealthy{health.status ? ` · ${health.status}` : ""}
-    </Badge>
-  );
-}
-
 // LockPill shows on a card while a deploy to this target is in flight (the
 // backend's per-target deploy lock is held), with how long it has been held.
 function LockPill({ since }: { since?: string }) {
@@ -635,9 +689,181 @@ function HealthBanner({ health }: { health: AppHealth | null | undefined }) {
   );
 }
 
-// ExpandedCard is the open deployment's full body: deploy status + live link,
-// host metrics, the live GitHub run walkthrough, the runs list, a logs viewer,
-// per-tool monitoring, custom domains, and the deploy timeline.
+// EnvironmentSwitcher is the row of environment chips at the top of an open repo
+// card: it selects which environment the tabs below reflect, and "+ environment"
+// opens a lightweight name -> branch form that routes to the configure page
+// (environment-first; branch is one attribute of the environment, set there).
+function EnvironmentSwitcher({
+  group,
+  selectedEnv,
+  onSelect,
+}: {
+  group: RepoGroup;
+  selectedEnv: string;
+  onSelect: (env: string) => void;
+}) {
+  const router = useRouter();
+  const [owner, repo] = splitRepo(group.repo);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newEnv, setNewEnv] = useState("");
+  const [newBranch, setNewBranch] = useState("");
+  const [branches, setBranches] = useState<string[] | null>(null);
+
+  // The new environment defaults to the repo's production (else first) server;
+  // the operator can change it on the configure page.
+  const defaultServer =
+    (group.environments.find((e) => e.environment === "production") ?? group.environments[0])
+      ?.serverId ?? "";
+
+  // Load the repo's branches once the add form is opened (never synchronously).
+  useEffect(() => {
+    if (!showAdd || branches !== null) return;
+    const ctrl = new AbortController();
+    getRepoBranches(owner, repo, ctrl.signal).then((list) => {
+      if (!ctrl.signal.aborted) setBranches(list);
+    });
+    return () => ctrl.abort();
+  }, [showAdd, branches, owner, repo]);
+
+  const envInvalid = newEnv.trim() !== "" && !/^[A-Za-z0-9._-]+$/.test(newEnv.trim());
+
+  return (
+    <div className="flex flex-col gap-3 border-t border-line bg-surface/40 px-6 py-4 sm:px-8">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="mr-1 text-[12px] font-medium uppercase tracking-wide text-muted">
+          environments
+        </span>
+        {group.environments.map((e) => {
+          const active = e.environment === selectedEnv;
+          return (
+            <button
+              key={e.environment}
+              onClick={() => onSelect(e.environment)}
+              aria-pressed={active}
+              className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-[13px] font-medium transition-colors ${
+                active
+                  ? "border-lime/50 bg-lime/15 text-lime"
+                  : "border-line text-muted hover:bg-surface-2 hover:text-cream"
+              }`}
+            >
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  e.status === "live" ? "bg-blue" : e.status === "failing" ? "bg-red-400" : "bg-muted"
+                }`}
+              />
+              {e.environment}
+            </button>
+          );
+        })}
+        <button
+          onClick={() => setShowAdd((v) => !v)}
+          aria-expanded={showAdd}
+          className="inline-flex items-center gap-1 rounded-md border border-dashed border-line px-3 py-1.5 text-[13px] font-medium text-muted transition-colors hover:border-lime/50 hover:text-lime"
+        >
+          + environment
+        </button>
+      </div>
+
+      {showAdd && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const env = newEnv.trim();
+            const branch = newBranch.trim();
+            if (!env || !branch || envInvalid) return;
+            router.push(
+              `/configure?repo=${encodeURIComponent(group.repo)}&environment=${encodeURIComponent(env)}&branch=${encodeURIComponent(branch)}&server=${encodeURIComponent(defaultServer)}`,
+            );
+          }}
+          className="rounded-xl border border-dashed border-line bg-surface/60 p-4"
+        >
+          <p className="text-[13px] leading-6 text-body">
+            name the environment and pick its branch. the configure page opens prefilled, where you set its
+            variables and domain, then deploy.
+          </p>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <input
+              value={newEnv}
+              onChange={(e) => setNewEnv(e.target.value)}
+              placeholder="environment, e.g. staging"
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              className="min-w-0 flex-1 rounded-md border border-line bg-bg px-3 py-2 font-mono text-[13px] text-cream placeholder:text-faint focus:border-line-strong focus:outline-none"
+            />
+            {branches && branches.length > 0 ? (
+              <select
+                value={newBranch}
+                onChange={(e) => setNewBranch(e.target.value)}
+                className="min-w-0 flex-1 rounded-md border border-line bg-bg px-3 py-2 font-mono text-[13px] text-cream focus:border-line-strong focus:outline-none"
+              >
+                <option value="" className="text-faint">
+                  pick a branch from github
+                </option>
+                {branches.map((b) => (
+                  <option key={b} value={b}>
+                    {b}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                value={newBranch}
+                onChange={(e) => setNewBranch(e.target.value)}
+                placeholder={branches === null ? "reading branches from github," : "branch, e.g. main"}
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+                className="min-w-0 flex-1 rounded-md border border-line bg-bg px-3 py-2 font-mono text-[13px] text-cream placeholder:text-faint focus:border-line-strong focus:outline-none"
+              />
+            )}
+            <button
+              type="submit"
+              disabled={newEnv.trim() === "" || newBranch.trim() === "" || envInvalid}
+              className="shrink-0 rounded-md border border-lime/50 bg-lime/[0.08] px-4 py-2 text-[13px] font-medium text-lime transition-colors hover:bg-lime/[0.16] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              configure
+            </button>
+          </div>
+          {envInvalid && (
+            <p className="mt-2 text-[12px] text-red-400">
+              environment names use letters, numbers, dots, dashes, and underscores.
+            </p>
+          )}
+        </form>
+      )}
+    </div>
+  );
+}
+
+// InfoTile is one read-only key/value cell in the overview/settings grids.
+function InfoTile({ label, value, href }: { label: string; value: string; href?: string }) {
+  return (
+    <div className="bg-surface px-5 py-4">
+      <p className="text-[11px] uppercase tracking-wide text-muted">{label}</p>
+      {href ? (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-1.5 block truncate text-[14px] font-medium text-lime hover:underline"
+        >
+          {value}
+        </a>
+      ) : (
+        <p className="mt-1.5 truncate text-[14px] font-medium text-cream" title={value}>
+          {value}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ExpandedCard is the open environment's full body: a tabbed surface with an
+// overview (state, health, metrics, links), the deploys history (walkthrough +
+// runs + releases), container logs, secrets, custom domains, monitoring, and
+// settings (metadata + the danger zone). Everything is scoped to the selected
+// environment's deployment.
 function ExpandedCard({
   deployment: d,
   server,
@@ -664,177 +890,59 @@ function ExpandedCard({
   const [owner, repo] = splitRepo(d.repo);
   const live = d.liveUrl ? d.liveUrl.replace(/^https?:\/\//, "") : "";
   const dashboards = installedDashboards(server?.options);
-  const router = useRouter();
-  // New-environment form state: the branch the operator wants to deploy as a
-  // sibling environment. Submitting sends them to the configure page prefilled
-  // with this repo + server + the new branch, where they fill in the
-  // environment's name and variables and click deploy, exactly like the first
-  // environment was created.
-  const [newBranch, setNewBranch] = useState("");
-  // Branches fetched from GitHub for this repo, so the picker is a real
-  // dropdown of the operator's branches instead of a free-text field. null
-  // means "not loaded yet"; [] means "loaded but no branches came back" (in
-  // which case the form falls back to a text input).
-  const [branches, setBranches] = useState<string[] | null>(null);
 
-  // Fetch branches once the environments tab is first opened. setState only
-  // runs once the fetch resolves (never synchronously in the effect body),
-  // matching the codebase's react-hooks/set-state-in-effect rule.
-
-  // Custom domains are scoped to this environment: only the domains pointing
-  // at this deployment's port show on the card, and the add form pre-fills
-  // that port so adding one is a single field. Pre-computed so the tab bar
-  // can show the count and the panel can render without re-deriving it.
-  // Domains are server-level; a deployment claims one only when the domain's
-  // nginx upstream points at the deployment's published port. With no port there
-  // is nothing to match, so this deployment claims no domains — showing every
-  // server domain here would falsely attribute another app's domain to it
-  // (common now that one server hosts several environments).
+  // Custom domains are scoped to this environment by its published port: only
+  // domains whose nginx upstream is this deployment's port are shown, so one
+  // server hosting several environments never cross-lists another's domain.
   const envPort = d.port > 0 ? String(d.port) : undefined;
-  const envDomains = envPort
-    ? (server?.domains ?? []).filter((dm) => dm.upstream === envPort)
-    : [];
+  const envDomains = envPort ? (server?.domains ?? []).filter((dm) => dm.upstream === envPort) : [];
 
-  // Tab definitions for the segmented control at the top of the card. Each
-  // tab is one panel; only the active one renders below, which keeps the
-  // card short and scannable. Optional tabs (dashboards, domains, timeline)
-  // appear only when they have something to show, matching the previous
-  // collapsible-section visibility rules.
-  type TabKey =
-    | "environments"
-    | "secrets"
-    | "walkthrough"
-    | "runs"
-    | "logs"
-    | "dashboards"
-    | "domains"
-    | "timeline";
+  type TabKey = "overview" | "deploys" | "logs" | "secrets" | "domains" | "monitoring" | "settings";
 
-  // Per-environment secrets, fetched lazily once the tab is opened (with values,
-  // so the panel can reveal them). Kept here so the tab label can show the count
-  // and a mutation in the panel can refetch through reloadSecrets.
+  // Per-environment secret names, fetched lazily when the secrets tab opens.
+  // GitHub Actions secret values are write-only, so only names + updated times
+  // come back. Kept here so the tab label can show the count and a mutation in
+  // the panel can refetch via reloadSecrets.
   const [secrets, setSecrets] = useState<DeploymentSecrets | null>(null);
   const reloadSecrets = useCallback(() => {
-    fetchDeploymentSecrets(owner, repo, d.environment, true).then(setSecrets);
+    fetchDeploymentSecrets(owner, repo, d.environment).then(setSecrets);
   }, [owner, repo, d.environment]);
 
   const timelineCount = d.timeline?.length ?? 0;
   const tabs: { key: TabKey; label: string }[] = [
-    { key: "environments", label: "environments" },
+    { key: "overview", label: "overview" },
+    { key: "deploys", label: `deploys${d.deploys ? ` (${d.deploys})` : ""}` },
+    { key: "logs", label: "logs" },
     ...(server && d.environment
       ? [{ key: "secrets" as const, label: `secrets${secrets ? ` (${secrets.secrets.length})` : ""}` }]
       : []),
-    { key: "walkthrough", label: "deploy walkthrough" },
-    { key: "runs", label: `recent runs (${d.runs.length})` },
-    { key: "logs", label: "container logs" },
+    ...(server ? [{ key: "domains" as const, label: `domains (${envDomains.length})` }] : []),
     ...(server && dashboards.length > 0
-      ? [{ key: "dashboards" as const, label: `monitoring (${dashboards.length})` }]
+      ? [{ key: "monitoring" as const, label: `monitoring (${dashboards.length})` }]
       : []),
-    ...(server
-      ? [{ key: "domains" as const, label: `custom domains (${envDomains.length})` }]
-      : []),
-    ...(timelineCount > 0
-      ? [{ key: "timeline" as const, label: `releases (${d.deploys ?? 0})` }]
-      : []),
+    { key: "settings", label: "settings" },
   ];
 
-  // Default to "environments" so the operator lands on the per-environment
-  // controls (current branch + add another) which is the highest-value view
-  // when opening the card. Other tabs are one click away.
-  const [tab, setTab] = useState<TabKey>("environments");
+  // Default to "overview" — the environment's current-state home (URL, branch,
+  // server, health, last deploy, metrics, domains). Diagnostics and dangerous
+  // actions live one click away in the other tabs.
+  const [tab, setTab] = useState<TabKey>("overview");
 
-  // Pull GitHub branches lazily, once the environments tab is in view, so the
-  // picker shows real branches the operator can pick from. setState is only
-  // called inside the resolved callback, never synchronously in the effect.
-  useEffect(() => {
-    if (tab !== "environments" || branches !== null) return;
-    const ctrl = new AbortController();
-    getRepoBranches(owner, repo, ctrl.signal).then((list) => {
-      if (!ctrl.signal.aborted) setBranches(list);
-    });
-    return () => ctrl.abort();
-  }, [tab, branches, owner, repo]);
-
-  // Pull the environment's secrets lazily, once the secrets tab is opened, with
-  // values so the panel can reveal them. setState only fires from the resolved
-  // callback, matching the branches fetch above.
+  // Pull the environment's secret names lazily, once the secrets tab is opened.
+  // setState only fires from the resolved callback, never synchronously.
   useEffect(() => {
     if (tab !== "secrets" || secrets !== null) return;
     const ctrl = new AbortController();
-    fetchDeploymentSecrets(owner, repo, d.environment, true, ctrl.signal).then((data) => {
+    fetchDeploymentSecrets(owner, repo, d.environment, ctrl.signal).then((data) => {
       if (!ctrl.signal.aborted && data) setSecrets(data);
     });
     return () => ctrl.abort();
   }, [tab, secrets, owner, repo, d.environment]);
 
-  // Branches the operator can pick from: everything except the current one
-  // (re-deploying the same branch creates a duplicate environment, not a new
-  // one). When no branches loaded yet we fall back to a text input.
-  const otherBranches = (branches ?? []).filter((b) => b !== d.branch);
-
   return (
     <div className="border-t border-line px-6 py-8 sm:px-8">
-      {/* deploy status + live link: the always-visible header of the open card */}
-      <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-4">
-          <DeployStatusBadge status={latest?.status} />
-          <div>
-            <p className="text-[17px] font-medium text-cream">
-              {latest
-                ? latest.status === "success"
-                  ? "latest deployment succeeded"
-                  : latest.status === "failed"
-                    ? "latest deployment failed"
-                    : "deployment is running"
-                : "no deployment runs yet"}
-            </p>
-            <p className="mt-1 text-[14px] text-muted">
-              {latest ? `${latest.message} · ${latest.when}` : "trigger a deploy to see status here"}
-            </p>
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2.5">
-          {d.liveUrl && (
-            <a
-              href={d.liveUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="cta-glow flex items-center gap-2 rounded-lg bg-lime-fill px-4 py-2.5 text-[14px] font-bold text-black transition-transform hover:-translate-y-0.5"
-            >
-              open {live} <ArrowRight />
-            </a>
-          )}
-          {d.workflowUrl && (
-            <a
-              href={d.workflowUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-2 rounded-lg border border-line px-4 py-2.5 text-[13.5px] text-muted transition-colors hover:border-line-strong hover:text-cream"
-            >
-              <GithubMark /> actions workflow <ExternalLink />
-            </a>
-          )}
-        </div>
-      </div>
-
-      {/* app health: a prominent up/down read, probed from the server over SSH.
-          The embedded Uptime Kuma dashboard below is the detailed view. */}
-      <HealthBanner health={health} />
-
-      <div className="mt-8 space-y-5">
-        {/* host metrics: small enough to stay above the tab bar so cpu/memory
-            /disk/uptime are visible no matter which tab is active. */}
-        <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-4">
-          <BigMetric label="cpu" value={m ? fmtLoad(m) : "reading…"} />
-          <BigMetric label="memory" value={m ? fmtMem(m) : "reading…"} />
-          <BigMetric label="disk" value={m ? fmtDisk(m) : "reading…"} />
-          <BigMetric label="uptime" value={m ? fmtUptime(m) : "reading…"} />
-        </div>
-
-        {/* tab bar: same segmented-control pattern as the home page's
-            VISIBILITY/CONTAINER filter chips. An uppercase label anchors the
-            row, the chips wrap when there isn't room, and only the active
-            panel renders below so the card stays short. */}
+      <div className="space-y-5">
+        {/* tab bar: only the active panel renders below, keeping the card short. */}
         <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
           <span className="text-[12px] font-medium uppercase tracking-wide text-muted">section</span>
           <span
@@ -851,9 +959,7 @@ function ExpandedCard({
                   aria-selected={active}
                   onClick={() => setTab(t.key)}
                   className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-colors ${
-                    active
-                      ? "bg-lime/15 text-lime"
-                      : "text-muted hover:bg-surface-2 hover:text-cream"
+                    active ? "bg-lime/15 text-lime" : "text-muted hover:bg-surface-2 hover:text-cream"
                   }`}
                 >
                   {t.label}
@@ -863,82 +969,115 @@ function ExpandedCard({
           </span>
         </div>
 
-        {/* environments: this deployment is one (branch, environment) pair; the
-            operator can create another one for the same repo from here without
-            going back to the home picker. */}
-        {tab === "environments" && (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between rounded-xl border border-line bg-surface px-4 py-3 text-[13.5px]">
-              <span className="flex items-center gap-3">
-                <span className="h-1.5 w-1.5 rounded-full bg-lime" />
-                <span className="text-cream">{d.environment || d.branch}</span>
-                <span className="text-muted">on branch {d.branch}</span>
-              </span>
-              <span className="text-[12px] text-muted">current</span>
+        {/* overview: the environment's current state — status, health, metrics,
+            links, and identity. Kept compact; deeper detail lives in other tabs. */}
+        {tab === "overview" && (
+          <div className="space-y-5">
+            <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-4">
+                <DeployStatusBadge status={latest?.status} />
+                <div>
+                  <p className="text-[17px] font-medium text-cream">
+                    {latest
+                      ? latest.status === "success"
+                        ? "latest deployment succeeded"
+                        : latest.status === "failed"
+                          ? "latest deployment failed"
+                          : "deployment is running"
+                      : "no deployment runs yet"}
+                  </p>
+                  <p className="mt-1 text-[14px] text-muted">
+                    {latest ? `${latest.message} · ${latest.when}` : "trigger a deploy to see status here"}
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2.5">
+                {d.liveUrl && (
+                  <a
+                    href={d.liveUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="cta-glow flex items-center gap-2 rounded-lg bg-lime-fill px-4 py-2.5 text-[14px] font-bold text-black transition-transform hover:-translate-y-0.5"
+                  >
+                    open {live} <ArrowRight />
+                  </a>
+                )}
+                {d.workflowUrl && (
+                  <a
+                    href={d.workflowUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 rounded-lg border border-line px-4 py-2.5 text-[13.5px] text-muted transition-colors hover:border-line-strong hover:text-cream"
+                  >
+                    <GithubMark /> actions workflow <ExternalLink />
+                  </a>
+                )}
+              </div>
             </div>
 
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                const b = newBranch.trim();
-                if (!b) return;
-                router.push(
-                  `/configure?repo=${encodeURIComponent(d.repo)}&branch=${encodeURIComponent(b)}&server=${encodeURIComponent(d.serverId)}`,
-                );
-              }}
-              className="rounded-xl border border-dashed border-line bg-surface/40 p-4"
-            >
-              <p className="text-[12px] uppercase tracking-wide text-muted">add another environment</p>
-              <p className="mt-1 text-[13px] leading-6 text-body">
-                pick a branch from this repo. on the next page you name the environment, add its
-                variables, and set up its custom domain, then click deploy to ship it.
-              </p>
-              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-                {otherBranches.length > 0 ? (
-                  <select
-                    value={newBranch}
-                    onChange={(e) => setNewBranch(e.target.value)}
-                    className="min-w-0 flex-1 rounded-md border border-line bg-bg px-3 py-2 font-mono text-[13px] text-cream focus:border-line-strong focus:outline-none"
-                  >
-                    <option value="" className="text-faint">
-                      pick a branch from github,
-                    </option>
-                    {otherBranches.map((b) => (
-                      <option key={b} value={b}>
-                        {b}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    value={newBranch}
-                    onChange={(e) => setNewBranch(e.target.value)}
-                    placeholder={
-                      branches === null
-                        ? "reading branches from github,"
-                        : "branch name, for example main or develop"
-                    }
-                    spellCheck={false}
-                    autoCapitalize="off"
-                    autoCorrect="off"
-                    className="min-w-0 flex-1 rounded-md border border-line bg-bg px-3 py-2 font-mono text-[13px] text-cream placeholder:text-faint focus:border-line-strong focus:outline-none"
-                  />
-                )}
-                <button
-                  type="submit"
-                  disabled={newBranch.trim() === ""}
-                  className="shrink-0 rounded-md border border-lime/50 bg-lime/[0.08] px-4 py-2 text-[13px] font-medium text-lime transition-colors hover:bg-lime/[0.16] disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  configure environment and domains
-                </button>
-              </div>
-            </form>
+            <HealthBanner health={health} />
+
+            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-4">
+              <BigMetric label="cpu" value={m ? fmtLoad(m) : "reading…"} />
+              <BigMetric label="memory" value={m ? fmtMem(m) : "reading…"} />
+              <BigMetric label="disk" value={m ? fmtDisk(m) : "reading…"} />
+              <BigMetric label="uptime" value={m ? fmtUptime(m) : "reading…"} />
+            </div>
+
+            <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-4">
+              <InfoTile label="branch" value={d.branch} />
+              <InfoTile label="server" value={server?.name ?? d.serverId} />
+              <InfoTile label="last deploy" value={d.lastDeploy} />
+              <InfoTile
+                label="custom domains"
+                value={envDomains.length ? envDomains.map((dm) => dm.host).join(", ") : "none"}
+              />
+            </dl>
           </div>
         )}
 
-        {/* per-environment secrets: what Actions has configured (GitHub is
-            authoritative for the names), with mountabo's revealable values for
-            the ones it set, plus drift, .env.example gaps, and a sibling compare. */}
+        {/* deploys: the live walkthrough, recent runs, and release history. */}
+        {tab === "deploys" && (
+          <div className="space-y-6">
+            <RunWalkthrough
+              owner={owner}
+              repo={repo}
+              branch={d.branch}
+              environment={d.environment}
+              latestStatus={latest?.status}
+            />
+            <div>
+              <p className="mb-2 text-[12px] font-medium uppercase tracking-wide text-muted">recent runs</p>
+              {d.runs.length === 0 ? (
+                <p className="text-[14px] text-muted">no runs recorded yet.</p>
+              ) : (
+                <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
+                  {d.runs.map((r, i) => (
+                    <RunRow key={`${r.runUrl || r.sha}:${i}`} run={r} />
+                  ))}
+                </ul>
+              )}
+            </div>
+            {timelineCount > 0 && (
+              <div>
+                <p className="mb-2 text-[12px] font-medium uppercase tracking-wide text-muted">
+                  releases ({d.deploys ?? 0})
+                </p>
+                <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
+                  {(d.timeline ?? []).map((rel, i) => (
+                    <ReleaseRow key={i} release={rel} />
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* container logs (server-scoped; follows the selected env's server) */}
+        {tab === "logs" && <LogsViewer serverId={d.serverId} ready={Boolean(server)} active />}
+
+        {/* per-environment GitHub Actions secrets: names + updated times (values
+            are write-only), managed classification, .env.example gaps, compare. */}
         {tab === "secrets" && server && d.environment && (
           <SecretsPanel
             owner={owner}
@@ -950,36 +1089,7 @@ function ExpandedCard({
           />
         )}
 
-        {/* step-by-step deploy walkthrough from GitHub Actions */}
-        {tab === "walkthrough" && (
-          <RunWalkthrough owner={owner} repo={repo} branch={d.branch} environment={d.environment} latestStatus={latest?.status} />
-        )}
-
-        {/* runs list with clickable GitHub links */}
-        {tab === "runs" &&
-          (d.runs.length === 0 ? (
-            <p className="text-[14px] text-muted">no runs recorded yet.</p>
-          ) : (
-            <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
-              {d.runs.map((r, i) => (
-                <RunRow key={`${r.runUrl || r.sha}:${i}`} run={r} />
-              ))}
-            </ul>
-          ))}
-
-        {/* logs viewer */}
-        {tab === "logs" && (
-          <LogsViewer serverId={d.serverId} ready={Boolean(server)} active />
-        )}
-
-        {/* monitoring dashboards reached through the ssh tunnel */}
-        {tab === "dashboards" && server && dashboards.length > 0 && (
-          <DashboardsPanel serverId={server.id} dashboards={dashboards} active />
-        )}
-
-        {/* custom domains, scoped to this environment: only domains pointing at
-            this deployment's port are listed and the add form defaults to it,
-            so each environment manages its own domains from its own card. */}
+        {/* custom domains, scoped to this environment by its published port */}
         {tab === "domains" && server && (
           <div className="overflow-hidden rounded-xl border border-line bg-surface">
             <ServerDomains
@@ -994,64 +1104,75 @@ function ExpandedCard({
           </div>
         )}
 
-        {/* release history */}
-        {tab === "timeline" && timelineCount > 0 && (
-          <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
-            {(d.timeline ?? []).map((rel, i) => (
-              <ReleaseRow key={i} release={rel} />
-            ))}
-          </ul>
+        {/* monitoring dashboards reached through the ssh tunnel */}
+        {tab === "monitoring" && server && dashboards.length > 0 && (
+          <DashboardsPanel serverId={server.id} dashboards={dashboards} active />
         )}
 
-        {/* stuck-lock recovery: only shown while the deploy lock is held. Clears
-            the in-process lock so a new deploy can start if a previous one wedged. */}
-        {d.locked && (
-          <div className="mt-2 rounded-xl border border-line bg-surface/40 p-5">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-[15px] font-medium text-cream">a deploy is in progress</p>
-                <p className="mt-1 max-w-xl text-[13px] leading-6 text-muted">
-                  {d.app} is locked{d.lockedSince ? ` (since ${d.lockedSince})` : ""} while a deploy runs.
-                  if a deploy wedged and left it stuck, clear the lock to allow a new deploy.
-                </p>
+        {/* settings: read-only metadata + the danger zone (lock recovery, delete) */}
+        {tab === "settings" && (
+          <div className="space-y-5">
+            <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-3">
+              <InfoTile label="environment" value={d.environment} />
+              <InfoTile label="branch" value={d.branch} />
+              <InfoTile label="server" value={server?.name ?? d.serverId} />
+              <InfoTile label="published port" value={d.port > 0 ? String(d.port) : "none"} />
+              <InfoTile label="live url" value={live || "none"} href={d.liveUrl || undefined} />
+              <InfoTile
+                label="workflow"
+                value={d.workflowUrl ? "actions workflow" : "none"}
+                href={d.workflowUrl || undefined}
+              />
+            </dl>
+
+            {/* stuck-lock recovery: only while the deploy lock is held. */}
+            {d.locked && (
+              <div className="rounded-xl border border-line bg-surface/40 p-5">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-[15px] font-medium text-cream">a deploy is in progress</p>
+                    <p className="mt-1 max-w-xl text-[13px] leading-6 text-muted">
+                      {d.app} is locked{d.lockedSince ? ` (since ${d.lockedSince})` : ""} while a deploy runs.
+                      if a deploy wedged and left it stuck, clear the lock to allow a new deploy.
+                    </p>
+                  </div>
+                  <button
+                    onClick={onClearLock}
+                    className="flex shrink-0 items-center gap-2 rounded-md border border-line px-4 py-2 text-[13px] font-medium text-body transition-colors hover:bg-surface"
+                  >
+                    clear stuck lock
+                  </button>
+                </div>
               </div>
-              <button
-                onClick={onClearLock}
-                className="flex shrink-0 items-center gap-2 rounded-md border border-line px-4 py-2 text-[13px] font-medium text-body transition-colors hover:bg-surface"
-              >
-                clear stuck lock
-              </button>
+            )}
+
+            {/* danger zone: deleting tears the deployment down. */}
+            <div className="rounded-xl border border-red-400/30 bg-red-400/[0.03] p-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-[15px] font-medium text-cream">delete this deployment</p>
+                  <p className="mt-1 max-w-xl text-[13px] leading-6 text-muted">
+                    stops and removes the running container, disables the deploy workflow on the repo, and
+                    forgets the record. this cannot be undone.
+                  </p>
+                </div>
+                <button
+                  onClick={onDelete}
+                  className="flex shrink-0 items-center gap-2 rounded-md border border-red-400/50 px-4 py-2 text-[13px] font-medium text-red-300 transition-colors hover:bg-red-400/10"
+                >
+                  <Trash /> delete deployment
+                </button>
+              </div>
             </div>
           </div>
         )}
-
-        {/* danger zone: deleting tears the deployment down, so it gets its own
-            bordered section at the bottom of the card rather than a small icon. */}
-        <div className="mt-2 rounded-xl border border-red-400/30 bg-red-400/[0.03] p-5">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-[15px] font-medium text-cream">delete this deployment</p>
-              <p className="mt-1 max-w-xl text-[13px] leading-6 text-muted">
-                stops and removes the running container, disables the deploy workflow on the repo,
-                and forgets the record. this cannot be undone.
-              </p>
-            </div>
-            <button
-              onClick={onDelete}
-              className="flex shrink-0 items-center gap-2 rounded-md border border-red-400/50 px-4 py-2 text-[13px] font-medium text-red-300 transition-colors hover:bg-red-400/10"
-            >
-              <Trash /> delete deployment
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );
 }
 
 // secretUpdatedLabel renders a secret's GitHub updated-at as a short relative
-// time ("3d ago"), or "" when there is no server timestamp (a value known only
-// locally, e.g. one removed on GitHub).
+// time ("3d ago"), or "" when there is no timestamp.
 function secretUpdatedLabel(iso: string): string {
   if (!iso) return "";
   const then = new Date(iso).getTime();
@@ -1063,22 +1184,15 @@ function secretUpdatedLabel(iso: string): string {
   return "just now";
 }
 
-// The drift badge for a secret's status: how its GitHub state diverged from
-// mountabo's local record.
-const secretStatusBadge: Record<string, { tone: "blue" | "gray" | "red"; label: string }> = {
-  stale: { tone: "blue", label: "changed on github" },
-  setOutsideMountabo: { tone: "gray", label: "set outside mountabo" },
-  removedOnGitHub: { tone: "red", label: "removed on github" },
-};
-
 const secretInputCls =
   "min-w-0 flex-1 rounded-md border border-line bg-bg px-3 py-2 font-mono text-[13px] text-cream placeholder:text-faint focus:border-line-strong focus:outline-none";
 
-// SecretsPanel is the per-environment secrets tab. GitHub is authoritative for
-// which names are configured; mountabo reveals the values it set, flags drift
-// (changed on GitHub / set outside mountabo / removed on GitHub), surfaces
-// .env.example variables not yet configured, and compares against the repo's
-// other environments (names only). Managed connection secrets are read-only.
+// SecretsPanel is the per-environment secrets tab, laid out as a configuration
+// table. GitHub Actions env secrets are the single store: mountabo shows which
+// names are configured (with GitHub's updated time), lets you set values
+// (write-only) and delete secrets, but can never read a value back — so there is
+// no reveal or copy. Operator variables come first; system-managed connection
+// secrets sit under a disclosure.
 function SecretsPanel({
   owner,
   repo,
@@ -1094,31 +1208,29 @@ function SecretsPanel({
   reload: () => void;
   siblings: Deployment[];
 }) {
-  const [revealed, setRevealed] = useState<Set<string>>(new Set());
-  const [editing, setEditing] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState("");
-  const [newName, setNewName] = useState("");
-  const [newValue, setNewValue] = useState("");
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<{ tone: "warn" | "error"; text: string } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  // The add/edit dialog: null when closed. `name` seeds the field (fixed on edit,
+  // editable on add).
+  const [dialog, setDialog] = useState<{ mode: "add" | "edit"; name: string } | null>(null);
 
-  // Sibling environments' configured secret names (never values) for the compare
-  // row. Keyed on a serialized identity string so it refetches only when the set
-  // of siblings actually changes, not on every parent re-render.
+  // Sibling environments' configured secret names for the compare row. Keyed on a
+  // serialized identity string so it refetches only when the set of siblings
+  // actually changes, not on every parent re-render.
   const [siblingNames, setSiblingNames] = useState<Record<string, string[]>>({});
-  const compareKey = siblings.map((s) => `${s.repo} ${s.environment}`).join("|");
+  const compareKey = JSON.stringify(siblings.map((s) => [s.repo, s.environment]));
   useEffect(() => {
-    if (!compareKey) return;
+    const pairs = JSON.parse(compareKey) as [string, string][];
+    if (pairs.length === 0) return;
     let live = true;
-    const targets = compareKey.split("|").map((entry) => {
-      const [full, env] = entry.split(" ");
+    const targets = pairs.map(([full, env]) => {
       const [o, r] = splitRepo(full);
       return { owner: o, repo: r, environment: env };
     });
     Promise.all(
       targets.map((t) =>
-        fetchDeploymentSecrets(t.owner, t.repo, t.environment, false).then((d) => ({
+        fetchDeploymentSecrets(t.owner, t.repo, t.environment).then((d) => ({
           env: t.environment,
           names: d?.secrets.map((x) => x.name) ?? [],
         })),
@@ -1134,24 +1246,19 @@ function SecretsPanel({
     };
   }, [compareKey]);
 
-  // write sets or updates one secret, surfacing a partial sync (set on GitHub but
-  // not stored locally) as a warning rather than a plain success. Returns whether
-  // the value was fully synced, so callers only clear their form on real success.
+  // write sets or overwrites one secret's value on GitHub (write-only). Returns
+  // whether it succeeded, so the dialog only closes on success.
   async function write(name: string, value: string): Promise<boolean> {
     if (!name.trim() || !value) return false;
     setBusy(true);
     setNotice(null);
-    const res = await setDeploymentSecrets(owner, repo, environment, [{ key: name.trim(), value }]);
+    const ok = await setDeploymentSecrets(owner, repo, environment, [{ key: name.trim(), value }]);
     setBusy(false);
-    if (!res) {
-      setNotice({ tone: "error", text: "couldn't set that secret — check you're connected and the name isn't managed." });
+    if (!ok) {
+      setNotice("couldn't set that secret — check you're connected and the name is valid and not managed.");
       return false;
     }
     reload();
-    if (res.partial) {
-      setNotice({ tone: "warn", text: res.message || "set on github, but not saved locally — it won't be revealable here." });
-      return false;
-    }
     return true;
   }
 
@@ -1162,25 +1269,18 @@ function SecretsPanel({
     setBusy(false);
     setConfirmRemove(null);
     if (!ok) {
-      setNotice({ tone: "error", text: `couldn't remove ${name}.` });
+      setNotice(`couldn't remove ${name}.`);
       return;
     }
     reload();
   }
 
-  function toggleReveal(name: string) {
-    setRevealed((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
-  }
-
   if (data === null) {
-    return <p className="text-[14px] text-muted">reading secrets from github…</p>;
+    return <p className="text-[14px] text-muted">reading secrets from github...</p>;
   }
 
+  const operator = data.secrets.filter((s) => !s.managed);
+  const managed = data.secrets.filter((s) => s.managed);
   const configured = new Set(data.secrets.map((s) => s.name));
   // Names a sibling environment has that this one doesn't, grouped by env.
   const compare = Object.entries(siblingNames)
@@ -1190,89 +1290,58 @@ function SecretsPanel({
   return (
     <div className="space-y-5">
       {notice && (
-        <div
-          className={`rounded-lg border px-4 py-3 text-[13px] ${
-            notice.tone === "warn"
-              ? "border-blue/30 bg-blue/[0.06] text-blue"
-              : "border-red-400/40 bg-red-400/[0.06] text-red-300"
-          }`}
+        <div className="rounded-lg border border-red-400/40 bg-red-400/[0.06] px-4 py-3 text-[13px] text-red-300">
+          {notice}
+        </div>
+      )}
+
+      {/* header: title + write-only framing + the add action. */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h3 className="text-[15px] font-semibold text-cream">environment variables</h3>
+          <p className="mt-1 max-w-xl text-[13px] leading-6 text-muted">
+            github actions is the source of truth. values are write-only — set or overwrite them here; they
+            can&apos;t be read back or revealed.
+          </p>
+        </div>
+        <button
+          onClick={() => setDialog({ mode: "add", name: "" })}
+          className="shrink-0 self-start rounded-md border border-lime/50 bg-lime/[0.08] px-4 py-2 text-[13px] font-medium text-lime transition-colors hover:bg-lime/[0.16]"
         >
-          {notice.text}
-        </div>
-      )}
+          + add variable
+        </button>
+      </div>
 
-      {/* configured secrets: managed ones read-only, operator ones revealable/editable */}
-      {data.secrets.length === 0 ? (
-        <p className="text-[14px] text-muted">no secrets configured on this environment yet.</p>
-      ) : (
-        <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
-          {data.secrets.map((s) => (
-            <SecretRow
-              key={s.name}
-              secret={s}
-              revealed={revealed.has(s.name)}
-              editing={editing === s.name}
-              editValue={editValue}
-              busy={busy}
-              onToggleReveal={() => toggleReveal(s.name)}
-              onStartEdit={() => {
-                setEditing(s.name);
-                setEditValue("");
-              }}
-              onEditValue={setEditValue}
-              onCancelEdit={() => setEditing(null)}
-              onSaveEdit={async () => {
-                if (await write(s.name, editValue)) setEditing(null);
-              }}
-              onRemove={() => setConfirmRemove(s.name)}
-            />
-          ))}
-        </ul>
-      )}
-
-      {/* add a new operator secret (written to GitHub + the local encrypted store) */}
-      <form
-        onSubmit={async (e) => {
-          e.preventDefault();
-          if (await write(newName, newValue)) {
-            setNewName("");
-            setNewValue("");
-          }
-        }}
-        className="rounded-xl border border-dashed border-line bg-surface/40 p-4"
-      >
-        <p className="text-[12px] uppercase tracking-wide text-muted">add a secret</p>
-        <p className="mt-1 text-[13px] leading-6 text-body">
-          sets it on the github environment and stores the value here so you can reveal and reuse it.
+      {/* operator variables: the application's own env vars, first and foremost. */}
+      {operator.length === 0 ? (
+        <p className="rounded-xl border border-dashed border-line px-4 py-8 text-center text-[13px] text-muted">
+          no application variables yet. add one, or pick a missing .env.example key below.
         </p>
-        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-          <input
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="NAME"
-            spellCheck={false}
-            autoCapitalize="off"
-            autoCorrect="off"
-            className={secretInputCls}
-          />
-          <input
-            value={newValue}
-            onChange={(e) => setNewValue(e.target.value)}
-            placeholder="value"
-            type="password"
-            autoComplete="new-password"
-            spellCheck={false}
-            className={secretInputCls}
-          />
-          <button
-            type="submit"
-            disabled={busy || newName.trim() === "" || newValue === ""}
-            className="shrink-0 rounded-md border border-lime/50 bg-lime/[0.08] px-4 py-2 text-[13px] font-medium text-lime transition-colors hover:bg-lime/[0.16] disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            add secret
-          </button>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-line">
+          <table className="w-full min-w-[560px] border-collapse text-left text-[13px]">
+            <thead>
+              <tr className="border-b border-line text-[11px] uppercase tracking-wide text-muted">
+                <th className="px-4 py-2.5 font-medium">name</th>
+                <th className="px-4 py-2.5 font-medium">value</th>
+                <th className="px-4 py-2.5 font-medium">status</th>
+                <th className="hidden px-4 py-2.5 font-medium md:table-cell">updated</th>
+                <th className="px-4 py-2.5 text-right font-medium">actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {operator.map((s) => (
+                <SecretTableRow
+                  key={s.name}
+                  secret={s}
+                  onEdit={() => setDialog({ mode: "edit", name: s.name })}
+                  onRemove={() => setConfirmRemove(s.name)}
+                />
+              ))}
+            </tbody>
+          </table>
         </div>
-      </form>
+      )}
 
       {/* .env.example variables not configured on this environment */}
       {data.missing.length > 0 && (
@@ -1282,7 +1351,7 @@ function SecretsPanel({
             {data.missing.map((name) => (
               <button
                 key={name}
-                onClick={() => setNewName(name)}
+                onClick={() => setDialog({ mode: "add", name })}
                 className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 font-mono text-[12px] text-cream transition-colors hover:border-lime/50 hover:text-lime"
               >
                 {name} <span className="text-muted">+ add</span>
@@ -1303,7 +1372,7 @@ function SecretsPanel({
                 {row.missing.map((name) => (
                   <button
                     key={name}
-                    onClick={() => setNewName(name)}
+                    onClick={() => setDialog({ mode: "add", name })}
                     className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 font-mono text-[12px] text-cream transition-colors hover:border-lime/50 hover:text-lime"
                   >
                     {name} <span className="text-muted">+ add</span>
@@ -1315,20 +1384,62 @@ function SecretsPanel({
         </div>
       )}
 
+      {/* system-managed connection secrets: set by mountabo when it configures the
+          deploy (server host/user/ssh key + deploy dir). These are NOT application
+          variables; they are read-only here and, like all secrets, write-only. */}
+      {managed.length > 0 && (
+        <details className="overflow-hidden rounded-xl border border-line">
+          <summary className="cursor-pointer list-none px-4 py-3 text-[13px] text-muted transition-colors hover:text-cream">
+            <span className="font-medium">managed deployment secrets</span> ({managed.length}) — system
+            connection secrets, read-only
+          </summary>
+          <div className="overflow-x-auto border-t border-line">
+            <table className="w-full min-w-[480px] border-collapse text-left text-[13px]">
+              <tbody className="divide-y divide-line">
+                {managed.map((s) => {
+                  const updated = secretUpdatedLabel(s.updatedAt);
+                  return (
+                    <tr key={s.name}>
+                      <td className="px-4 py-3 font-mono text-cream">{s.name}</td>
+                      <td className="px-4 py-3 text-muted">managed by mountabo</td>
+                      <td className="hidden px-4 py-3 text-right text-muted md:table-cell">
+                        {updated ? `updated ${updated}` : ""}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
+
+      {dialog && (
+        <SecretDialog
+          mode={dialog.mode}
+          initialName={dialog.name}
+          environment={environment}
+          busy={busy}
+          onSubmit={async (name, value) => {
+            const ok = await write(name, value);
+            if (ok) setDialog(null);
+            return ok;
+          }}
+          onClose={() => setDialog(null)}
+        />
+      )}
+
       {confirmRemove && (
         <ConfirmAction
           title={`remove ${confirmRemove}?`}
           summary={
             <>
               this deletes <span className="text-cream">{confirmRemove}</span> from the github{" "}
-              <span className="text-cream">{environment}</span> environment and clears its stored value.
-              deployments that read it will lose it on their next run.
+              <span className="text-cream">{environment}</span> environment. deployments that read it will
+              lose it on their next run.
             </>
           }
-          steps={[
-            `delete the secret ${confirmRemove} from the ${environment} environment on github`,
-            "clear the locally stored value for it",
-          ]}
+          steps={[`delete the secret ${confirmRemove} from the ${environment} environment on github`]}
           confirmLabel="remove secret"
           destructive
           onConfirm={() => remove(confirmRemove)}
@@ -1339,110 +1450,188 @@ function SecretsPanel({
   );
 }
 
-// SecretRow renders one configured secret: managed ones are read-only, operator
-// ones can be revealed, edited (set a new value), or removed.
-function SecretRow({
+// SecretTableRow renders one operator secret as a configuration-table row. GitHub
+// secret values are write-only, so the value cell is a fixed write-only marker
+// (never a real or masked value); edit overwrites it, delete removes it.
+function SecretTableRow({
   secret: s,
-  revealed,
-  editing,
-  editValue,
-  busy,
-  onToggleReveal,
-  onStartEdit,
-  onEditValue,
-  onCancelEdit,
-  onSaveEdit,
+  onEdit,
   onRemove,
 }: {
   secret: DeploymentSecret;
-  revealed: boolean;
-  editing: boolean;
-  editValue: string;
-  busy: boolean;
-  onToggleReveal: () => void;
-  onStartEdit: () => void;
-  onEditValue: (v: string) => void;
-  onCancelEdit: () => void;
-  onSaveEdit: () => void;
+  onEdit: () => void;
   onRemove: () => void;
 }) {
   const updated = secretUpdatedLabel(s.updatedAt);
-  const drift = s.status ? secretStatusBadge[s.status] : undefined;
   return (
-    <li className="flex flex-col gap-2 px-4 py-3">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <span className="font-mono text-[13px] text-cream">{s.name}</span>
-        {s.managed && <Badge tone="gray">managed</Badge>}
-        {drift && (
-          <Badge tone={drift.tone} dot>
-            {drift.label}
-          </Badge>
-        )}
-        {updated && <span className="text-[12px] text-muted">updated {updated}</span>}
-      </div>
+    <tr className="align-middle">
+      <td className="px-4 py-3 font-mono text-cream">{s.name}</td>
+      <td className="px-4 py-3">
+        <span className="inline-flex items-center gap-2 font-mono text-[12px] text-muted">
+          <span aria-hidden>............</span>
+          <span className="text-[11px] uppercase tracking-wide text-faint">write-only</span>
+        </span>
+      </td>
+      <td className="px-4 py-3">
+        <Badge tone="gray">configured</Badge>
+      </td>
+      <td className="hidden px-4 py-3 text-muted md:table-cell">{updated}</td>
+      <td className="px-4 py-3">
+        <div className="flex items-center justify-end gap-1.5">
+          <SecretAction label="edit" onClick={onEdit} />
+          <SecretAction label="delete" onClick={onRemove} danger />
+        </div>
+      </td>
+    </tr>
+  );
+}
 
-      {s.managed ? (
-        <p className="text-[12px] text-muted">set by mountabo when it configured this deployment — read-only.</p>
-      ) : editing ? (
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <input
-            value={editValue}
-            onChange={(e) => onEditValue(e.target.value)}
-            placeholder="new value"
-            type="password"
-            autoComplete="new-password"
-            spellCheck={false}
-            className={secretInputCls}
-            autoFocus
-          />
+// SecretAction is one compact text action in a secret row's actions cell.
+function SecretAction({
+  label,
+  onClick,
+  danger = false,
+}: {
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-md border px-2.5 py-1 text-[12px] transition-colors ${
+        danger
+          ? "border-red-400/40 text-red-300 hover:bg-red-400/10"
+          : "border-line text-muted hover:text-cream"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+// SecretDialog is the focused add/edit surface. The value is a password field and
+// is written straight through to GitHub Actions; the name is read-only when
+// editing (rename = delete + add). GitHub values are write-only, so editing means
+// overwriting with a new value, not viewing the current one.
+function SecretDialog({
+  mode,
+  initialName,
+  environment,
+  busy,
+  onSubmit,
+  onClose,
+}: {
+  mode: "add" | "edit";
+  initialName: string;
+  environment: string;
+  busy: boolean;
+  onSubmit: (name: string, value: string) => Promise<boolean>;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(initialName);
+  const [value, setValue] = useState("");
+  const nameInvalid = name.trim() !== "" && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name.trim());
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3 sm:p-6"
+      onClick={onClose}
+    >
+      <form
+        role="dialog"
+        aria-modal="true"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (!name.trim() || !value || nameInvalid) return;
+          await onSubmit(name.trim(), value);
+        }}
+        className="w-full max-w-md overflow-hidden rounded-xl border border-line bg-surface"
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3">
+          <span className="text-[13px] text-cream">
+            {mode === "add" ? "add variable" : `edit ${initialName}`}
+            <span className="text-faint"> · {environment}</span>
+          </span>
           <button
-            onClick={onSaveEdit}
-            disabled={busy || editValue === ""}
-            className="shrink-0 rounded-md border border-lime/50 bg-lime/[0.08] px-4 py-2 text-[13px] font-medium text-lime transition-colors hover:bg-lime/[0.16] disabled:cursor-not-allowed disabled:opacity-40"
+            type="button"
+            onClick={onClose}
+            className="shrink-0 rounded-md border border-line px-2.5 py-1 text-[12px] text-muted transition-colors hover:text-cream"
           >
-            save
+            close
           </button>
+        </div>
+        <div className="space-y-3 p-5">
+          <div>
+            <label className="text-[12px] uppercase tracking-wide text-muted">name</label>
+            {mode === "edit" ? (
+              <p className="mt-1 font-mono text-[13px] text-cream">{initialName}</p>
+            ) : (
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="DATABASE_URL"
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+                autoFocus
+                className={`mt-1 w-full ${secretInputCls}`}
+              />
+            )}
+            {nameInvalid && (
+              <p className="mt-1 text-[12px] text-red-400">
+                names use letters, digits, and underscores, and can&apos;t start with a digit.
+              </p>
+            )}
+          </div>
+          <div>
+            <label className="text-[12px] uppercase tracking-wide text-muted">
+              {mode === "edit" ? "new value" : "value"}
+            </label>
+            <input
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder="value"
+              type="password"
+              autoComplete="new-password"
+              spellCheck={false}
+              autoFocus={mode === "edit"}
+              className={`mt-1 w-full ${secretInputCls}`}
+            />
+          </div>
+          <p className="text-[12px] leading-6 text-muted">
+            {mode === "edit" ? "overwrites" : "sets"} the value on the github{" "}
+            <span className="text-cream">{environment}</span> environment. values are write-only and can&apos;t
+            be read back.
+          </p>
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-line px-5 py-3">
           <button
-            onClick={onCancelEdit}
-            className="shrink-0 rounded-md border border-line px-4 py-2 text-[13px] text-muted transition-colors hover:text-cream"
+            type="button"
+            onClick={onClose}
+            className="rounded-md border border-line px-4 py-2 text-[13px] text-muted transition-colors hover:text-cream"
           >
             cancel
           </button>
-        </div>
-      ) : (
-        <div className="flex flex-wrap items-center gap-3">
-          {s.hasLocalValue ? (
-            <>
-              <code className="min-w-0 flex-1 truncate rounded-md border border-line bg-bg px-3 py-1.5 font-mono text-[13px] text-cream">
-                {revealed ? s.value || "" : "••••••••••••"}
-              </code>
-              <button
-                onClick={onToggleReveal}
-                className="shrink-0 rounded-md border border-line px-3 py-1.5 text-[12px] text-muted transition-colors hover:text-cream"
-              >
-                {revealed ? "hide" : "reveal"}
-              </button>
-            </>
-          ) : (
-            <span className="flex-1 text-[12px] text-muted">
-              no value stored here{s.status === "setOutsideMountabo" ? " — it was set outside mountabo" : ""}.
-            </span>
-          )}
           <button
-            onClick={onStartEdit}
-            className="shrink-0 rounded-md border border-line px-3 py-1.5 text-[12px] text-muted transition-colors hover:text-cream"
+            type="submit"
+            disabled={busy || name.trim() === "" || value === "" || nameInvalid}
+            className="rounded-md border border-lime/50 bg-lime/[0.08] px-4 py-2 text-[13px] font-medium text-lime transition-colors hover:bg-lime/[0.16] disabled:cursor-not-allowed disabled:opacity-40"
           >
-            edit
-          </button>
-          <button
-            onClick={onRemove}
-            className="shrink-0 rounded-md border border-red-400/50 px-3 py-1.5 text-[12px] text-red-300 transition-colors hover:bg-red-400/10"
-          >
-            remove
+            {busy ? "saving..." : "save secret"}
           </button>
         </div>
-      )}
-    </li>
+      </form>
+    </div>
   );
 }
 
@@ -2026,31 +2215,6 @@ function splitRepo(full: string): [string, string] {
   return [full.slice(0, slash), full.slice(slash + 1)];
 }
 
-function Summary({
-  value,
-  label,
-  tone = "cream",
-}: {
-  value: string;
-  label: string;
-  tone?: "cream" | "blue" | "red" | "muted";
-}) {
-  const color =
-    tone === "blue"
-      ? "text-blue"
-      : tone === "red"
-        ? "text-red-400"
-        : tone === "muted"
-          ? "text-muted"
-          : "text-cream";
-  return (
-    <span className="flex items-baseline gap-2.5">
-      <span className={`text-4xl font-bold ${color}`}>{value}</span>
-      <span className="text-[13px] text-muted">{label}</span>
-    </span>
-  );
-}
-
 function RunStrip({ runs }: { runs: DeployRun[] }) {
   return (
     <span className="hidden items-center gap-1 md:flex" title="recent deploys">
@@ -2073,12 +2237,6 @@ function BigMetric({ label, value }: { label: string; value: string }) {
       <p className="mt-1.5 text-[18px] font-semibold text-cream">{value}</p>
     </div>
   );
-}
-
-function LatestRunPill({ status }: { status: RunStatus }) {
-  const tone = status === "success" ? "blue" : status === "failed" ? "red" : "lime";
-  const label = status === "success" ? "deploy ok" : status === "failed" ? "deploy failed" : "deploying";
-  return <Badge tone={tone}>{label}</Badge>;
 }
 
 function DeployStatusBadge({ status }: { status?: RunStatus }) {

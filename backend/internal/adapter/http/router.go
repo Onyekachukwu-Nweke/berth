@@ -27,9 +27,9 @@ import nethttp "net/http"
 //	GET    /api/deployments          deploy history (configured deployments + their Actions runs)
 //	GET    /api/deployments/{owner}/{repo}/{environment}/health  probe whether the deployed app is responding (curl over SSH), reporting up/down + HTTP status
 //	PUT    /api/deployments/{owner}/{repo}/{environment}/port  record the app's published port (so a domain attached later associates with the deployment)
-//	GET    /api/deployments/{owner}/{repo}/{environment}/secrets  list the environment's configured secrets (GitHub names/updatedAt + mountabo's revealable values with ?includeValues=true) and .env.example vars not yet set
-//	PUT    /api/deployments/{owner}/{repo}/{environment}/secrets  set operator secrets on the environment (GitHub + local encrypted store)
-//	DELETE /api/deployments/{owner}/{repo}/{environment}/secrets/{name}  remove one operator secret (GitHub + local value)
+//	GET    /api/deployments/{owner}/{repo}/{environment}/secrets  list the environment's configured GitHub Actions secret names (+ updatedAt, managed flag) and .env.example vars not yet set
+//	PUT    /api/deployments/{owner}/{repo}/{environment}/secrets  set operator secret values on the environment (write-only, straight to GitHub Actions)
+//	DELETE /api/deployments/{owner}/{repo}/{environment}/secrets/{name}  remove one operator secret from GitHub Actions
 //	DELETE /api/deployments/{owner}/{repo}/{environment}/lock  force-release a stuck deploy lock for a deployment (recovery)
 //	DELETE /api/deployments/{owner}/{repo}/{environment}     forget mountabo's tracking of a deployment (its record + deploy history); does not stop the container or remove the workflow
 //	POST   /api/servers/{id}/exec    run one shell command on the server (over SSH), returns output + exit code

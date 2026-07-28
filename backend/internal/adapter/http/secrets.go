@@ -9,10 +9,10 @@ import (
 	"github.com/goodylili/mountabo/internal/usecase"
 )
 
-// SecretsHandler serves a deployment environment's Actions secrets: listing the
-// configured names (from GitHub) with mountabo's revealable values, setting new
-// values, and removing them. Values are a sensitive read surface, so responses
-// are marked no-store and request/response bodies are never logged.
+// SecretsHandler serves a deployment environment's GitHub Actions secrets:
+// listing the configured names (from GitHub), setting values (write-only), and
+// removing them. GitHub secret values can't be read back, so nothing here
+// exposes a value; responses are still marked no-store and bodies never logged.
 type SecretsHandler struct {
 	svc *usecase.SecretsService
 	log *slog.Logger
@@ -24,13 +24,10 @@ func NewSecretsHandler(svc *usecase.SecretsService, log *slog.Logger) *SecretsHa
 }
 
 // List returns the environment's configured secrets (names, managed flag,
-// updated-at, status) and the .env.example variables not yet set. Values are
-// included only with ?includeValues=true (the compare view omits it). 401 when
-// not connected.
+// updated-at) and the .env.example variables not yet set. 401 when not connected.
 func (h *SecretsHandler) List(w nethttp.ResponseWriter, r *nethttp.Request) {
 	owner, repo, environment := r.PathValue("owner"), r.PathValue("repo"), r.PathValue("environment")
-	includeValues := r.URL.Query().Get("includeValues") == "true"
-	view, err := h.svc.List(r.Context(), owner, repo, environment, includeValues)
+	view, err := h.svc.List(r.Context(), owner, repo, environment)
 	if errors.Is(err, usecase.ErrNotConnected) {
 		h.writeError(w, nethttp.StatusUnauthorized, "github not connected")
 		return
@@ -48,10 +45,9 @@ func (h *SecretsHandler) List(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 }
 
-// Set writes operator secrets to the environment (and records their values
-// locally). A managed name is 400; a partial sync (set on GitHub but not stored
-// locally) is a 200 whose body flags `partial:true` so the UI warns rather than
-// reporting plain success. The request body (secret values) is never logged.
+// Set writes operator secrets to the GitHub environment (write-only). A managed
+// or invalid name is 400; success is 204 No Content (there is no value/status to
+// return). The request body (secret values) is never logged.
 func (h *SecretsHandler) Set(w nethttp.ResponseWriter, r *nethttp.Request) {
 	owner, repo, environment := r.PathValue("owner"), r.PathValue("repo"), r.PathValue("environment")
 	var body struct {
@@ -60,7 +56,7 @@ func (h *SecretsHandler) Set(w nethttp.ResponseWriter, r *nethttp.Request) {
 			Value string `json:"value"`
 		} `json:"secrets"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeJSON(w, r, &body); err != nil {
 		h.writeError(w, nethttp.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -73,10 +69,13 @@ func (h *SecretsHandler) Set(w nethttp.ResponseWriter, r *nethttp.Request) {
 		secrets = append(secrets, usecase.NamedSecret{Name: s.Key, Value: s.Value})
 	}
 
-	result, err := h.svc.Set(r.Context(), owner, repo, environment, secrets)
+	err := h.svc.Set(r.Context(), owner, repo, environment, secrets)
 	switch {
 	case errors.Is(err, usecase.ErrManagedSecret):
 		h.writeError(w, nethttp.StatusBadRequest, "that secret is managed by mountabo and can't be edited")
+		return
+	case errors.Is(err, usecase.ErrInvalidSecretName):
+		h.writeError(w, nethttp.StatusBadRequest, "secret names must be letters, digits, or underscores and can't start with a digit")
 		return
 	case errors.Is(err, usecase.ErrNotConnected):
 		h.writeError(w, nethttp.StatusUnauthorized, "github not connected")
@@ -87,18 +86,11 @@ func (h *SecretsHandler) Set(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(nethttp.StatusOK)
-	if err := json.NewEncoder(w).Encode(struct {
-		OK bool `json:"ok"`
-		usecase.SetResult
-	}{OK: !result.Partial, SetResult: result}); err != nil {
-		h.log.Error("encode set-secrets result", "err", err)
-	}
+	w.WriteHeader(nethttp.StatusNoContent)
 }
 
-// Delete removes one operator secret from the environment (GitHub + local value).
-// A managed name is 400.
+// Delete removes one operator secret from the GitHub environment. A managed name
+// is 400.
 func (h *SecretsHandler) Delete(w nethttp.ResponseWriter, r *nethttp.Request) {
 	owner, repo, environment, name := r.PathValue("owner"), r.PathValue("repo"), r.PathValue("environment"), r.PathValue("name")
 	err := h.svc.Delete(r.Context(), owner, repo, environment, name)

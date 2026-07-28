@@ -106,14 +106,6 @@ type EnvSecretSetter interface {
 	SetEnvSecrets(ctx context.Context, t Token, owner, repo, environment string, secrets []NamedSecret) error
 }
 
-// SecretRecorder records already-set operator secret values locally so they stay
-// revealable in the secrets UI, capturing GitHub's updated-at for drift. The
-// deploy calls it after setting the environment's secrets; *SecretsService
-// implements it.
-type SecretRecorder interface {
-	RecordSet(ctx context.Context, t Token, owner, repo, environment string, values map[string]string) error
-}
-
 // RepoDeployKeyManager registers a read-only SSH deploy key on a repo, returning
 // its id, so a server can git clone it (and only it).
 type RepoDeployKeyManager interface {
@@ -139,29 +131,27 @@ type RefResolver interface {
 // mountabo, plus the operator's own env vars). It is also the single source of
 // truth for the generated files, so the UI previews via Preview.
 type DeployService struct {
-	servers        ServerStore
-	vault          SecretVault
-	tokens         TokenStore
-	repo           RepoWriter
-	envs           EnvManager
-	secrets        EnvSecretSetter
-	history        DeploymentStore
-	keys           KeyMaker
-	deployKeys     RepoDeployKeyManager
-	installer      DeployKeyInstaller
-	refs           RefResolver
-	accounts       AccountFetcher
-	secretRecorder SecretRecorder
-	locker         *DeployLocker
+	servers    ServerStore
+	vault      SecretVault
+	tokens     TokenStore
+	repo       RepoWriter
+	envs       EnvManager
+	secrets    EnvSecretSetter
+	history    DeploymentStore
+	keys       KeyMaker
+	deployKeys RepoDeployKeyManager
+	installer  DeployKeyInstaller
+	refs       RefResolver
+	accounts   AccountFetcher
+	locker     *DeployLocker
 }
 
 // NewDeployService wires the service to its ports. refs and accounts enrich the
 // recorded release with the deployed commit and the triggering GitHub login;
-// both are read best-effort and never block a deploy. secretRecorder stores the
-// operator's env-var values locally so they stay revealable. locker serializes
-// deploys per target so two concurrent deploys never race on the same repo files.
-func NewDeployService(servers ServerStore, vault SecretVault, tokens TokenStore, repo RepoWriter, envs EnvManager, secrets EnvSecretSetter, history DeploymentStore, keys KeyMaker, deployKeys RepoDeployKeyManager, installer DeployKeyInstaller, refs RefResolver, accounts AccountFetcher, secretRecorder SecretRecorder, locker *DeployLocker) *DeployService {
-	return &DeployService{servers: servers, vault: vault, tokens: tokens, repo: repo, envs: envs, secrets: secrets, history: history, keys: keys, deployKeys: deployKeys, installer: installer, refs: refs, accounts: accounts, secretRecorder: secretRecorder, locker: locker}
+// both are read best-effort and never block a deploy. locker serializes deploys
+// per target so two concurrent deploys never race on the same repo files.
+func NewDeployService(servers ServerStore, vault SecretVault, tokens TokenStore, repo RepoWriter, envs EnvManager, secrets EnvSecretSetter, history DeploymentStore, keys KeyMaker, deployKeys RepoDeployKeyManager, installer DeployKeyInstaller, refs RefResolver, accounts AccountFetcher, locker *DeployLocker) *DeployService {
+	return &DeployService{servers: servers, vault: vault, tokens: tokens, repo: repo, envs: envs, secrets: secrets, history: history, keys: keys, deployKeys: deployKeys, installer: installer, refs: refs, accounts: accounts, locker: locker}
 }
 
 // Preview generates the deploy artifacts from the config alone, no server, no
@@ -281,16 +271,6 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 	progress(out, "setting %d secrets on environment %s", len(secrets), env)
 	if err := s.secrets.SetEnvSecrets(ctx, token, in.Owner, in.Repo, env, secrets); err != nil {
 		return fmt.Errorf("set environment secrets: %w", err)
-	}
-
-	// Record the operator's own env-var values locally (not the managed SERVER_*/
-	// DEPLOY_DIR ones) so they're viewable/editable later in the secrets tab.
-	// Best-effort: a failure never fails the deploy, but it's surfaced so the
-	// operator knows those values won't be revealable here.
-	if operatorValues := operatorEnvValues(in.EnvVars); len(operatorValues) > 0 {
-		if err := s.secretRecorder.RecordSet(ctx, token, in.Owner, in.Repo, env, operatorValues); err != nil {
-			progress(out, "note: couldn't store env-var values locally; they'll show as set-on-GitHub and won't be revealable here: %v", err)
-		}
 	}
 
 	// Resolve the release's commit and actor for the durable record. Both are
@@ -438,19 +418,6 @@ func secretMetas(in DeployInput) []SecretMeta {
 		}
 	}
 	return metas
-}
-
-// operatorEnvValues is the operator's own env-var values keyed by name (blank
-// keys dropped), for recording locally. The managed SERVER_*/DEPLOY_DIR secrets
-// are excluded — they're never revealable in the secrets UI.
-func operatorEnvValues(vars []DeployEnvVar) map[string]string {
-	out := make(map[string]string, len(vars))
-	for _, v := range vars {
-		if k := strings.TrimSpace(v.Key); k != "" && !isManagedSecret(k) {
-			out[k] = v.Value
-		}
-	}
-	return out
 }
 
 // managedSecretNames are the server-connection secrets mountabo sets itself

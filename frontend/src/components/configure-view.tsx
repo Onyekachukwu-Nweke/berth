@@ -23,17 +23,21 @@ export function ConfigureView({
   server,
   branch,
   account,
+  environment: environmentParam,
 }: {
   source: Source;
   server: Server;
   branch: string;
   account: string | null;
+  // Prefilled environment name when arriving from a repo card's "+ environment"
+  // (environment-first flow); defaults to "production" for a fresh deploy.
+  environment?: string;
 }) {
   const router = useRouter();
   const [app, setApp] = useState(source.name);
   // The first-class environment this deployment targets. Free-text so agencies
   // can name it (client-staging, qa, ...); production/staging are the suggestions.
-  const [environment, setEnvironment] = useState("production");
+  const [environment, setEnvironment] = useState(environmentParam?.trim() || "production");
   const [rootDir, setRootDir] = useState("./");
   const [deployDir, setDeployDir] = useState(`/opt/${source.name}`);
   // Ports are detected from the repo's own compose file / Dockerfile, never

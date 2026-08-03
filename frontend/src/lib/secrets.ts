@@ -19,6 +19,16 @@ export type DeploymentSecrets = {
   missing: string[];
 };
 
+// ApplyResult reports the outcome of a secret change. ok is transport success
+// (the write reached GitHub); redeployed is whether a redeploy was triggered to
+// apply it to the running container; message explains a redeployed:false case
+// (e.g. a legacy deployment that needs a full redeploy from configure).
+export type ApplyResult = {
+  ok: boolean;
+  redeployed: boolean;
+  message?: string;
+};
+
 function deploymentPath(owner: string, repo: string, environment: string): string {
   return `/api/deployments/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(environment)}`;
 }
@@ -51,42 +61,47 @@ export async function fetchDeploymentSecrets(
 }
 
 // setDeploymentSecrets writes operator secrets to the GitHub environment
-// (write-only). Returns true on success (204), false on any failure. Managed and
-// invalid names are rejected by the backend.
+// (write-only) and re-applies the deployment. Returns the apply result: ok=false
+// on any transport failure; on success, redeployed + message from the backend.
+// Managed / invalid / multiline are rejected by the backend (ok=false).
 export async function setDeploymentSecrets(
   owner: string,
   repo: string,
   environment: string,
   secrets: { key: string; value: string }[],
-): Promise<boolean> {
-  if (!owner || !repo || !environment || secrets.length === 0) return false;
+): Promise<ApplyResult> {
+  if (!owner || !repo || !environment || secrets.length === 0) return { ok: false, redeployed: false };
   try {
     const resp = await fetch(`${deploymentPath(owner, repo, environment)}/secrets`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ secrets }),
     });
-    return resp.ok;
+    if (!resp.ok) return { ok: false, redeployed: false };
+    const data = (await resp.json()) as { redeployed?: boolean; message?: string };
+    return { ok: true, redeployed: Boolean(data.redeployed), message: data.message };
   } catch {
-    return false;
+    return { ok: false, redeployed: false };
   }
 }
 
-// deleteDeploymentSecret removes one operator secret from the GitHub environment.
-// Returns true only on a confirmed removal, so the panel refetches on success.
+// deleteDeploymentSecret removes one operator secret from the GitHub environment
+// and re-applies the deployment. Returns the apply result (see setDeploymentSecrets).
 export async function deleteDeploymentSecret(
   owner: string,
   repo: string,
   environment: string,
   name: string,
-): Promise<boolean> {
-  if (!owner || !repo || !environment || !name) return false;
+): Promise<ApplyResult> {
+  if (!owner || !repo || !environment || !name) return { ok: false, redeployed: false };
   try {
     const resp = await fetch(`${deploymentPath(owner, repo, environment)}/secrets/${encodeURIComponent(name)}`, {
       method: "DELETE",
     });
-    return resp.ok;
+    if (!resp.ok) return { ok: false, redeployed: false };
+    const data = (await resp.json()) as { redeployed?: boolean; message?: string };
+    return { ok: true, redeployed: Boolean(data.redeployed), message: data.message };
   } catch {
-    return false;
+    return { ok: false, redeployed: false };
   }
 }

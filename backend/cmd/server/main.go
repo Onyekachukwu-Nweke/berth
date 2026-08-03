@@ -106,16 +106,21 @@ func run() error {
 	// deploys per target; the monitor reads it to surface lock state and clears it
 	// for the "clear stuck lock" recovery action.
 	deployLocker := usecase.NewDeployLocker()
+	// The deploy flow also mints a per-repo read-only deploy key: ssh generates
+	// the keypair and installs the private half on the server; github registers
+	// the public half on the repo. ghClient also dispatches workflow_dispatch so a
+	// secrets change can redeploy. Constructed before the secrets service, which
+	// re-applies deployments through it (as a DeployReapplier) on secret changes.
+	deploySvc := usecase.NewDeployService(serverStore, keyStore, keyStore, ghClient, ghClient, ghClient, deploymentStore, sshClient, ghClient, sshClient, ghClient, ghClient, ghClient, deployLocker)
+	deployHandler := httpadapter.NewDeployHandler(deploySvc, logger)
+
 	// The secrets service manages an environment's GitHub Actions secrets: GitHub
 	// is the single store — mountabo lists the configured names (+ updated times),
 	// sets values (write-only), and deletes secrets, but never reads a value back.
-	secretsSvc := usecase.NewSecretsService(keyStore, deploymentStore, ghClient, ghClient, ghClient, ghClient)
+	// On a change it re-applies the deployment (via deploySvc) so the running
+	// container picks it up.
+	secretsSvc := usecase.NewSecretsService(keyStore, deploymentStore, ghClient, ghClient, ghClient, ghClient, deploySvc)
 	secretsHandler := httpadapter.NewSecretsHandler(secretsSvc, logger)
-	// The deploy flow also mints a per-repo read-only deploy key: ssh generates
-	// the keypair and installs the private half on the server; github registers
-	// the public half on the repo.
-	deploySvc := usecase.NewDeployService(serverStore, keyStore, keyStore, ghClient, ghClient, ghClient, deploymentStore, sshClient, ghClient, sshClient, ghClient, ghClient, deployLocker)
-	deployHandler := httpadapter.NewDeployHandler(deploySvc, logger)
 
 	// Compose the monitor: configured deployments (SQLite store) enriched with
 	// their GitHub Actions runs (github), read with the keychain token, and the

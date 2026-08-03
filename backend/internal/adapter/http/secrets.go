@@ -69,13 +69,16 @@ func (h *SecretsHandler) Set(w nethttp.ResponseWriter, r *nethttp.Request) {
 		secrets = append(secrets, usecase.NamedSecret{Name: s.Key, Value: s.Value})
 	}
 
-	err := h.svc.Set(r.Context(), owner, repo, environment, secrets)
+	result, err := h.svc.Set(r.Context(), owner, repo, environment, secrets)
 	switch {
 	case errors.Is(err, usecase.ErrManagedSecret):
 		h.writeError(w, nethttp.StatusBadRequest, "that secret is managed by mountabo and can't be edited")
 		return
 	case errors.Is(err, usecase.ErrInvalidSecretName):
 		h.writeError(w, nethttp.StatusBadRequest, "secret names must be letters, digits, or underscores and can't start with a digit")
+		return
+	case errors.Is(err, usecase.ErrMultilineValue):
+		h.writeError(w, nethttp.StatusBadRequest, "secret values can't contain line breaks (multiline values aren't supported)")
 		return
 	case errors.Is(err, usecase.ErrNotConnected):
 		h.writeError(w, nethttp.StatusUnauthorized, "github not connected")
@@ -85,15 +88,14 @@ func (h *SecretsHandler) Set(w nethttp.ResponseWriter, r *nethttp.Request) {
 		h.writeError(w, nethttp.StatusBadGateway, "could not set secrets")
 		return
 	}
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(nethttp.StatusNoContent)
+	h.writeResult(w, result)
 }
 
-// Delete removes one operator secret from the GitHub environment. A managed name
-// is 400.
+// Delete removes one operator secret from the GitHub environment and re-applies
+// the deployment. A managed name is 400.
 func (h *SecretsHandler) Delete(w nethttp.ResponseWriter, r *nethttp.Request) {
 	owner, repo, environment, name := r.PathValue("owner"), r.PathValue("repo"), r.PathValue("environment"), r.PathValue("name")
-	err := h.svc.Delete(r.Context(), owner, repo, environment, name)
+	result, err := h.svc.Delete(r.Context(), owner, repo, environment, name)
 	switch {
 	case errors.Is(err, usecase.ErrManagedSecret):
 		h.writeError(w, nethttp.StatusBadRequest, "that secret is managed by mountabo and can't be deleted")
@@ -106,7 +108,18 @@ func (h *SecretsHandler) Delete(w nethttp.ResponseWriter, r *nethttp.Request) {
 		h.writeError(w, nethttp.StatusBadGateway, "could not delete the secret")
 		return
 	}
-	w.WriteHeader(nethttp.StatusNoContent)
+	h.writeResult(w, result)
+}
+
+// writeResult returns the apply result (whether a redeploy was triggered, and a
+// message when it wasn't) as no-store JSON. The body carries no secret values.
+func (h *SecretsHandler) writeResult(w nethttp.ResponseWriter, result usecase.ApplyResult) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(nethttp.StatusOK)
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		h.log.Error("encode apply result", "err", err)
+	}
 }
 
 func (h *SecretsHandler) writeError(w nethttp.ResponseWriter, status int, message string) {

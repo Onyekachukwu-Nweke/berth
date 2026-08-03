@@ -27,6 +27,11 @@ var envNameSafe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 // another deploy to the same target (app) is already in flight.
 var ErrDeployInProgress = errors.New("deploy already in progress for this target")
 
+// ErrLegacyDeployment is returned by ReapplyWorkflow for a deployment recorded
+// before its deploy config was persisted: mountabo can't regenerate its artifacts,
+// so a secrets-tab change can't be auto-applied — a full redeploy is needed.
+var ErrLegacyDeployment = errors.New("deployment predates persisted config; redeploy from configure to apply")
+
 // DeployPort is one published port the operator configured. EnvVar/Value back a
 // compose stack's host port; Value/Container back a `docker run -p` mapping.
 type DeployPort struct {
@@ -40,6 +45,17 @@ type DeployPort struct {
 type DeployEnvVar struct {
 	Key   string
 	Value string
+}
+
+// DeployConfig is the non-secret deploy configuration persisted with a
+// deployment so a re-apply can regenerate the workflow + deploy.sh without the
+// operator re-entering it (env-var values are never here — they live only as
+// GitHub secrets). RootDir/App/Branch/etc. are already columns on the record.
+type DeployConfig struct {
+	Strategy      string       `json:"strategy"`
+	DeployDir     string       `json:"deployDir"`
+	DeployKeyFile string       `json:"deployKeyFile"`
+	Ports         []DeployPort `json:"ports"`
 }
 
 // DeployInput is what the operator supplies to wire continuous deployment of a
@@ -125,6 +141,13 @@ type RefResolver interface {
 	HeadSHA(ctx context.Context, t Token, owner, repo, branch string) (string, error)
 }
 
+// WorkflowDispatcher triggers a workflow run via GitHub's workflow_dispatch event
+// (by workflow file name, on a ref), so a re-apply can redeploy without waiting
+// for a push. Used when a secret changes so the running container picks it up.
+type WorkflowDispatcher interface {
+	Dispatch(ctx context.Context, t Token, owner, repo, workflowFile, ref string) error
+}
+
 // DeployService configures continuous deployment of a repo to a server: it
 // commits the workflow and deploy.sh, creates the deployment environment, and
 // stores the secrets the workflow needs (server connection details, managed by
@@ -143,15 +166,19 @@ type DeployService struct {
 	installer  DeployKeyInstaller
 	refs       RefResolver
 	accounts   AccountFetcher
+	dispatcher WorkflowDispatcher
 	locker     *DeployLocker
 }
 
+var _ DeployReapplier = (*DeployService)(nil)
+
 // NewDeployService wires the service to its ports. refs and accounts enrich the
 // recorded release with the deployed commit and the triggering GitHub login;
-// both are read best-effort and never block a deploy. locker serializes deploys
+// both are read best-effort and never block a deploy. dispatcher redeploys via
+// workflow_dispatch when a secret change is re-applied. locker serializes deploys
 // per target so two concurrent deploys never race on the same repo files.
-func NewDeployService(servers ServerStore, vault SecretVault, tokens TokenStore, repo RepoWriter, envs EnvManager, secrets EnvSecretSetter, history DeploymentStore, keys KeyMaker, deployKeys RepoDeployKeyManager, installer DeployKeyInstaller, refs RefResolver, accounts AccountFetcher, locker *DeployLocker) *DeployService {
-	return &DeployService{servers: servers, vault: vault, tokens: tokens, repo: repo, envs: envs, secrets: secrets, history: history, keys: keys, deployKeys: deployKeys, installer: installer, refs: refs, accounts: accounts, locker: locker}
+func NewDeployService(servers ServerStore, vault SecretVault, tokens TokenStore, repo RepoWriter, envs EnvManager, secrets EnvSecretSetter, history DeploymentStore, keys KeyMaker, deployKeys RepoDeployKeyManager, installer DeployKeyInstaller, refs RefResolver, accounts AccountFetcher, dispatcher WorkflowDispatcher, locker *DeployLocker) *DeployService {
+	return &DeployService{servers: servers, vault: vault, tokens: tokens, repo: repo, envs: envs, secrets: secrets, history: history, keys: keys, deployKeys: deployKeys, installer: installer, refs: refs, accounts: accounts, dispatcher: dispatcher, locker: locker}
 }
 
 // Preview generates the deploy artifacts from the config alone, no server, no
@@ -300,9 +327,15 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 		WorkflowFile: workflow.FileName(env),
 		Port:         primaryPort(in.Ports),
 		RootDir:      in.RootDir,
-		CreatedAt:    time.Now().UTC(),
-		CommitSHA:    commitSHA,
-		Actor:        actor,
+		Config: &DeployConfig{
+			Strategy:      in.Strategy,
+			DeployDir:     strings.TrimSpace(in.DeployDir),
+			DeployKeyFile: cfg.DeployKeyFile,
+			Ports:         in.Ports,
+		},
+		CreatedAt: time.Now().UTC(),
+		CommitSHA: commitSHA,
+		Actor:     actor,
 	}
 	if err := s.history.Save(record); err != nil {
 		progress(out, "note: deploy succeeded but recording history failed: %v", err)
@@ -356,6 +389,76 @@ func validateDeploy(in DeployInput) error {
 		}
 	}
 	return nil
+}
+
+// ReapplyWorkflow regenerates a deployment's committed workflow + deploy.sh from
+// its persisted config and the given operator env-var names, then triggers a
+// redeploy via workflow_dispatch so the running container picks up a secret
+// change. The commit message carries [skip ci] so its push does not also trigger
+// a run (the explicit dispatch is the single trigger); PutFile is idempotent, so
+// a value-only edit (identical artifacts) makes no commit and just dispatches.
+// A deployment with no persisted config (recorded before this existed) returns
+// ErrLegacyDeployment — it must be redeployed from configure first.
+func (s *DeployService) ReapplyWorkflow(ctx context.Context, t Token, owner, repo, environment string, envKeys []string) error {
+	dep, found := s.findDeployment(owner, repo, environment)
+	if !found {
+		return ErrDeploymentNotFound
+	}
+	if dep.Config == nil {
+		return ErrLegacyDeployment
+	}
+
+	ports := make([]workflow.Port, 0, len(dep.Config.Ports))
+	for _, p := range dep.Config.Ports {
+		ports = append(ports, workflow.Port{EnvVar: p.EnvVar, Value: p.Value, Container: p.Container})
+	}
+	envs := make([]workflow.EnvVar, 0, len(envKeys))
+	for _, k := range envKeys {
+		envs = append(envs, workflow.EnvVar{Key: k})
+	}
+	strategy := workflow.Compose
+	if dep.Config.Strategy == string(workflow.Docker) {
+		strategy = workflow.Docker
+	}
+	cfg := workflow.Config{
+		App:           dep.App,
+		Owner:         owner,
+		Repo:          repo,
+		Branch:        dep.Branch,
+		Environment:   dep.Environment,
+		RootDir:       dep.RootDir,
+		DeployDir:     dep.Config.DeployDir,
+		Strategy:      strategy,
+		Ports:         ports,
+		EnvVars:       envs,
+		DeployKeyFile: dep.Config.DeployKeyFile,
+	}
+
+	const msg = "mountabo: sync deploy config for secrets change [skip ci]"
+	if err := s.repo.PutFile(ctx, t, owner, repo, dep.Branch, workflow.DeployScriptPath, workflow.DeployScript(cfg), msg); err != nil {
+		return fmt.Errorf("update deploy script: %w", err)
+	}
+	if err := s.repo.PutFile(ctx, t, owner, repo, dep.Branch, workflow.Path(cfg), workflow.Workflow(cfg), msg); err != nil {
+		return fmt.Errorf("update workflow: %w", err)
+	}
+	if err := s.dispatcher.Dispatch(ctx, t, owner, repo, dep.WorkflowFile, dep.Branch); err != nil {
+		return fmt.Errorf("dispatch redeploy: %w", err)
+	}
+	return nil
+}
+
+// findDeployment returns the tracked deployment for (owner, repo, environment).
+func (s *DeployService) findDeployment(owner, repo, environment string) (Deployment, bool) {
+	deployments, err := s.history.List()
+	if err != nil {
+		return Deployment{}, false
+	}
+	for _, d := range deployments {
+		if d.Owner == owner && d.Repo == repo && d.Environment == environment {
+			return d, true
+		}
+	}
+	return Deployment{}, false
 }
 
 // buildConfig maps a validated DeployInput onto the generator's config.

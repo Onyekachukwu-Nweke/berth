@@ -336,3 +336,55 @@ func TestOpenSQLite_MigratesLegacyDeployEvents(t *testing.T) {
 		t.Errorf("migrated row = %+v, want pending/empty/nil defaults", r)
 	}
 }
+
+// TestDeploymentSQL_PersistsDeployConfig proves the non-secret deploy config
+// round-trips through the deployments row, and that a record saved without it
+// reads back as legacy (Config nil).
+func TestDeploymentSQL_PersistsDeployConfig(t *testing.T) {
+	db, err := OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	store := NewDeploymentSQL(db)
+
+	withCfg := usecase.Deployment{
+		ID: "d1", App: "shop", Owner: "acme", Repo: "shop", Branch: "main",
+		Environment: "production", ServerID: "s1", WorkflowFile: "wf.yml",
+		Config: &usecase.DeployConfig{
+			Strategy: "compose", DeployDir: "/opt/shop", DeployKeyFile: "k",
+			Ports: []usecase.DeployPort{{EnvVar: "FRONTEND_PORT", Value: "3000", Container: "3000"}},
+		},
+	}
+	legacy := usecase.Deployment{
+		ID: "d2", App: "shop", Owner: "acme", Repo: "shop", Branch: "main",
+		Environment: "staging", ServerID: "s1", WorkflowFile: "wf.yml",
+	}
+	if err := store.Save(withCfg); err != nil {
+		t.Fatalf("Save withCfg: %v", err)
+	}
+	if err := store.Save(legacy); err != nil {
+		t.Fatalf("Save legacy: %v", err)
+	}
+
+	byEnv := map[string]usecase.Deployment{}
+	list, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, d := range list {
+		byEnv[d.Environment] = d
+	}
+
+	got := byEnv["production"].Config
+	if got == nil {
+		t.Fatal("production should have persisted config")
+	}
+	if got.Strategy != "compose" || got.DeployDir != "/opt/shop" || got.DeployKeyFile != "k" ||
+		len(got.Ports) != 1 || got.Ports[0].EnvVar != "FRONTEND_PORT" || got.Ports[0].Value != "3000" {
+		t.Errorf("config round-trip wrong: %+v", got)
+	}
+	if byEnv["staging"].Config != nil {
+		t.Errorf("a record saved without config should read back legacy (nil), got %+v", byEnv["staging"].Config)
+	}
+}

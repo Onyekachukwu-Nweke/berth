@@ -14,7 +14,24 @@ var (
 	_ usecase.EnvSecretLister        = (*Client)(nil)
 	_ usecase.EnvSecretDeleter       = (*Client)(nil)
 	_ usecase.RepoEnvironmentDeleter = (*Client)(nil)
+	_ usecase.WorkflowDispatcher     = (*Client)(nil)
 )
+
+// Dispatch triggers a workflow run via the workflow_dispatch event, by workflow
+// file name on the given ref (branch). Used to redeploy after a secret change so
+// the running container picks up the new value; the workflow must declare
+// `workflow_dispatch:` (mountabo's generated workflows do).
+func (c *Client) Dispatch(ctx context.Context, t usecase.Token, owner, repo, workflowFile, ref string) error {
+	api, err := gogithub.NewClient(gogithub.WithAuthToken(t.AccessToken))
+	if err != nil {
+		return fmt.Errorf("build github client: %w", err)
+	}
+	if _, _, err := api.Actions.CreateWorkflowDispatchEventByFileName(ctx, owner, repo, workflowFile,
+		gogithub.CreateWorkflowDispatchEventRequest{Ref: ref}); err != nil {
+		return fmt.Errorf("dispatch workflow %q on %s/%s@%s: %w", workflowFile, owner, repo, ref, err)
+	}
+	return nil
+}
 
 // DeleteEnvironment removes a deployment environment (and the secrets scoped to
 // it, GitHub drops them together) from owner/repo. A 404 means the environment

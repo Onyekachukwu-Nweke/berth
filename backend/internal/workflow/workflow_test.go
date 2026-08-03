@@ -42,6 +42,44 @@ func TestDeployScript_Docker(t *testing.T) {
 	}
 }
 
+func TestWorkflow_ForwardsEnvKeyList(t *testing.T) {
+	c := base()
+	c.EnvVars = []EnvVar{{Key: "DATABASE_URL"}, {Key: "API_KEY"}}
+	w := Workflow(c)
+	// The operator names are passed as a space-separated list so deploy.sh can
+	// assemble .env without the names being baked into the script...
+	if !strings.Contains(w, `MOUNTABO_ENV_KEYS: "DATABASE_URL API_KEY"`) {
+		t.Errorf("workflow should pass MOUNTABO_ENV_KEYS with the operator names:\n%s", w)
+	}
+	// ...and MOUNTABO_ENV_KEYS is itself forwarded over SSH.
+	if !strings.Contains(w, ",MOUNTABO_ENV_KEYS") {
+		t.Errorf("workflow envs must forward MOUNTABO_ENV_KEYS:\n%s", w)
+	}
+}
+
+func TestDeployScript_EnvIsNameAgnostic(t *testing.T) {
+	c := base()
+	c.EnvVars = []EnvVar{{Key: "DATABASE_URL"}}
+	s := DeployScript(c)
+	// The .env is built by looping the forwarded key list, not baked per name.
+	if !strings.Contains(s, "for k in ${MOUNTABO_ENV_KEYS:-}; do") {
+		t.Errorf("deploy.sh should loop MOUNTABO_ENV_KEYS to write .env:\n%s", s)
+	}
+	if strings.Contains(s, "DATABASE_URL=${DATABASE_URL}") {
+		t.Errorf("deploy.sh must not bake env-var names into .env:\n%s", s)
+	}
+	// Verification: reports the count and fails an empty .env when keys were expected.
+	for _, want := range []string{"wrote $written environment variable(s) to .env", "is empty", "exit 1"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("deploy.sh missing verification %q:\n%s", want, s)
+		}
+	}
+	// Ports remain baked (they are not secrets).
+	if !strings.Contains(s, "FRONTEND_PORT=${FRONTEND_PORT}") {
+		t.Errorf("compose .env should still seed baked port vars:\n%s", s)
+	}
+}
+
 func TestWorkflow_PinsEnvironmentAndSecrets(t *testing.T) {
 	c := base()
 	c.Environment = "production"

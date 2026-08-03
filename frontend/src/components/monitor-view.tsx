@@ -44,6 +44,7 @@ import { type DashboardTool, installedDashboards, openDashboard } from "@/lib/da
 import { type AppHealth, clearDeployLock, deleteDeployment, fetchAppHealth, setDeploymentPort } from "@/lib/app-health";
 import { getRepoBranches } from "@/lib/branches";
 import {
+  type ApplyResult,
   type DeploymentSecret,
   type DeploymentSecrets,
   deleteDeploymentSecret,
@@ -1187,6 +1188,14 @@ function secretUpdatedLabel(iso: string): string {
 const secretInputCls =
   "min-w-0 flex-1 rounded-md border border-line bg-bg px-3 py-2 font-mono text-[13px] text-cream placeholder:text-faint focus:border-line-strong focus:outline-none";
 
+// applyNotice turns a secret-change ApplyResult into the inline notice: a lime
+// "redeploy triggered" when it applied, or a blue warning (the backend's reason,
+// e.g. a legacy deployment that needs a full redeploy) when it didn't.
+function applyNotice(res: ApplyResult, okText: string): { tone: "info" | "warn"; text: string } {
+  if (res.redeployed) return { tone: "info", text: `${okText} Redeploy triggered to apply it.` };
+  return { tone: "warn", text: res.message || `${okText} Redeploy to apply it.` };
+}
+
 // SecretsPanel is the per-environment secrets tab, laid out as a configuration
 // table. GitHub Actions env secrets are the single store: mountabo shows which
 // names are configured (with GitHub's updated time), lets you set values
@@ -1209,7 +1218,7 @@ function SecretsPanel({
   siblings: Deployment[];
 }) {
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ tone: "info" | "warn" | "error"; text: string } | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   // The add/edit dialog: null when closed. `name` seeds the field (fixed on edit,
   // editable on add).
@@ -1246,33 +1255,37 @@ function SecretsPanel({
     };
   }, [compareKey]);
 
-  // write sets or overwrites one secret's value on GitHub (write-only). Returns
-  // whether it succeeded, so the dialog only closes on success.
+  // write sets or overwrites one secret's value on GitHub (write-only), then the
+  // backend re-applies the deployment. Returns whether the write reached GitHub,
+  // so the dialog closes on a real write even if the redeploy is deferred. The
+  // notice reflects whether the change was actually redeployed.
   async function write(name: string, value: string): Promise<boolean> {
     if (!name.trim() || !value) return false;
     setBusy(true);
     setNotice(null);
-    const ok = await setDeploymentSecrets(owner, repo, environment, [{ key: name.trim(), value }]);
+    const res = await setDeploymentSecrets(owner, repo, environment, [{ key: name.trim(), value }]);
     setBusy(false);
-    if (!ok) {
-      setNotice("couldn't set that secret — check you're connected and the name is valid and not managed.");
+    if (!res.ok) {
+      setNotice({ tone: "error", text: "couldn't set that secret — check you're connected and the name is valid and not managed." });
       return false;
     }
     reload();
+    setNotice(applyNotice(res, `Saved ${name.trim()}.`));
     return true;
   }
 
   async function remove(name: string) {
     setBusy(true);
     setNotice(null);
-    const ok = await deleteDeploymentSecret(owner, repo, environment, name);
+    const res = await deleteDeploymentSecret(owner, repo, environment, name);
     setBusy(false);
     setConfirmRemove(null);
-    if (!ok) {
-      setNotice(`couldn't remove ${name}.`);
+    if (!res.ok) {
+      setNotice({ tone: "error", text: `couldn't remove ${name}.` });
       return;
     }
     reload();
+    setNotice(applyNotice(res, `Removed ${name}.`));
   }
 
   if (data === null) {
@@ -1290,8 +1303,16 @@ function SecretsPanel({
   return (
     <div className="space-y-5">
       {notice && (
-        <div className="rounded-lg border border-red-400/40 bg-red-400/[0.06] px-4 py-3 text-[13px] text-red-300">
-          {notice}
+        <div
+          className={`rounded-lg border px-4 py-3 text-[13px] ${
+            notice.tone === "error"
+              ? "border-red-400/40 bg-red-400/[0.06] text-red-300"
+              : notice.tone === "warn"
+                ? "border-blue/30 bg-blue/[0.06] text-blue"
+                : "border-lime/40 bg-lime/[0.06] text-lime"
+          }`}
+        >
+          {notice.text}
         </div>
       )}
 
@@ -1301,7 +1322,8 @@ function SecretsPanel({
           <h3 className="text-[15px] font-semibold text-cream">environment variables</h3>
           <p className="mt-1 max-w-xl text-[13px] leading-6 text-muted">
             github actions is the source of truth. values are write-only — set or overwrite them here; they
-            can&apos;t be read back or revealed.
+            can&apos;t be read back or revealed. saving triggers a redeploy so the running app picks it up.
+            deployments created before this feature need one full redeploy from the configure page first.
           </p>
         </div>
         <button
@@ -1532,6 +1554,9 @@ function SecretDialog({
   const [name, setName] = useState(initialName);
   const [value, setValue] = useState("");
   const nameInvalid = name.trim() !== "" && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name.trim());
+  // Values are injected as single .env lines, so a newline can't be represented;
+  // reject it client-side for fast feedback (the backend rejects it too).
+  const valueInvalid = /[\r\n]/.test(value);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1552,7 +1577,7 @@ function SecretDialog({
         onClick={(e) => e.stopPropagation()}
         onSubmit={async (e) => {
           e.preventDefault();
-          if (!name.trim() || !value || nameInvalid) return;
+          if (!name.trim() || !value || nameInvalid || valueInvalid) return;
           await onSubmit(name.trim(), value);
         }}
         className="w-full max-w-md overflow-hidden rounded-xl border border-line bg-surface"
@@ -1607,11 +1632,16 @@ function SecretDialog({
               autoFocus={mode === "edit"}
               className={`mt-1 w-full ${secretInputCls}`}
             />
+            {valueInvalid && (
+              <p className="mt-1 text-[12px] text-red-400">
+                values can&apos;t contain line breaks (multiline values aren&apos;t supported).
+              </p>
+            )}
           </div>
           <p className="text-[12px] leading-6 text-muted">
             {mode === "edit" ? "overwrites" : "sets"} the value on the github{" "}
-            <span className="text-cream">{environment}</span> environment. values are write-only and can&apos;t
-            be read back.
+            <span className="text-cream">{environment}</span> environment and triggers a redeploy. values
+            are write-only and can&apos;t be read back.
           </p>
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-line px-5 py-3">
@@ -1624,7 +1654,7 @@ function SecretDialog({
           </button>
           <button
             type="submit"
-            disabled={busy || name.trim() === "" || value === "" || nameInvalid}
+            disabled={busy || name.trim() === "" || value === "" || nameInvalid || valueInvalid}
             className="rounded-md border border-lime/50 bg-lime/[0.08] px-4 py-2 text-[13px] font-medium text-lime transition-colors hover:bg-lime/[0.16] disabled:cursor-not-allowed disabled:opacity-40"
           >
             {busy ? "saving..." : "save secret"}

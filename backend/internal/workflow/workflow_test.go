@@ -18,13 +18,40 @@ func TestDeployScript_Compose(t *testing.T) {
 	c := base()
 	c.Strategy = Compose
 	s := DeployScript(c)
-	for _, want := range []string{"docker compose build", "docker compose up -d", "export FRONTEND_PORT=3000", `cd "apps/web"`} {
+	for _, want := range []string{"docker compose $COMPOSE_ARGS build", "docker compose $COMPOSE_ARGS up -d", "export FRONTEND_PORT=3000", `cd "apps/web"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("compose script missing %q", want)
 		}
 	}
 	if strings.Contains(s, "docker run") {
 		t.Error("compose script should not use docker run")
+	}
+}
+
+func TestDeployScript_ComposeMountsEnvIntoServices(t *testing.T) {
+	c := base()
+	c.Strategy = Compose
+	s := DeployScript(c)
+	// Enumerates services and writes a mountabo-owned env_file override, then runs
+	// compose with it merged in — so operator secrets reach every container even
+	// when the user's compose declares no env_file:/environment:.
+	for _, want := range []string{
+		"COMPOSE_ARGS=\"-f $COMPOSE\"",
+		"docker-compose.override.yml",
+		"COMPOSE_ARGS=\"$COMPOSE_ARGS -f $ov\"",
+		"docker compose $COMPOSE_ARGS config --services",
+		"mountabo.env.override.yml",
+		"env_file:",
+		"docker compose $COMPOSE_ARGS build",
+		"docker compose $COMPOSE_ARGS up -d",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("compose script missing %q:\n%s", want, s)
+		}
+	}
+	// The user's compose is never edited in place.
+	if strings.Contains(s, "yq ") || strings.Contains(s, "sed -i") {
+		t.Errorf("compose script should not edit the user's compose in place:\n%s", s)
 	}
 }
 

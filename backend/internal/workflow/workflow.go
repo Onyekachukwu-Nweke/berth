@@ -251,6 +251,47 @@ done
 
 `
 
+// composeEnvOverride mounts the operator's .env into every compose service as
+// container environment. Docker Compose reads a project .env only for ${VAR}
+// interpolation in the compose file, NOT as container env — so a service that
+// declares no env_file:/environment: never receives the operator's secrets. This
+// generates a mountabo-owned override that attaches `env_file: .env` to each
+// service and merges it in with -f. Existing env_file lists are preserved, and
+// if both an existing env_file and .env define the same key, the operator's .env
+// is later in the chain; explicit service `environment:` still wins over env_file.
+// It reads only service NAMES (docker compose config --services); the user's
+// compose is never parsed or edited. COMPOSE_ARGS is the -f list (base [+ the
+// user's own override] + this override) used for build/up/ps; it stays empty when
+// no compose file is found so compose falls back to auto-detection. The override
+// file is regenerated each deploy and never committed (git reset --hard leaves
+// untracked files, so it simply persists/refreshes).
+const composeEnvOverride = `# Mount the operator's .env into every compose service as container environment
+# (compose otherwise uses .env only for interpolation, not as container env).
+COMPOSE=""
+for cf in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do
+  if [ -f "$cf" ]; then COMPOSE="$cf"; break; fi
+done
+COMPOSE_ARGS=""
+if [ -n "$COMPOSE" ]; then
+  COMPOSE_ARGS="-f $COMPOSE"
+  for ov in docker-compose.override.yml docker-compose.override.yaml compose.override.yml compose.override.yaml; do
+    if [ -f "$ov" ]; then COMPOSE_ARGS="$COMPOSE_ARGS -f $ov"; break; fi
+  done
+  services=$(docker compose $COMPOSE_ARGS config --services 2>/dev/null || true)
+  if [ -n "$services" ]; then
+    {
+      echo "services:"
+      for s in $services; do
+        printf '  %s:\n    env_file:\n      - .env\n' "$s"
+      done
+    } > mountabo.env.override.yml
+    COMPOSE_ARGS="$COMPOSE_ARGS -f mountabo.env.override.yml"
+    echo "mounting .env into services: $services"
+  fi
+fi
+
+`
+
 // cdRoot is the `cd <rootDir>` line (with trailing newline) when the app lives
 // in a sub-directory, or "" for the repo root.
 func cdRoot(c Config) string {
@@ -338,13 +379,14 @@ func composeScript(c Config) string {
 	b.WriteString(envWriteBlock(c, true))
 	b.WriteString("\n")
 	b.WriteString(populateEnvFiles)
+	b.WriteString(composeEnvOverride)
 	b.WriteString(`# Zero-downtime: build new images while old containers keep running, then swap.
 echo "Building images..."
-docker compose build
+docker compose $COMPOSE_ARGS build
 echo "Swapping to new containers..."
-docker compose up -d --force-recreate --remove-orphans
+docker compose $COMPOSE_ARGS up -d --force-recreate --remove-orphans
 
-docker compose ps
+docker compose $COMPOSE_ARGS ps
 echo "=== Deployment complete ==="
 `)
 	return b.String()

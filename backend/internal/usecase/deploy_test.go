@@ -362,7 +362,7 @@ func TestPreview_GeneratesArtifactsWithoutSideEffects(t *testing.T) {
 	if art.WorkflowPath != ".github/workflows/mountabo-deploy-main.yml" {
 		t.Errorf("workflow path = %q", art.WorkflowPath)
 	}
-	if !strings.Contains(art.DeployScript, "docker compose build") {
+	if !strings.Contains(art.DeployScript, "docker compose $COMPOSE_ARGS build") {
 		t.Error("expected a compose deploy script by default")
 	}
 	if !strings.Contains(art.Workflow, "environment: main") {

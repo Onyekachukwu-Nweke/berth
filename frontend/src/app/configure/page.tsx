@@ -8,9 +8,9 @@ import { getGithubConnection } from "@/lib/session";
 export default async function ConfigurePage({
   searchParams,
 }: {
-  searchParams: Promise<{ repo?: string; branch?: string; server?: string }>;
+  searchParams: Promise<{ repo?: string; branch?: string; server?: string; environment?: string }>;
 }) {
-  const { repo, branch: branchParam, server: serverId } = await searchParams;
+  const { repo, branch: branchParam, server: serverId, environment } = await searchParams;
   const conn = await getGithubConnection();
   const account = conn.connected ? conn.login : null;
 
@@ -41,7 +41,13 @@ export default async function ConfigurePage({
         back
         container="max-w-[1100px]"
       />
-      <ConfigureView source={source} server={server} branch={branch} account={account} />
+      <ConfigureView
+        source={source}
+        server={server}
+        branch={branch}
+        account={account}
+        environment={environment}
+      />
     </div>
   );
 }

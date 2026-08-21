@@ -108,17 +108,24 @@ func Path(c Config) string {
 // strategies, it only copies deploy.sh to the server and runs it; the strategy
 // lives entirely in deploy.sh. The passthrough env block and envs list cover
 // the operator's env vars plus DEPLOY_DIR (all from secrets); the job pins the
-// deployment environment so its secrets resolve.
+// deployment environment so its secrets resolve. It also passes
+// MOUNTABO_ENV_KEYS (the operator's env-var names) so deploy.sh can assemble
+// .env from the forwarded secrets without the names being baked into deploy.sh
+// — meaning a secret added later only needs this workflow regenerated, not the
+// script.
 func Workflow(c Config) string {
-	names := append(c.envNames(), "DEPLOY_DIR")
+	appKeys := c.envNames()
+	// Secrets forwarded per-name into the ssh step: the operator's vars + the
+	// deploy directory. MOUNTABO_ENV_KEYS carries just the operator var names.
+	names := append(append([]string{}, appKeys...), "DEPLOY_DIR")
 
 	var envBlock strings.Builder
-	for i, n := range names {
-		if i > 0 {
-			envBlock.WriteByte('\n')
-		}
-		fmt.Fprintf(&envBlock, "          %s: ${{ secrets.%s }}", n, n)
+	for _, n := range names {
+		fmt.Fprintf(&envBlock, "          %s: ${{ secrets.%s }}\n", n, n)
 	}
+	fmt.Fprintf(&envBlock, "          MOUNTABO_ENV_KEYS: %q", strings.Join(appKeys, " "))
+
+	forward := strings.Join(append(append([]string{}, names...), "MOUNTABO_ENV_KEYS"), ",")
 
 	return fmt.Sprintf(`name: %[1]s deploy (%[2]s)
 
@@ -164,7 +171,7 @@ jobs:
           script: |
             chmod +x /tmp/%[1]s-deploy/deploy.sh
             /tmp/%[1]s-deploy/deploy.sh %[2]s
-`, c.App, c.Branch, c.environment(), envBlock.String(), strings.Join(names, ","))
+`, c.App, c.Branch, c.environment(), envBlock.String(), forward)
 }
 
 // DeployScript renders deploy.sh for the configured strategy.
@@ -244,6 +251,47 @@ done
 
 `
 
+// composeEnvOverride mounts the operator's .env into every compose service as
+// container environment. Docker Compose reads a project .env only for ${VAR}
+// interpolation in the compose file, NOT as container env — so a service that
+// declares no env_file:/environment: never receives the operator's secrets. This
+// generates a mountabo-owned override that attaches `env_file: .env` to each
+// service and merges it in with -f. Existing env_file lists are preserved, and
+// if both an existing env_file and .env define the same key, the operator's .env
+// is later in the chain; explicit service `environment:` still wins over env_file.
+// It reads only service NAMES (docker compose config --services); the user's
+// compose is never parsed or edited. COMPOSE_ARGS is the -f list (base [+ the
+// user's own override] + this override) used for build/up/ps; it stays empty when
+// no compose file is found so compose falls back to auto-detection. The override
+// file is regenerated each deploy and never committed (git reset --hard leaves
+// untracked files, so it simply persists/refreshes).
+const composeEnvOverride = `# Mount the operator's .env into every compose service as container environment
+# (compose otherwise uses .env only for interpolation, not as container env).
+COMPOSE=""
+for cf in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do
+  if [ -f "$cf" ]; then COMPOSE="$cf"; break; fi
+done
+COMPOSE_ARGS=""
+if [ -n "$COMPOSE" ]; then
+  COMPOSE_ARGS="-f $COMPOSE"
+  for ov in docker-compose.override.yml docker-compose.override.yaml compose.override.yml compose.override.yaml; do
+    if [ -f "$ov" ]; then COMPOSE_ARGS="$COMPOSE_ARGS -f $ov"; break; fi
+  done
+  services=$(docker compose $COMPOSE_ARGS config --services 2>/dev/null || true)
+  if [ -n "$services" ]; then
+    {
+      echo "services:"
+      for s in $services; do
+        printf '  %s:\n    env_file:\n      - .env\n' "$s"
+      done
+    } > mountabo.env.override.yml
+    COMPOSE_ARGS="$COMPOSE_ARGS -f mountabo.env.override.yml"
+    echo "mounting .env into services: $services"
+  fi
+fi
+
+`
+
 // cdRoot is the `cd <rootDir>` line (with trailing newline) when the app lives
 // in a sub-directory, or "" for the repo root.
 func cdRoot(c Config) string {
@@ -254,23 +302,50 @@ func cdRoot(c Config) string {
 	return fmt.Sprintf("cd %q\n", root)
 }
 
-// envFileBody is the heredoc body written to .env, one KEY=${KEY} per line. The
-// values come from the workflow's injected secrets at run time. Compose also
-// gets the port env vars (the Compose file reads them); docker does not (its
-// ports are -p flags).
-func envFileBody(c Config, includePorts bool) string {
-	var lines []string
+// envWriteBlock is the shell that writes .env at deploy time. It seeds the file
+// with the baked port vars (compose only — the Compose file reads them; docker
+// publishes ports with -p flags instead), then appends one line per operator
+// variable. The variable NAMES come from $MOUNTABO_ENV_KEYS (set by the
+// workflow from the configured secret names) and the VALUES from the matching
+// forwarded secrets — so the names are not baked into deploy.sh and a secret
+// added later reaches the container once the workflow is regenerated. It also
+// reports how many variables were written, warns on empties, and fails the run
+// if variables were expected but none were written (so an empty .env never
+// deploys silently). Values are never printed.
+func envWriteBlock(c Config, includePorts bool) string {
+	var portLines []string
 	if includePorts {
 		for _, p := range c.Ports {
 			if p.EnvVar != "" {
-				lines = append(lines, fmt.Sprintf("%s=${%s}", p.EnvVar, p.EnvVar))
+				portLines = append(portLines, fmt.Sprintf("%s=${%s}", p.EnvVar, p.EnvVar))
 			}
 		}
 	}
-	for _, k := range c.envNames() {
-		lines = append(lines, fmt.Sprintf("%s=${%s}", k, k))
+	var b strings.Builder
+	if len(portLines) > 0 {
+		b.WriteString("cat > .env <<EOF\n")
+		b.WriteString(strings.Join(portLines, "\n"))
+		b.WriteString("\nEOF\n")
+	} else {
+		b.WriteString(": > .env\n")
 	}
-	return strings.Join(lines, "\n")
+	b.WriteString(`written=0
+for k in ${MOUNTABO_ENV_KEYS:-}; do
+  v="${!k-}"
+  if [ -z "$v" ]; then
+    echo "warning: env var $k is empty (set it in the secrets tab, then redeploy)"
+    continue
+  fi
+  printf '%s=%s\n' "$k" "$v" >> .env
+  written=$((written + 1))
+done
+echo "wrote $written environment variable(s) to .env"
+if [ -n "${MOUNTABO_ENV_KEYS:-}" ] && [ "$written" -eq 0 ]; then
+  echo "error: environment variables were configured but none reached .env" >&2
+  exit 1
+fi
+`)
+	return b.String()
 }
 
 func composeScript(c Config) string {
@@ -300,17 +375,18 @@ func composeScript(c Config) string {
 	// the deploy directory basename, which makes the delete teardown unable to
 	// find the containers by app name).
 	fmt.Fprintf(&b, "export COMPOSE_PROJECT_NAME='%s-%s'\n\n", c.App, c.Branch)
-	b.WriteString("# Write .env (ports + your environment variables) for docker compose.\ncat > .env <<EOF\n")
-	b.WriteString(envFileBody(c, true))
-	b.WriteString("\nEOF\n\n")
+	b.WriteString("# Write .env (ports + your environment variables) for docker compose.\n")
+	b.WriteString(envWriteBlock(c, true))
+	b.WriteString("\n")
 	b.WriteString(populateEnvFiles)
+	b.WriteString(composeEnvOverride)
 	b.WriteString(`# Zero-downtime: build new images while old containers keep running, then swap.
 echo "Building images..."
-docker compose build
+docker compose $COMPOSE_ARGS build
 echo "Swapping to new containers..."
-docker compose up -d --force-recreate --remove-orphans
+docker compose $COMPOSE_ARGS up -d --force-recreate --remove-orphans
 
-docker compose ps
+docker compose $COMPOSE_ARGS ps
 echo "=== Deployment complete ==="
 `)
 	return b.String()
@@ -324,9 +400,9 @@ func dockerScript(c Config) string {
 	b.WriteString(clonePull)
 	b.WriteString("\n\n")
 	b.WriteString(cdRoot(c))
-	b.WriteString("# Write .env (your environment variables) for the container.\ncat > .env <<EOF\n")
-	b.WriteString(envFileBody(c, false))
-	b.WriteString("\nEOF\n\n")
+	b.WriteString("# Write .env (your environment variables) for the container.\n")
+	b.WriteString(envWriteBlock(c, false))
+	b.WriteString("\n")
 
 	fmt.Fprintf(&b, "IMAGE=%q\n", c.App+":$BRANCH")
 	fmt.Fprintf(&b, "CONTAINER=%q\n\n", c.App+"-$BRANCH")

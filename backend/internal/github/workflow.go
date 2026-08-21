@@ -25,6 +25,13 @@ func (c *Client) PutFile(ctx context.Context, t usecase.Token, owner, repo, bran
 
 	var sha *string
 	if file, _, _, gerr := api.Repositories.GetContents(ctx, owner, repo, path, &gogithub.RepositoryContentGetOptions{Ref: branch}); gerr == nil && file != nil {
+		// Idempotent: if the file already holds exactly this content, don't commit.
+		// This keeps a re-apply that regenerates identical artifacts (e.g. a secret
+		// value edit that changes no names) from making an empty commit — and it
+		// treats "unchanged" as success rather than an error.
+		if existing, derr := file.GetContent(); derr == nil && existing == content {
+			return nil
+		}
 		sha = file.SHA
 	}
 

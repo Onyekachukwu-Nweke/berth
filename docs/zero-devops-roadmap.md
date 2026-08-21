@@ -11,7 +11,7 @@ Every feature below has to survive contact with what Mountabo actually is today.
 - **Single user, single machine.** The backend binds `127.0.0.1` and runs under one GitHub OAuth identity. There is no auth boundary inside the app.
 - **State is split and machine-local.** Servers live in a JSON file, deployments and an append-only `deploy_events` log live in local SQLite, and tokens/secrets live in the OS keychain. None of it is portable, shareable, or reconciled across machines today.
 - **Deployment is Actions-driven.** Deploying commits a generated GitHub Actions workflow into the user's repo; the workflow SSHes into a root VPS and runs Docker or Compose. Mountabo does not run the deploy itself, so it cannot assume it holds a lock or sees every trigger.
-- **GitHub Actions secrets are write-only.** Mountabo can set them but cannot read them back or reliably enumerate them. Any "which secrets are configured" view is Mountabo's own record, not ground truth.
+- **GitHub Actions secret *values* are write-only, but their *names* are readable.** Mountabo can set a secret's value but never read it back. It *can* enumerate an environment's configured secret names and their last-updated times (`Actions.ListEnvSecrets`). So GitHub is ground truth for "which secrets are configured", and it is the *only* store — Mountabo keeps no second copy of any value, so no value is ever revealed.
 
 Two rules fall out of this and govern the whole roadmap:
 
@@ -101,21 +101,19 @@ For startup teams, staging and production separation is the minimum bar. For age
 
 ## 4. Secrets and Configuration UI
 
-Add a proper configuration surface for environment variables and deployment settings, designed around the write-only reality of GitHub Actions secrets.
+Add a proper configuration surface for environment variables and deployment settings, designed around the value-write-only / name-readable reality of GitHub Actions secrets. **Mountabo is a GitHub Actions environment-secrets manager, not a secret vault** — it never stores a second copy of any value.
 
 Core capabilities:
 
-- edit environment variables per environment
+- add/edit/remove environment secret values by writing through to GitHub; values are never read back or revealed
 - detect missing variables from `.env.example`
-- sync secrets to GitHub Actions
-- validate required variables before deployment
+- show which secrets are configured (names + last-updated time, read from GitHub)
 - compare staging and production variable **names** without exposing values
-- show which secrets Mountabo has configured, without showing values
+- classify system-managed connection secrets vs the operator's application variables
 
-**Source of truth and drift, decided up front.** Because Actions secrets cannot be read back, "which secrets are configured" is Mountabo's own record and *will* drift the moment someone edits a secret in the GitHub UI. This phase must include:
+**Source of truth — GitHub Actions is the single store (implemented).** GitHub is authoritative for *which secrets are configured*: their names and last-updated times are read live from `Actions.ListEnvSecrets`, so there is no Mountabo-side registry to drift. Secret **values are write-only**: Mountabo can set (`CreateOrUpdateEnvSecret`) and delete (`DeleteEnvSecret`) them, but GitHub never returns a value, and Mountabo keeps no local copy. So the UI shows a name, its managed classification, and its updated time — never a value, and there is no reveal or copy. Editing a secret means overwriting it with a new value, not viewing the current one.
 
-- an explicit statement of which store is authoritative for each class of value,
-- a detection/reconciliation path that flags when Mountabo's record and GitHub disagree, rather than silently trusting the local record.
+The four managed connection secrets (`SERVER_HOST`, `SERVER_USER`, `SERVER_SSH_KEY`, `DEPLOY_DIR`) are set by Mountabo when it configures the deploy and are shown read-only, under a disclosure, so operators see they are system connection secrets rather than application variables.
 
 **Deploy-key rotation is a distributed transaction, treat it as one.** Rotating a deploy key touches three systems: the VPS `authorized_keys`, the repo deploy key, and the Actions secret. Design it with an explicit order of operations and a rollback path for partial failure. It is not a single button; it gets its own small design note before implementation. Defer rotation to the end of this phase if it threatens the timeline.
 
@@ -270,7 +268,7 @@ The sequence is the point: each step unblocks the next, and the risky data and s
 1. **Release records with artifact references** — schema migration on `deploy_events` to capture SHA, image digest, status, health, actor, and previous-release reference. Smallest change, highest leverage; everything else leans on it.
 2. **Deploy concurrency and locking** — per-target lock plus an Actions concurrency group. Safety prerequisite for environments and rollback.
 3. **Environment Management** — environment as a first-class entity (fix the primary key), production and staging only.
-4. **Secrets and Configuration UI** — per environment, with an explicit source-of-truth and drift-detection design; deploy-key rotation designed as a distributed transaction.
+4. **Secrets and Configuration UI** — per environment, GitHub Actions as the single (write-only) store; deploy-key rotation designed as a distributed transaction.
 5. **Rollback and Redeploy** — against retained artifacts from step 1, gated by the lock from step 2, with health as a rollback trigger.
 6. **Migrations and Release Hooks** — with an explicit expand/contract stance and a concretely specified production confirmation gate.
 7. **Application Blueprints** — editable seed presets; ship anytime, off the critical path.

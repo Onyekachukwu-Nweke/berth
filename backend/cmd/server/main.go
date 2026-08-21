@@ -108,9 +108,19 @@ func run() error {
 	deployLocker := usecase.NewDeployLocker()
 	// The deploy flow also mints a per-repo read-only deploy key: ssh generates
 	// the keypair and installs the private half on the server; github registers
-	// the public half on the repo.
-	deploySvc := usecase.NewDeployService(serverStore, keyStore, keyStore, ghClient, ghClient, ghClient, deploymentStore, sshClient, ghClient, sshClient, ghClient, ghClient, deployLocker)
+	// the public half on the repo. ghClient also dispatches workflow_dispatch so a
+	// secrets change can redeploy. Constructed before the secrets service, which
+	// re-applies deployments through it (as a DeployReapplier) on secret changes.
+	deploySvc := usecase.NewDeployService(serverStore, keyStore, keyStore, ghClient, ghClient, ghClient, deploymentStore, sshClient, ghClient, sshClient, ghClient, ghClient, ghClient, deployLocker)
 	deployHandler := httpadapter.NewDeployHandler(deploySvc, logger)
+
+	// The secrets service manages an environment's GitHub Actions secrets: GitHub
+	// is the single store — mountabo lists the configured names (+ updated times),
+	// sets values (write-only), and deletes secrets, but never reads a value back.
+	// On a change it re-applies the deployment (via deploySvc) so the running
+	// container picks it up.
+	secretsSvc := usecase.NewSecretsService(keyStore, deploymentStore, ghClient, ghClient, ghClient, ghClient, deploySvc)
+	secretsHandler := httpadapter.NewSecretsHandler(secretsSvc, logger)
 
 	// Compose the monitor: configured deployments (SQLite store) enriched with
 	// their GitHub Actions runs (github), read with the keychain token, and the
@@ -137,7 +147,7 @@ func run() error {
 	aiCommandSvc := usecase.NewAICommandService(aiClient)
 	terminalHandler := httpadapter.NewTerminalHandler(serverExecSvc, aiCommandSvc, logger)
 
-	router := httpadapter.NewRouter(githubHandler, serversHandler, deployHandler, monitorHandler, terminalHandler)
+	router := httpadapter.NewRouter(githubHandler, serversHandler, deployHandler, monitorHandler, secretsHandler, terminalHandler)
 	srv := httpadapter.NewServer(cfg, router)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

@@ -30,6 +30,8 @@ vendor/
 *.key
 *.crt
 secrets/
+# ...but not the Next.js API route directory that proxies the secrets endpoints.
+!frontend/src/app/**/secrets/
 
 # Logs & runtime
 *.log

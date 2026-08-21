@@ -249,6 +249,50 @@ func TestDeploymentSQL_RecordsReleasesAndLinksPrevious(t *testing.T) {
 	}
 }
 
+// TestOpenSQLite_MigratesRootDir proves a database whose deployments table
+// predates the root_dir column is migrated in place: opening it adds the column
+// and existing rows read back with the empty-string (repo-root) default.
+func TestOpenSQLite_MigratesRootDir(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pre-rootdir.db")
+
+	// Build an environment-keyed deployments table without root_dir and seed a row.
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE deployments (
+		owner TEXT NOT NULL, repo TEXT NOT NULL, branch TEXT NOT NULL, id TEXT NOT NULL,
+		app TEXT NOT NULL, environment TEXT NOT NULL, server_id TEXT NOT NULL,
+		workflow_file TEXT NOT NULL, port INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL, PRIMARY KEY (owner, repo, environment)
+	)`); err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	if _, err := legacy.Exec(`INSERT INTO deployments
+		(owner, repo, branch, id, app, environment, server_id, workflow_file, port, created_at)
+		VALUES ('acme','shop','main','dep1','shop','production','s1','wf.yml',3000,'2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+	_ = legacy.Close()
+
+	db, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite on pre-root_dir db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	deployments, err := NewDeploymentSQL(db).List()
+	if err != nil {
+		t.Fatalf("List after migration: %v", err)
+	}
+	if len(deployments) != 1 {
+		t.Fatalf("want 1 deployment, got %d", len(deployments))
+	}
+	if d := deployments[0]; d.RootDir != "" || d.Environment != "production" || d.Port != 3000 {
+		t.Errorf("migrated row = %+v, want empty root_dir and preserved fields", d)
+	}
+}
+
 // TestOpenSQLite_MigratesLegacyDeployEvents proves an old database whose
 // deploy_events table predates the release columns is migrated in place: opening
 // it adds the columns without error and existing rows read back with defaults.
@@ -290,5 +334,57 @@ func TestOpenSQLite_MigratesLegacyDeployEvents(t *testing.T) {
 	// The legacy row reads back with defaulted release fields.
 	if r := releases[0]; r.Status != "pending" || r.CommitSHA != "" || r.PrevReleaseID != nil {
 		t.Errorf("migrated row = %+v, want pending/empty/nil defaults", r)
+	}
+}
+
+// TestDeploymentSQL_PersistsDeployConfig proves the non-secret deploy config
+// round-trips through the deployments row, and that a record saved without it
+// reads back as legacy (Config nil).
+func TestDeploymentSQL_PersistsDeployConfig(t *testing.T) {
+	db, err := OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	store := NewDeploymentSQL(db)
+
+	withCfg := usecase.Deployment{
+		ID: "d1", App: "shop", Owner: "acme", Repo: "shop", Branch: "main",
+		Environment: "production", ServerID: "s1", WorkflowFile: "wf.yml",
+		Config: &usecase.DeployConfig{
+			Strategy: "compose", DeployDir: "/opt/shop", DeployKeyFile: "k",
+			Ports: []usecase.DeployPort{{EnvVar: "FRONTEND_PORT", Value: "3000", Container: "3000"}},
+		},
+	}
+	legacy := usecase.Deployment{
+		ID: "d2", App: "shop", Owner: "acme", Repo: "shop", Branch: "main",
+		Environment: "staging", ServerID: "s1", WorkflowFile: "wf.yml",
+	}
+	if err := store.Save(withCfg); err != nil {
+		t.Fatalf("Save withCfg: %v", err)
+	}
+	if err := store.Save(legacy); err != nil {
+		t.Fatalf("Save legacy: %v", err)
+	}
+
+	byEnv := map[string]usecase.Deployment{}
+	list, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, d := range list {
+		byEnv[d.Environment] = d
+	}
+
+	got := byEnv["production"].Config
+	if got == nil {
+		t.Fatal("production should have persisted config")
+	}
+	if got.Strategy != "compose" || got.DeployDir != "/opt/shop" || got.DeployKeyFile != "k" ||
+		len(got.Ports) != 1 || got.Ports[0].EnvVar != "FRONTEND_PORT" || got.Ports[0].Value != "3000" {
+		t.Errorf("config round-trip wrong: %+v", got)
+	}
+	if byEnv["staging"].Config != nil {
+		t.Errorf("a record saved without config should read back legacy (nil), got %+v", byEnv["staging"].Config)
 	}
 }

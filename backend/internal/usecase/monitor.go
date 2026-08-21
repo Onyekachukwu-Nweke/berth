@@ -31,6 +31,16 @@ type Deployment struct {
 	// publish), in which case the health check falls back to the domain.
 	Port      int       `json:"port"`
 	CreatedAt time.Time `json:"createdAt"`
+	// RootDir is where the app's compose/Dockerfile lives in the repo (repo root
+	// when empty), persisted so per-environment tooling (e.g. .env.example
+	// detection) reads the right directory rather than assuming the root.
+	RootDir string `json:"rootDir"`
+	// Config is the non-secret deploy configuration persisted so a re-apply can
+	// regenerate the workflow + deploy.sh (e.g. after a secret changes) without
+	// the operator re-entering it. Nil marks a legacy deployment recorded before
+	// this was persisted — it cannot be re-applied from the secrets tab. Kept out
+	// of any HTTP payload (json:"-"); the repo layer stores it as a JSON column.
+	Config *DeployConfig `json:"-"`
 	// CommitSHA and Actor describe the release this deploy created: the branch
 	// head being deployed and the GitHub login that triggered it. They are
 	// recorded onto the appended release event by DeploymentStore.Save, not

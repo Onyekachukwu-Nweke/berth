@@ -251,7 +251,13 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 	}
 
 	cfg := buildConfig(in)
-	cfg.DeployKeyFile = deployKeyFileName(in.Owner, in.Repo)
+	// The docker strategy runs an image built + shipped from the runner and never
+	// clones on the server, so it needs no deploy key. Only the compose strategy
+	// (which clones the repo for its compose file) gets one.
+	needsDeployKey := cfg.Strategy != workflow.Docker
+	if needsDeployKey {
+		cfg.DeployKeyFile = deployKeyFileName(in.Owner, in.Repo)
+	}
 
 	progress(out, "writing %s", workflow.DeployScriptPath)
 	if err := s.repo.PutFile(ctx, token, in.Owner, in.Repo, in.Branch, workflow.DeployScriptPath, workflow.DeployScript(cfg), "mountabo: add deploy script"); err != nil {
@@ -268,25 +274,29 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 	// (and only this repo). Reuse the per-repo key across deploys; on first
 	// deploy, generate one, register its public half on the repo, and keep the
 	// private half in the vault. The private key is then installed on the box.
-	deployKey, _ := s.vault.LoadSecret(deployKeyVaultKey(in.Owner, in.Repo))
-	if deployKey == "" {
-		priv, pub, gerr := s.keys.Generate(fmt.Sprintf("mountabo-deploy@%s/%s", in.Owner, in.Repo))
-		if gerr != nil {
-			return fmt.Errorf("generate deploy key: %w", gerr)
+	// Skipped entirely for the docker strategy, which ships a prebuilt image and
+	// never clones.
+	if needsDeployKey {
+		deployKey, _ := s.vault.LoadSecret(deployKeyVaultKey(in.Owner, in.Repo))
+		if deployKey == "" {
+			priv, pub, gerr := s.keys.Generate(fmt.Sprintf("mountabo-deploy@%s/%s", in.Owner, in.Repo))
+			if gerr != nil {
+				return fmt.Errorf("generate deploy key: %w", gerr)
+			}
+			progress(out, "registering read-only deploy key on %s/%s", in.Owner, in.Repo)
+			if _, aerr := s.deployKeys.AddDeployKey(ctx, token, in.Owner, in.Repo, fmt.Sprintf("mountabo deploy (%s)", server.Name), pub, true); aerr != nil {
+				return fmt.Errorf("register deploy key: %w", aerr)
+			}
+			if serr := s.vault.SaveSecret(deployKeyVaultKey(in.Owner, in.Repo), priv); serr != nil {
+				return fmt.Errorf("store deploy key: %w", serr)
+			}
+			deployKey = priv
 		}
-		progress(out, "registering read-only deploy key on %s/%s", in.Owner, in.Repo)
-		if _, aerr := s.deployKeys.AddDeployKey(ctx, token, in.Owner, in.Repo, fmt.Sprintf("mountabo deploy (%s)", server.Name), pub, true); aerr != nil {
-			return fmt.Errorf("register deploy key: %w", aerr)
+		progress(out, "installing deploy key on %s", server.Name)
+		target := SSHTarget{Host: server.IP, Port: server.SSHPort, User: BootstrapUser, PrivateKey: key, Fingerprint: server.Fingerprint}
+		if ierr := s.installer.InstallDeployKey(ctx, target, cfg.DeployKeyFile, deployKey, out); ierr != nil {
+			return fmt.Errorf("install deploy key: %w", ierr)
 		}
-		if serr := s.vault.SaveSecret(deployKeyVaultKey(in.Owner, in.Repo), priv); serr != nil {
-			return fmt.Errorf("store deploy key: %w", serr)
-		}
-		deployKey = priv
-	}
-	progress(out, "installing deploy key on %s", server.Name)
-	target := SSHTarget{Host: server.IP, Port: server.SSHPort, User: BootstrapUser, PrivateKey: key, Fingerprint: server.Fingerprint}
-	if ierr := s.installer.InstallDeployKey(ctx, target, cfg.DeployKeyFile, deployKey, out); ierr != nil {
-		return fmt.Errorf("install deploy key: %w", ierr)
 	}
 
 	progress(out, "creating environment %s", env)

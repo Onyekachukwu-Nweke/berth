@@ -18,13 +18,16 @@ func TestDeployScript_Compose(t *testing.T) {
 	c := base()
 	c.Strategy = Compose
 	s := DeployScript(c)
-	for _, want := range []string{"docker compose $COMPOSE_ARGS build", "docker compose $COMPOSE_ARGS up -d", "export FRONTEND_PORT=3000", `cd "apps/web"`} {
+	for _, want := range []string{"docker load", "docker compose $COMPOSE_ARGS up -d --no-build", "export FRONTEND_PORT=3000", `cd "apps/web"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("compose script missing %q", want)
 		}
 	}
-	if strings.Contains(s, "docker run") {
-		t.Error("compose script should not use docker run")
+	// The image is built on the runner and loaded here, never built on the server.
+	for _, notWant := range []string{"docker run", "docker compose $COMPOSE_ARGS build"} {
+		if strings.Contains(s, notWant) {
+			t.Errorf("compose script should not contain %q", notWant)
+		}
 	}
 }
 
@@ -42,8 +45,7 @@ func TestDeployScript_ComposeMountsEnvIntoServices(t *testing.T) {
 		"docker compose $COMPOSE_ARGS config --services",
 		"mountabo.env.override.yml",
 		"env_file:",
-		"docker compose $COMPOSE_ARGS build",
-		"docker compose $COMPOSE_ARGS up -d",
+		"docker compose $COMPOSE_ARGS up -d --no-build",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("compose script missing %q:\n%s", want, s)
@@ -59,13 +61,71 @@ func TestDeployScript_Docker(t *testing.T) {
 	c := base()
 	c.Strategy = Docker
 	s := DeployScript(c)
-	for _, want := range []string{"docker build -t", "docker run -d", "-p 3000:3000", `--restart unless-stopped`} {
+	for _, want := range []string{
+		"docker load",
+		`IMAGE="${MOUNTABO_IMAGE`,
+		"docker run -d",
+		"-p 3000:3000",
+		`--restart unless-stopped`,
+	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("docker script missing %q", want)
 		}
 	}
 	if strings.Contains(s, "docker compose") {
 		t.Error("docker script should not use docker compose")
+	}
+}
+
+// TestDockerScript_OffloadShape guards the build-offload contract for the docker
+// strategy: it loads a runner-built tarball, cleans it up on exit, health-checks
+// the app, and bounds disk by untagging older images — and it never builds or
+// clones on the server.
+func TestDockerScript_OffloadShape(t *testing.T) {
+	c := base()
+	c.Strategy = Docker
+	s := DeployScript(c)
+	for _, want := range []string{
+		"zstd -dc",
+		"docker load",
+		`trap 'rm -f "$TARBALL"' EXIT`,
+		"curl -sS -k",                          // health check probe
+		"http://127.0.0.1:3000",                // primary port
+		"docker rmi -f",                        // untag older images
+		`--filter=reference="mountabo/shop:*"`, // scoped to this app (lowercased)
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("docker offload script missing %q:\n%s", want, s)
+		}
+	}
+	for _, bad := range []string{"docker build", "git clone", "git fetch", "clonePull"} {
+		if strings.Contains(s, bad) {
+			t.Errorf("docker offload script should not contain %q", bad)
+		}
+	}
+}
+
+// TestComposeScript_OffloadShape guards the same contract for compose: load the
+// runner-built images, merge the image override LAST (so its image: wins), run
+// with --no-build, and untag older per-app images.
+func TestComposeScript_OffloadShape(t *testing.T) {
+	c := base()
+	c.Strategy = Compose
+	s := DeployScript(c)
+	for _, want := range []string{
+		"docker load",
+		"docker compose $COMPOSE_ARGS up -d --no-build",
+		"mountabo.image.override.yml",
+		"docker rmi -f",
+		`--filter=reference="mountabo/shop-*:*"`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("compose offload script missing %q:\n%s", want, s)
+		}
+	}
+	// The image override must be merged after the env override so its image: wins.
+	if envIdx, imgIdx := strings.Index(s, "-f mountabo.env.override.yml"), strings.LastIndex(s, "-f mountabo.image.override.yml"); envIdx < 0 || imgIdx < 0 || envIdx > imgIdx {
+		t.Errorf("image override must be merged after env override (env=%d img=%d)", envIdx, imgIdx)
 	}
 }
 
@@ -104,6 +164,56 @@ func TestDeployScript_EnvIsNameAgnostic(t *testing.T) {
 	// Ports remain baked (they are not secrets).
 	if !strings.Contains(s, "FRONTEND_PORT=${FRONTEND_PORT}") {
 		t.Errorf("compose .env should still seed baked port vars:\n%s", s)
+	}
+}
+
+// TestWorkflow_DockerBuildsAndShips guards that the docker workflow builds the
+// image on the runner, saves it to a zstd tarball, rsyncs it (not scp) to the
+// box, and forwards the exact image tag for the server to run.
+func TestWorkflow_DockerBuildsAndShips(t *testing.T) {
+	c := base()
+	c.Strategy = Docker
+	w := Workflow(c)
+	for _, want := range []string{
+		"docker build -t mountabo/shop:${{ github.sha }}",
+		"docker save mountabo/shop:${{ github.sha }} | zstd",
+		"rsync -a --partial",
+		`srcs="deploy.sh"`,
+		"for f in image.tar.zst; do",
+		"MOUNTABO_IMAGE: mountabo/shop:${{ github.sha }}",
+		",MOUNTABO_IMAGE", // forwarded over SSH
+	} {
+		if !strings.Contains(w, want) {
+			t.Errorf("docker workflow missing %q:\n%s", want, w)
+		}
+	}
+	if strings.Contains(w, "appleboy/scp-action") {
+		t.Errorf("scp-action should be replaced by rsync:\n%s", w)
+	}
+}
+
+// TestWorkflow_ComposeBuildsImagesAndShipsOverride guards that the compose
+// workflow enumerates build-services on the runner, builds + saves their images
+// to a tarball, and ships the generated image override alongside it — with no
+// MOUNTABO_IMAGE (compose resolves tags via the override, not a single tag).
+func TestWorkflow_ComposeBuildsImagesAndShipsOverride(t *testing.T) {
+	c := base()
+	c.Strategy = Compose
+	w := Workflow(c)
+	for _, want := range []string{
+		`docker compose -f "$compose" config --no-interpolate --format json`,
+		"mountabo.image.override.yml",
+		`tag="mountabo/shop-$svc:${{ github.sha }}"`,
+		"docker save $tags | zstd",
+		"apps/web/image.tar.zst", // rsync source carries the app-root prefix
+		"apps/web/mountabo.image.override.yml",
+	} {
+		if !strings.Contains(w, want) {
+			t.Errorf("compose workflow missing %q:\n%s", want, w)
+		}
+	}
+	if strings.Contains(w, "MOUNTABO_IMAGE") {
+		t.Errorf("compose workflow should not forward MOUNTABO_IMAGE:\n%s", w)
 	}
 }
 

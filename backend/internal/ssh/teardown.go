@@ -3,6 +3,7 @@ package ssh
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/goodylili/mountabo/internal/usecase"
 )
@@ -38,6 +39,14 @@ done
 for name in %[1]s %[2]s %[3]s; do
   docker rm -f "$name" 2>/dev/null || true
 done
+# Remove the images mountabo built + loaded for this app. They are tagged per
+# commit sha (mountabo/<app>:<sha> for docker, mountabo/<app>-<svc>:<sha> for
+# compose), so they are not dangling and a plain prune would leave them behind.
+# Two reference filters are OR'd by docker to cover both strategies.
+ids=$(docker images --filter=reference=%[4]s --filter=reference=%[5]s --format '{{.ID}}' | sort -u)
+[ -z "$ids" ] || echo "$ids" | xargs docker rmi -f 2>/dev/null || true
+# Remove any staged image tarball for this app.
+rm -rf %[6]s 2>/dev/null || true
 echo "torn down %[3]s"
 `
 
@@ -51,11 +60,26 @@ echo "torn down %[3]s"
 // user (the mountabo user, via its key) and runs without sudo, that user is a
 // member of the docker group from bootstrap.
 func (c *Client) RemoveApp(ctx context.Context, t usecase.SSHTarget, app, branch string) error {
-	appBranch := shellSingleQuote(app + "-" + branch)
-	br := shellSingleQuote(branch)
-	a := shellSingleQuote(app)
-	if _, err := c.runOutput(ctx, t, fmt.Sprintf(teardownScriptFmt, appBranch, br, a)); err != nil {
+	if _, err := c.runOutput(ctx, t, teardownScript(app, branch)); err != nil {
 		return fmt.Errorf("remove app %s: %w", app, err)
 	}
 	return nil
+}
+
+// teardownScript renders the teardown shell for an app: it removes the app's
+// containers (both strategies, all project-name variants) and the images +
+// staged tarball mountabo built for it. Pure text, so it is unit-testable without
+// SSH. Docker repository names are lowercase, matching the tags the workflow
+// builds (mountabo/<app>[-<svc>]:<sha>); the tarball dir uses the raw app name,
+// as the workflow rsyncs to /tmp/<app>-deploy. All interpolated values are
+// single-quote-escaped for the shell.
+func teardownScript(app, branch string) string {
+	appBranch := shellSingleQuote(app + "-" + branch)
+	br := shellSingleQuote(branch)
+	a := shellSingleQuote(app)
+	repo := "mountabo/" + strings.ToLower(app)
+	dockerRef := shellSingleQuote(repo + ":*")
+	composeRef := shellSingleQuote(repo + "-*:*")
+	tarDir := shellSingleQuote("/tmp/" + app + "-deploy")
+	return fmt.Sprintf(teardownScriptFmt, appBranch, br, a, dockerRef, composeRef, tarDir)
 }

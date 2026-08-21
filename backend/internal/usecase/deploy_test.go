@@ -362,7 +362,7 @@ func TestPreview_GeneratesArtifactsWithoutSideEffects(t *testing.T) {
 	if art.WorkflowPath != ".github/workflows/mountabo-deploy-main.yml" {
 		t.Errorf("workflow path = %q", art.WorkflowPath)
 	}
-	if !strings.Contains(art.DeployScript, "docker compose $COMPOSE_ARGS build") {
+	if !strings.Contains(art.DeployScript, "docker compose $COMPOSE_ARGS up -d --no-build") {
 		t.Error("expected a compose deploy script by default")
 	}
 	if !strings.Contains(art.Workflow, "environment: main") {
@@ -415,6 +415,39 @@ func TestDeploy_RegistersAndInstallsDeployKey(t *testing.T) {
 	}
 	if vault.secrets[deployKeyVaultKey("acme", "shop")] != "PRIVATE-KEY-PEM" {
 		t.Error("deploy private key not stored for reuse")
+	}
+}
+
+func TestDeploy_DockerStrategySkipsDeployKey(t *testing.T) {
+	store, vault := newMemServerStore(), newFakeVault()
+	_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady})
+	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
+	mgr, inst := &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}
+	history := &fakeDeploymentStore{}
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, history, fakeKeyMaker{}, mgr, inst, fakeRefResolver{sha: "abc1234def"}, fakeAccountFetcher{login: "octocat"}, &fakeWorkflowDispatcher{}, NewDeployLocker())
+
+	in := deployInput()
+	in.Strategy = "docker"
+	if err := svc.Deploy(context.Background(), in, new(strings.Builder)); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	// The docker strategy ships a prebuilt image and never clones on the server,
+	// so no deploy key is registered, installed, or persisted.
+	if mgr.called {
+		t.Error("docker deploy must not register a deploy key")
+	}
+	if inst.keyName != "" || inst.key != "" {
+		t.Errorf("docker deploy must not install a deploy key, got name=%q", inst.keyName)
+	}
+	if _, ok := vault.secrets[deployKeyVaultKey("acme", "shop")]; ok {
+		t.Error("docker deploy must not persist a deploy key")
+	}
+	// And the persisted config records no deploy key file.
+	if len(history.saved) != 1 || history.saved[0].Config == nil {
+		t.Fatalf("want 1 recorded release with config, got %+v", history.saved)
+	}
+	if kf := history.saved[0].Config.DeployKeyFile; kf != "" {
+		t.Errorf("docker deploy DeployKeyFile = %q, want empty", kf)
 	}
 }
 

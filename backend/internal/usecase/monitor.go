@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strconv"
 	"time"
@@ -94,6 +95,36 @@ type DeploymentPortSetter interface {
 // best-effort: docker missing on the box or no matching resource is not an error.
 type ContainerTeardown interface {
 	RemoveApp(ctx context.Context, t SSHTarget, deploymentID string) error
+}
+
+// PurgeSpec describes what one deployment owns on its server.
+//
+// Every field is something teardown must be able to identify precisely, because
+// removing a resource it does not own is the failure mode that matters most.
+type PurgeSpec struct {
+	// DeploymentID is the canonical identity every resource is labelled with.
+	DeploymentID string
+	// DeployDir is the root the checkout lives under, used as the containment
+	// boundary for filesystem removal.
+	DeployDir string
+	// DeployKeyFile is the private key installed on the box for this repo.
+	DeployKeyFile string
+	// RemoveVolumes deletes the project's named volumes. This destroys databases
+	// and uploads, so it is opt-in and off by default.
+	RemoveVolumes bool
+	// RemoveDeployKey is set only when no other environment of the same repo
+	// remains — the key is per-repo, not per-deployment.
+	RemoveDeployKey bool
+}
+
+// AppPurger removes the resources a deployment owns on its server, streaming a
+// journal of what it did.
+//
+// It reports "cleanup incomplete" rather than success when something could not be
+// removed: a teardown that says "done" while leaving containers and plaintext
+// secrets behind is worse than one that admits what it left.
+type AppPurger interface {
+	PurgeApp(ctx context.Context, t SSHTarget, spec PurgeSpec, out io.Writer) error
 }
 
 // RepoEnvironmentDeleter removes a GitHub deployment environment (and the
@@ -245,7 +276,7 @@ type MonitorService struct {
 	runs        WorkflowRunLister
 	servers     ServerStore
 	vault       SecretVault
-	teardown    ContainerTeardown
+	purger      AppPurger
 	repoFiles   RepoFileDeleter
 	repoEnvs    RepoEnvironmentDeleter
 	repoKeys    RepoKeyDeleter
@@ -264,11 +295,11 @@ type MonitorService struct {
 // Together they undo everything the deploy created on GitHub. The deleter then
 // forgets mountabo's tracking. locker is the shared deploy lock, read to surface
 // lock state and cleared by the recovery action.
-func NewMonitorService(deployments DeploymentStore, releases ReleaseReader, deleter DeploymentDeleter, tokens TokenStore, runs WorkflowRunLister, servers ServerStore, vault SecretVault, teardown ContainerTeardown, repoFiles RepoFileDeleter, repoEnvs RepoEnvironmentDeleter, repoKeys RepoKeyDeleter, ports DeploymentPortSetter, locker *DeployLocker, log *slog.Logger) *MonitorService {
+func NewMonitorService(deployments DeploymentStore, releases ReleaseReader, deleter DeploymentDeleter, tokens TokenStore, runs WorkflowRunLister, servers ServerStore, vault SecretVault, purger AppPurger, repoFiles RepoFileDeleter, repoEnvs RepoEnvironmentDeleter, repoKeys RepoKeyDeleter, ports DeploymentPortSetter, locker *DeployLocker, log *slog.Logger) *MonitorService {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &MonitorService{deployments: deployments, releases: releases, deleter: deleter, tokens: tokens, runs: runs, servers: servers, vault: vault, teardown: teardown, repoFiles: repoFiles, repoEnvs: repoEnvs, repoKeys: repoKeys, ports: ports, locker: locker, log: log}
+	return &MonitorService{deployments: deployments, releases: releases, deleter: deleter, tokens: tokens, runs: runs, servers: servers, vault: vault, purger: purger, repoFiles: repoFiles, repoEnvs: repoEnvs, repoKeys: repoKeys, ports: ports, locker: locker, log: log}
 }
 
 // ClearLock force-releases the deploy lock for a deployment (owner, repo,
@@ -295,13 +326,19 @@ func (s *MonitorService) SetPort(owner, repo, environment string, port int) erro
 }
 
 // Delete tears a deployment down by its identity (owner, repo, environment): it
-// stops and removes the app's container(s) on its server over SSH and deletes the
-// committed deploy workflow and deploy.sh from the repo, then forgets mountabo's
-// tracking (the deployment record and its append-only deploy history). The
-// teardown is best-effort: its failures are logged but never block removing the
-// record, so a user is never stuck with an undeletable deployment.
+// disables the trigger, removes what the deployment owns on its server, drops the
+// GitHub environment and (when nothing else needs it) the repo deploy key, then
+// forgets mountabo's tracking.
+//
+// The server-side work is best-effort and reports what it could not remove rather
+// than failing the delete: a user must never be stuck with an undeletable
+// deployment, but must also never be told "done" while containers and a plaintext
+// .env are still on the box.
+//
+// It holds the deploy lock throughout. Deleting while a deploy mountabo started is
+// mid-flight would race the very resources being removed.
 // ErrDeploymentNotFound is returned when no such deployment exists.
-func (s *MonitorService) Delete(ctx context.Context, owner, repo, environment string) error {
+func (s *MonitorService) Delete(ctx context.Context, owner, repo, environment string, opts DeleteOptions, out io.Writer) error {
 	// Load the record first so the teardown knows which server and repo files to
 	// reach. A missing record is the not-found case; a store read failure is real.
 	dep, found, err := s.lookup(owner, repo, environment)
@@ -312,7 +349,15 @@ func (s *MonitorService) Delete(ctx context.Context, owner, repo, environment st
 		return ErrDeploymentNotFound
 	}
 
-	s.tearDown(ctx, dep)
+	// Serialize against mountabo's own deploys. The tombstone the purge leaves
+	// behind is what stops a push-triggered run recreating the app afterwards.
+	key := lockKey(owner, repo, environment)
+	if !s.locker.TryAcquire(key) {
+		return ErrDeployInProgress
+	}
+	defer s.locker.Release(key)
+
+	s.tearDown(ctx, dep, opts, out)
 
 	removed, err := s.deleter.Delete(dep.Owner, dep.Repo, dep.Environment)
 	if err != nil {
@@ -347,11 +392,87 @@ func (s *MonitorService) lookup(owner, repo, environment string) (Deployment, bo
 // failure is logged and the rest still run, so a partial teardown never blocks
 // forgetting the record. A server that is not set up, or a token that cannot be
 // loaded, simply skips the step it gates.
-func (s *MonitorService) tearDown(ctx context.Context, dep Deployment) {
-	s.removeContainer(ctx, dep)
+func (s *MonitorService) tearDown(ctx context.Context, dep Deployment, opts DeleteOptions, out io.Writer) {
+	// Disable the trigger FIRST. A push that lands mid-purge would otherwise
+	// recreate what is being removed; the workflow file is the trigger, so it goes
+	// before anything on the server does.
 	s.removeWorkflowFiles(ctx, dep)
+
+	// The deploy key is per REPO, not per deployment. Removing it while another
+	// environment of the same repo still deploys would break that deployment's
+	// clone — so it is only removed when this is the last one.
+	last := s.isLastEnvironmentOfRepo(dep)
+	s.purgeServer(ctx, dep, opts, last, out)
 	s.removeEnvironment(ctx, dep)
-	s.removeDeployKey(ctx, dep)
+	if last {
+		s.removeDeployKey(ctx, dep)
+	} else {
+		s.log.Info("teardown: keeping the repo deploy key, another environment still uses it",
+			"repo", dep.Owner+"/"+dep.Repo)
+	}
+}
+
+// DeleteOptions are the operator's choices for a teardown.
+type DeleteOptions struct {
+	// RemoveVolumes deletes the project's named volumes, which destroys databases
+	// and uploads. Off unless the operator explicitly asks.
+	RemoveVolumes bool
+}
+
+// isLastEnvironmentOfRepo reports whether this is the only deployment left for
+// its (owner, repo). Resources shared across a repo's environments — the deploy
+// key on the box, the key on GitHub, the vault entry — may only be removed when
+// nothing else is using them.
+func (s *MonitorService) isLastEnvironmentOfRepo(dep Deployment) bool {
+	deployments, err := s.deployments.List()
+	if err != nil {
+		// Unknown means "assume something else needs it". Leaving a key behind is
+		// recoverable; breaking a sibling deployment's clone is not.
+		s.log.Warn("teardown: could not check sibling environments, keeping shared resources", "err", err)
+		return false
+	}
+	for _, d := range deployments {
+		if d.Owner == dep.Owner && d.Repo == dep.Repo && d.Environment != dep.Environment {
+			return false
+		}
+	}
+	return true
+}
+
+// purgeServer removes what this deployment owns on its server, by ownership label
+// and validated path. Skipped (with a log) when the server cannot be reached.
+func (s *MonitorService) purgeServer(ctx context.Context, dep Deployment, opts DeleteOptions, last bool, out io.Writer) {
+	server, err := s.servers.Get(dep.ServerID)
+	if err != nil {
+		s.log.Warn("teardown: skip server cleanup, server unavailable", "serverId", dep.ServerID, "err", err)
+		return
+	}
+	if server.Status != StatusReady {
+		s.log.Warn("teardown: skip server cleanup, server not set up", "serverId", dep.ServerID)
+		return
+	}
+	key, err := s.vault.LoadSecret(privateKeyKey(dep.ServerID))
+	if err != nil {
+		s.log.Warn("teardown: skip server cleanup, key unavailable", "serverId", dep.ServerID, "err", err)
+		return
+	}
+	t := SSHTarget{Host: server.IP, Port: server.SSHPort, User: BootstrapUser, PrivateKey: key, Fingerprint: server.Fingerprint}
+
+	spec := PurgeSpec{
+		DeploymentID:    DeploymentIDFor(dep),
+		RemoveVolumes:   opts.RemoveVolumes,
+		RemoveDeployKey: last,
+	}
+	if dep.Config != nil {
+		spec.DeployDir = dep.Config.DeployDir
+		spec.DeployKeyFile = dep.Config.DeployKeyFile
+	}
+	if err := s.purger.PurgeApp(ctx, t, spec, out); err != nil {
+		// Reported rather than swallowed: a teardown that claims success while
+		// leaving containers and a plaintext .env behind is worse than one that
+		// says what it could not remove.
+		s.log.Warn("teardown: server cleanup incomplete", "deployment", spec.DeploymentID, "err", err)
+	}
 }
 
 // removeEnvironment deletes the GitHub deployment environment mountabo created
@@ -388,30 +509,6 @@ func (s *MonitorService) removeDeployKey(ctx context.Context, dep Deployment) {
 	}
 	if err := s.vault.DeleteSecret(deployKeyVaultKey(dep.Owner, dep.Repo)); err != nil {
 		s.log.Warn("teardown: clear stored deploy key failed", "app", dep.App, "repo", dep.Owner+"/"+dep.Repo, "err", err)
-	}
-}
-
-// removeContainer SSHes into the deployment's server as the mountabo user and
-// removes the app's container(s). It is skipped (with a log) when the server
-// cannot be resolved, is not set up, or its key cannot be loaded.
-func (s *MonitorService) removeContainer(ctx context.Context, dep Deployment) {
-	server, err := s.servers.Get(dep.ServerID)
-	if err != nil {
-		s.log.Warn("teardown: skip container removal, server unavailable", "app", dep.App, "serverId", dep.ServerID, "err", err)
-		return
-	}
-	if server.Status != StatusReady {
-		s.log.Warn("teardown: skip container removal, server not set up", "app", dep.App, "serverId", dep.ServerID)
-		return
-	}
-	key, err := s.vault.LoadSecret(privateKeyKey(dep.ServerID))
-	if err != nil {
-		s.log.Warn("teardown: skip container removal, key unavailable", "app", dep.App, "serverId", dep.ServerID, "err", err)
-		return
-	}
-	t := SSHTarget{Host: server.IP, Port: server.SSHPort, User: BootstrapUser, PrivateKey: key, Fingerprint: server.Fingerprint}
-	if err := s.teardown.RemoveApp(ctx, t, DeploymentIDFor(dep)); err != nil {
-		s.log.Warn("teardown: remove app container failed", "app", dep.App, "serverId", dep.ServerID, "err", err)
 	}
 }
 

@@ -317,3 +317,106 @@ exec bash "$script" %s
 func shellSingleQuoteValue(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+// ApproveInput authorises one candidate's gated hooks.
+//
+// An approval names an artifact AND the fingerprint of the hook set it was read
+// against. Both must still match when it is used: if a newer deploy has
+// superseded the candidate, or the operator edited a command after approving,
+// the approval authorises nothing. They approved what they read, at the moment
+// they read it.
+type ApproveInput struct {
+	Owner       string
+	Repo        string
+	Environment string
+	// ArtifactID is the candidate being approved.
+	ArtifactID string
+	// HooksVersion fingerprints the hook set shown to the approver.
+	HooksVersion string
+	// HookIDs are the gated hooks this approval covers.
+	HookIDs []string
+	// Actor is who approved, recorded so the run says who authorised it.
+	Actor string
+}
+
+// ApproveAndContinue runs the gated hooks for a candidate and, when they pass,
+// continues the deploy that was halted waiting for them.
+//
+// The halted run exited without activating anything, so the previous release is
+// still serving; this is what actually applies the migration and swaps. It is the
+// only caller that ever sets the approval marker.
+func (s *RollbackService) ApproveAndContinue(ctx context.Context, in ApproveInput, out io.Writer) error {
+	dep, target, err := s.resolve(in.Owner, in.Repo, in.Environment)
+	if err != nil {
+		return err
+	}
+	if dep.Config == nil {
+		return ErrLegacyDeployment
+	}
+
+	key := lockKey(in.Owner, in.Repo, in.Environment)
+	if !s.locker.TryAcquire(key) {
+		return ErrDeployInProgress
+	}
+	defer s.locker.Release(key)
+
+	deploymentID := DeploymentIDFor(dep)
+	state, err := s.state.ReadReleaseState(ctx, target, deploymentID)
+	if err != nil {
+		return fmt.Errorf("read release state: %w", err)
+	}
+	if state.Lifecycle == "blocked" {
+		return ErrDeploymentBlocked
+	}
+	// The approval must still be for the candidate that is actually waiting. A
+	// newer deploy replaces the candidate, and approving the old one would apply
+	// a migration for a release that is never going to be activated.
+	if state.Candidate == "" || state.Candidate != in.ArtifactID {
+		return fmt.Errorf("%w: the candidate is now %q", ErrApprovalStale, state.Candidate)
+	}
+	if v := HooksVersion(dep.Config.Hooks); v != in.HooksVersion {
+		return fmt.Errorf("%w: the hooks changed since it was reviewed", ErrApprovalStale)
+	}
+
+	progress(out, "running approved hooks for %s", in.ArtifactID)
+	script := approvalScript(dep, in, deploymentID)
+	if err := s.scripts.RunAsDeployUser(ctx, target, script, out); err != nil {
+		return fmt.Errorf("approved run: %w", err)
+	}
+	return nil
+}
+
+// approvalScript re-enters the deployment's committed script with the approval
+// marker set.
+//
+// The marker is the artifact, the hook fingerprint and the environment joined
+// together, so it cannot be reused for a different release, a different hook set
+// or a different environment. It is set ONLY here — the generated workflow never
+// forwards it, which is what stops a push running a gated migration by accident.
+func approvalScript(dep Deployment, in ApproveInput, deploymentID string) string {
+	return fmt.Sprintf(`set -euo pipefail
+export MOUNTABO_MODE=deploy
+export MOUNTABO_ARTIFACT_ID=%s
+export MOUNTABO_APPROVAL=%s
+export MOUNTABO_APPROVED_HOOKS=%s
+export MOUNTABO_APPROVED_BY=%s
+export DEPLOY_DIR=%s
+deployment=%s
+artifact=%s
+script="$HOME/.mountabo/releases/$deployment/$artifact/runner.sh"
+if [ ! -f "$script" ]; then
+  echo "error: the candidate release $artifact is no longer on this server" >&2
+  exit 1
+fi
+exec bash "$script" %s
+`,
+		shellSingleQuoteValue(in.ArtifactID),
+		shellSingleQuoteValue(strings.Join([]string{in.ArtifactID, in.HooksVersion, in.Environment}, ":")),
+		shellSingleQuoteValue(strings.Join(in.HookIDs, " ")),
+		shellSingleQuoteValue(in.Actor),
+		shellSingleQuoteValue(dep.Config.DeployDir),
+		shellSingleQuoteValue(deploymentID),
+		shellSingleQuoteValue(in.ArtifactID),
+		shellSingleQuoteValue(dep.Branch),
+	)
+}

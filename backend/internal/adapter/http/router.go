@@ -84,6 +84,7 @@ func NewRouter(gh *GitHubHandler, sv *ServersHandler, dep *DeployHandler, mon *M
 	mux.HandleFunc("GET /api/deployments/{owner}/{repo}/{environment}/release", rel.State)
 	mux.HandleFunc("POST /api/deployments/{owner}/{repo}/{environment}/rollback", rel.Rollback)
 	mux.HandleFunc("POST /api/deployments/{owner}/{repo}/{environment}/redeploy", rel.Redeploy)
+	mux.HandleFunc("POST /api/deployments/{owner}/{repo}/{environment}/approve", rel.Approve)
 	mux.HandleFunc("GET /api/operations/{id}/logs", rel.Logs)
 	mux.HandleFunc("DELETE /api/deployments/{owner}/{repo}/{environment}", mon.Delete)
 

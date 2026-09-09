@@ -372,6 +372,8 @@ func streamSSE(w nethttp.ResponseWriter, log *slog.Logger, successMsg string, ru
 		sw.event("error", "that release is no longer on the server; mountabo keeps the active release and the one before it")
 	case errors.Is(err, usecase.ErrNoPreviousRelease):
 		sw.event("error", "there is no earlier retained release to roll back to")
+	case errors.Is(err, usecase.ErrApprovalStale):
+		sw.event("error", "that approval is for a superseded release; review the current one and approve again")
 	case errors.Is(err, usecase.ErrDeploymentBlocked):
 		sw.event("error", "this deployment is blocked on an unresolved migration outcome; resolve it first")
 	case errors.Is(err, usecase.ErrDeploymentNotFound):

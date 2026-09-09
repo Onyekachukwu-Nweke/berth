@@ -220,3 +220,109 @@ func TestParseReleaseState_TreatsAMissingDocumentAsEmpty(t *testing.T) {
 		t.Errorf("a corrupt document should be reported, not silently ignored")
 	}
 }
+
+func approveFixture(t *testing.T, state ReleaseState, hooks []Hook) (*RollbackService, *fakeScriptRunner) {
+	t.Helper()
+	deps := &fakeDeploymentStore{saved: []Deployment{{
+		ID: "d1", App: "shop", Owner: "acme", Repo: "shop", Branch: "main",
+		Environment: "production", ServerID: "s1", WorkflowFile: "w.yml",
+		DeploymentID: DeriveDeploymentID("acme", "shop", "production"),
+		Config:       &DeployConfig{Strategy: "compose", DeployDir: "/opt/shop", Hooks: hooks},
+	}}}
+	servers := newMemServerStore()
+	_ = servers.Save(Server{ID: "s1", Name: "box", IP: "10.0.0.1", SSHPort: 22, Status: StatusReady})
+	vault := newFakeVault()
+	_ = vault.SaveSecret(privateKeyKey("s1"), "KEY")
+	runner := &fakeScriptRunner{}
+	svc := NewRollbackService(deps, servers, vault, &fakeStore{loadTok: Token{AccessToken: "t"}},
+		fakeRuns{}, &fakeStateReader{state: state}, runner, NewDeployLocker(), nil)
+	return svc, runner
+}
+
+// TestApprove_ContinuesTheHaltedDeploy covers the happy path of the gate: the run
+// stopped before activating, and approving it applies the migration and swaps.
+func TestApprove_ContinuesTheHaltedDeploy(t *testing.T) {
+	hooks := []Hook{{ID: "m", When: HookMigration, Command: "migrate", Target: HookTargetContainer, Service: "api", Confirm: true}}
+	svc, runner := approveFixture(t, ReleaseState{Active: "art-1", Candidate: "art-2", Lifecycle: "awaiting_confirmation"}, hooks)
+
+	in := ApproveInput{
+		Owner: "acme", Repo: "shop", Environment: "production",
+		ArtifactID: "art-2", HooksVersion: HooksVersion(hooks),
+		HookIDs: []string{"m"}, Actor: "onyeka",
+	}
+	if err := svc.ApproveAndContinue(context.Background(), in, io.Discard); err != nil {
+		t.Fatalf("ApproveAndContinue: %v", err)
+	}
+	s := runner.scripts[0]
+	// The marker binds artifact, hook set and environment together, so it cannot
+	// be replayed against a different release or a different hook set.
+	if !strings.Contains(s, "MOUNTABO_APPROVAL='art-2:"+HooksVersion(hooks)+":production'") {
+		t.Errorf("approval marker should bind artifact, hooks and environment:\n%s", s)
+	}
+	if !strings.Contains(s, "MOUNTABO_APPROVED_HOOKS='m'") {
+		t.Errorf("approval should name the hooks it covers:\n%s", s)
+	}
+	if !strings.Contains(s, "MOUNTABO_APPROVED_BY='onyeka'") {
+		t.Errorf("approval should record who authorised it:\n%s", s)
+	}
+	// It continues the deploy, not a rollback: the candidate still has to activate.
+	if !strings.Contains(s, "MOUNTABO_MODE=deploy") {
+		t.Errorf("approval should continue the deploy:\n%s", s)
+	}
+}
+
+// TestApprove_RefusesASupersededCandidate is the staleness rule. If a newer
+// deploy replaced the candidate, approving the old one would apply a migration
+// for a release that will never be activated.
+func TestApprove_RefusesASupersededCandidate(t *testing.T) {
+	hooks := []Hook{{ID: "m", When: HookMigration, Command: "migrate", Target: HookTargetContainer, Service: "api", Confirm: true}}
+	svc, runner := approveFixture(t, ReleaseState{Active: "art-1", Candidate: "art-3"}, hooks)
+
+	err := svc.ApproveAndContinue(context.Background(), ApproveInput{
+		Owner: "acme", Repo: "shop", Environment: "production",
+		ArtifactID: "art-2", HooksVersion: HooksVersion(hooks),
+	}, io.Discard)
+	if !errors.Is(err, ErrApprovalStale) {
+		t.Errorf("want ErrApprovalStale, got %v", err)
+	}
+	if len(runner.scripts) != 0 {
+		t.Errorf("nothing should have run for a superseded candidate")
+	}
+}
+
+// TestApprove_RefusesWhenTheHooksChanged covers editing a command after approving
+// it. The operator approved what they read; a changed fingerprint means what they
+// read is no longer what would run.
+func TestApprove_RefusesWhenTheHooksChanged(t *testing.T) {
+	hooks := []Hook{{ID: "m", When: HookMigration, Command: "migrate", Target: HookTargetContainer, Service: "api", Confirm: true}}
+	svc, runner := approveFixture(t, ReleaseState{Active: "art-1", Candidate: "art-2"}, hooks)
+
+	err := svc.ApproveAndContinue(context.Background(), ApproveInput{
+		Owner: "acme", Repo: "shop", Environment: "production",
+		ArtifactID: "art-2", HooksVersion: "a-stale-fingerprint",
+	}, io.Discard)
+	if !errors.Is(err, ErrApprovalStale) {
+		t.Errorf("want ErrApprovalStale, got %v", err)
+	}
+	if len(runner.scripts) != 0 {
+		t.Errorf("nothing should have run with a stale hook fingerprint")
+	}
+}
+
+// TestApprove_RefusesWhileBlocked keeps an unresolved migration outcome from
+// being papered over by approving another one.
+func TestApprove_RefusesWhileBlocked(t *testing.T) {
+	hooks := []Hook{{ID: "m", When: HookMigration, Command: "migrate", Target: HookTargetContainer, Service: "api", Confirm: true}}
+	svc, runner := approveFixture(t, ReleaseState{Active: "art-1", Candidate: "art-2", Lifecycle: "blocked"}, hooks)
+
+	err := svc.ApproveAndContinue(context.Background(), ApproveInput{
+		Owner: "acme", Repo: "shop", Environment: "production",
+		ArtifactID: "art-2", HooksVersion: HooksVersion(hooks),
+	}, io.Discard)
+	if !errors.Is(err, ErrDeploymentBlocked) {
+		t.Errorf("want ErrDeploymentBlocked, got %v", err)
+	}
+	if len(runner.scripts) != 0 {
+		t.Errorf("nothing should have run while blocked")
+	}
+}

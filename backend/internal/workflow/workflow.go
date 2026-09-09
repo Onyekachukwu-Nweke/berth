@@ -66,6 +66,12 @@ type Config struct {
 	// namespace, the lock and the state document. Empty only in a preview
 	// rendered before the id is known, which falls back to the environment.
 	DeploymentID string
+	// Hooks are the operator's release hooks, already validated and in phase order.
+	Hooks []Hook
+	// HooksVersion fingerprints the hook set. An approval names one artifact
+	// running one specific set of commands, so editing a command after approving
+	// changes this and invalidates the approval — which is the point.
+	HooksVersion string
 	// ComposeFile is an explicit path to the stack's compose file, for projects
 	// that do not use one of the four conventional names (docker-compose.prod.yml
 	// being the common case). Empty falls back to those names.
@@ -919,10 +925,15 @@ func composeScript(c Config) string {
 	b.WriteString(composeImageOverride(c))
 	b.WriteString(loadImageBlock(c, false))
 	b.WriteString(stateHelpers)
+	b.WriteString(hookContext(c))
+	b.WriteString(HookDispatcher(c.Hooks))
 	// The recovery record is complete while the previous release is still
 	// serving; only then is the swap attempted.
 	b.WriteString(bundleBlock(c))
 	b.WriteString("\n")
+	b.WriteString(HookPhaseCall(c.Hooks, HookPostBuild))
+	b.WriteString(migrationPhase(c))
+	b.WriteString(HookPhaseCall(c.Hooks, HookPreDeploy))
 	b.WriteString(`echo "Swapping to new containers (built on the runner, no build here)..."
 # --remove-orphans on a deploy: the stack is the compose file, so a service the
 # operator deleted should go. It is deliberately NOT passed on a rollback — a
@@ -937,10 +948,13 @@ fi
 docker compose $COMPOSE_ARGS ps
 `)
 	b.WriteString("\n")
+	b.WriteString(HookPhaseCall(c.Hooks, HookPostDeploy))
 	b.WriteString(healthCheckBlock(c))
 	if primaryHostPort(c) != "" {
 		b.WriteString("\n")
 	}
+	b.WriteString(HookPhaseCall(c.Hooks, HookHealthCheck))
+	b.WriteString(rollbackHookPhase(c))
 	b.WriteString(verifyAndPromoteBlock(c))
 	b.WriteString(pruneBlock)
 	b.WriteString(`echo "=== Deployment complete ==="
@@ -967,6 +981,8 @@ func dockerScript(c Config) string {
 	b.WriteString(indentShell(envWriteBlock(c, false)))
 	b.WriteString("\nfi\n\n")
 	b.WriteString(stateHelpers)
+	b.WriteString(hookContext(c))
+	b.WriteString(HookDispatcher(c.Hooks))
 	// The recovery record is complete while the previous container is still
 	// running; only then is it replaced.
 	b.WriteString(bundleBlock(c))
@@ -992,6 +1008,9 @@ fi
 	// environments of one app on the same branch previously produced the same
 	// container name, so whichever deployed last replaced the other's container.
 	fmt.Fprintf(&b, "CONTAINER=%q\n\n", c.deploymentID())
+	b.WriteString(HookPhaseCall(c.Hooks, HookPostBuild))
+	b.WriteString(migrationPhase(c))
+	b.WriteString(HookPhaseCall(c.Hooks, HookPreDeploy))
 	b.WriteString(`echo "Swapping container..."
 docker rm -f "$CONTAINER" 2>/dev/null || true
 docker run -d --name "$CONTAINER" --restart unless-stopped \
@@ -1008,10 +1027,13 @@ docker run -d --name "$CONTAINER" --restart unless-stopped \
 	b.WriteString(" \\\n  \"$IMAGE\"\n")
 	b.WriteString("docker ps --filter \"name=$CONTAINER\"\n")
 	b.WriteString("\n")
+	b.WriteString(HookPhaseCall(c.Hooks, HookPostDeploy))
 	b.WriteString(healthCheckBlock(c))
 	if primaryHostPort(c) != "" {
 		b.WriteString("\n")
 	}
+	b.WriteString(HookPhaseCall(c.Hooks, HookHealthCheck))
+	b.WriteString(rollbackHookPhase(c))
 	b.WriteString(verifyAndPromoteBlock(c))
 	b.WriteString(pruneBlock)
 	b.WriteString(`echo "=== Deployment complete ==="

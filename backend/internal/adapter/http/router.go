@@ -35,7 +35,7 @@ import nethttp "net/http"
 //	POST   /api/servers/{id}/exec    run one shell command on the server (over SSH), returns output + exit code
 //	POST   /api/ai/command           suggest a shell command for a plain-English request (Claude), advisory only
 //	DELETE /api/servers/{id}         remove a server and destroy its secrets
-func NewRouter(gh *GitHubHandler, sv *ServersHandler, dep *DeployHandler, mon *MonitorHandler, sec *SecretsHandler, term *TerminalHandler) *nethttp.ServeMux {
+func NewRouter(gh *GitHubHandler, sv *ServersHandler, dep *DeployHandler, mon *MonitorHandler, sec *SecretsHandler, rel *ReleaseHandler, term *TerminalHandler) *nethttp.ServeMux {
 	mux := nethttp.NewServeMux()
 	mux.HandleFunc("POST /api/github/exchange", gh.Exchange)
 	mux.HandleFunc("GET /api/github/status", gh.Status)
@@ -76,6 +76,15 @@ func NewRouter(gh *GitHubHandler, sv *ServersHandler, dep *DeployHandler, mon *M
 	mux.HandleFunc("PUT /api/deployments/{owner}/{repo}/{environment}/secrets", sec.Set)
 	mux.HandleFunc("DELETE /api/deployments/{owner}/{repo}/{environment}/secrets/{name}", sec.Delete)
 	mux.HandleFunc("DELETE /api/deployments/{owner}/{repo}/{environment}/lock", mon.ClearLock)
+
+	// Release operations. The mutation is a POST that returns an operation id; the
+	// log is a separate GET stream. Driving the mutation from the stream itself
+	// would let an EventSource reconnect — which browsers do automatically on any
+	// dropped connection — silently re-run the rollback.
+	mux.HandleFunc("GET /api/deployments/{owner}/{repo}/{environment}/release", rel.State)
+	mux.HandleFunc("POST /api/deployments/{owner}/{repo}/{environment}/rollback", rel.Rollback)
+	mux.HandleFunc("POST /api/deployments/{owner}/{repo}/{environment}/redeploy", rel.Redeploy)
+	mux.HandleFunc("GET /api/operations/{id}/logs", rel.Logs)
 	mux.HandleFunc("DELETE /api/deployments/{owner}/{repo}/{environment}", mon.Delete)
 
 	// Terminal page: run one command on a server, and ask the AI helper for a

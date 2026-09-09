@@ -366,6 +366,18 @@ func streamSSE(w nethttp.ResponseWriter, log *slog.Logger, successMsg string, ru
 		sw.event("error", "another setup/apply is already running for this server")
 	case errors.Is(err, usecase.ErrDeployInProgress):
 		sw.event("error", "another deploy is already running for this app")
+	case errors.Is(err, usecase.ErrRunInProgress):
+		sw.event("error", "a deploy run is in flight for this deployment; wait for it or force the rollback")
+	case errors.Is(err, usecase.ErrArtifactNotRetained):
+		sw.event("error", "that release is no longer on the server; mountabo keeps the active release and the one before it")
+	case errors.Is(err, usecase.ErrNoPreviousRelease):
+		sw.event("error", "there is no earlier retained release to roll back to")
+	case errors.Is(err, usecase.ErrDeploymentBlocked):
+		sw.event("error", "this deployment is blocked on an unresolved migration outcome; resolve it first")
+	case errors.Is(err, usecase.ErrDeploymentNotFound):
+		sw.event("error", "deployment not found")
+	case errors.Is(err, usecase.ErrLegacyDeployment):
+		sw.event("error", "this deployment predates release tracking; deploy once from configure first")
 	default:
 		log.Error("stream operation failed", "err", err)
 		// Surface the (secret-free) reason, then the terminal error event.

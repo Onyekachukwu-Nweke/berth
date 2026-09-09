@@ -130,11 +130,16 @@ func run() error {
 	// deploy.sh from the repo (keychain token), and the SQLite store then forgets
 	// its tracking. Teardown is best-effort and logged.
 	monitorSvc := usecase.NewMonitorService(deploymentStore, deploymentStore, deploymentStore, keyStore, ghClient, serverStore, keyStore, sshClient, ghClient, ghClient, ghClient, deploymentStore, deployLocker, logger)
+	// Rollback and redeploy run SSH-direct rather than through Actions: recovery
+	// should not depend on GitHub being reachable and a runner being free, which
+	// is exactly when you least want another moving part.
+	rollbackSvc := usecase.NewRollbackService(deploymentStore, serverStore, keyStore, keyStore, ghClient, sshClient, sshClient, deployLocker, logger)
 	// App health: probe whether a deployed app is responding by curling it from
 	// its own server over SSH (the same ssh.Client + server store + keychain key
 	// the metrics/logs services use), so the card shows real up/down status.
 	appHealthSvc := usecase.NewAppHealthService(deploymentStore, serverStore, keyStore, sshClient)
 	monitorHandler := httpadapter.NewMonitorHandler(monitorSvc, appHealthSvc, logger)
+	releaseHandler := httpadapter.NewReleaseHandler(rollbackSvc, logger)
 
 	// Compose the terminal page: run a single operator command on a set-up server
 	// over SSH (the same ssh.Client + server store + keychain key the read-only
@@ -147,7 +152,7 @@ func run() error {
 	aiCommandSvc := usecase.NewAICommandService(aiClient)
 	terminalHandler := httpadapter.NewTerminalHandler(serverExecSvc, aiCommandSvc, logger)
 
-	router := httpadapter.NewRouter(githubHandler, serversHandler, deployHandler, monitorHandler, secretsHandler, terminalHandler)
+	router := httpadapter.NewRouter(githubHandler, serversHandler, deployHandler, monitorHandler, secretsHandler, releaseHandler, terminalHandler)
 	srv := httpadapter.NewServer(cfg, router)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

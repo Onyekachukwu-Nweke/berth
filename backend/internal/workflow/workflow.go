@@ -789,8 +789,16 @@ fi`
 	}
 	return fmt.Sprintf(`TARBALL="%[1]s/image.tar.zst"
 trap 'rm -f "$TARBALL"' EXIT
+loaded=""
+# A rollback re-points to images already in the local store — there is no
+# tarball, and re-loading one would defeat the point of not rebuilding.
+if [ "$MOUNTABO_MODE" = deploy ]; then
 echo "Loading image from $TARBALL..."
 %[2]s
+else
+  loaded="$(jq -r '.images[]?.ref // empty' "$BUNDLE/manifest.json" 2>/dev/null | tr '\n' ' ')"
+  echo "re-pointing to retained image(s): $loaded"
+fi
 `, StagingDir(c), load)
 }
 
@@ -827,9 +835,18 @@ echo "app responded on :%[1]s (HTTP $code)"
 // its `image:` pins win over anything in the user's compose/override and every
 // build-service resolves to the tag just loaded (never rebuilt on the server).
 func composeImageOverride(c Config) string {
-	return fmt.Sprintf(`# Pin build-services to the runner-built images (loaded above); merged last so
-# its image: wins and the server never rebuilds.
-if [ -f "%[1]s/mountabo.image.override.yml" ]; then
+	return fmt.Sprintf(`# Pin build-services to exact images; merged last so its image: wins and the
+# server never rebuilds. On a deploy the pins come from the runner (shipped
+# beside the tarball); on a rollback they come from the target release's own
+# bundle, which is what makes the rollback re-point rather than rebuild.
+if [ "$MOUNTABO_MODE" = rollback ]; then
+  if [ ! -f "$BUNDLE/image.override.yml" ]; then
+    echo "error: release $ARTIFACT_ID has no image pins recorded, so it cannot be rolled back to" >&2
+    exit 1
+  fi
+  cp "$BUNDLE/image.override.yml" ./mountabo.image.override.yml
+  COMPOSE_ARGS="$COMPOSE_ARGS -f mountabo.image.override.yml"
+elif [ -f "%[1]s/mountabo.image.override.yml" ]; then
   cp "%[1]s/mountabo.image.override.yml" ./mountabo.image.override.yml
   COMPOSE_ARGS="$COMPOSE_ARGS -f mountabo.image.override.yml"
 fi
@@ -854,6 +871,7 @@ func composeScript(c Config) string {
 	b.WriteString(header(c))
 	b.WriteByte('\n')
 	b.WriteString(lockPreamble(c))
+	b.WriteString(rollbackKindBlock)
 	b.WriteString(artifactIdentityBlock)
 
 	var exports []string
@@ -870,8 +888,13 @@ func composeScript(c Config) string {
 
 	b.WriteByte('\n')
 	b.WriteString(gitAuth(c))
-	b.WriteString(clonePull)
-	b.WriteString("\n\n")
+	// A rollback re-points to a retained artifact; it must not move the working
+	// tree, because the checkout is what the release's own compose was rendered
+	// against. Fetching would also require the branch to still resolve.
+	b.WriteString("if [ \"$MOUNTABO_MODE\" = deploy ]; then\n")
+	b.WriteString(indentShell(clonePull))
+	b.WriteString("\nfi\n")
+	b.WriteString(`cd "$DEPLOY_DIR"` + "\n")
 	b.WriteString(cdRoot(c))
 	// Pin the compose project name so each (app, branch) deploy owns a stable,
 	// known set of containers (compose otherwise defaults the project name to
@@ -884,9 +907,13 @@ func composeScript(c Config) string {
 	// can select this deployment's resources by ownership instead of by name.
 	fmt.Fprintf(&b, "export COMPOSE_PROJECT_NAME=%q\n", c.deploymentID())
 	b.WriteByte('\n')
+	// Secrets are write-only on GitHub, so mountabo cannot reconstruct .env for a
+	// rollback. The file already on the box is the deployment's current
+	// configuration and is reused as-is — a rollback restores code, not secrets.
+	b.WriteString("if [ \"$MOUNTABO_MODE\" = deploy ]; then\n")
 	b.WriteString("# Write .env (ports + your environment variables) for docker compose.\n")
-	b.WriteString(envWriteBlock(c, true))
-	b.WriteString("\n")
+	b.WriteString(indentShell(envWriteBlock(c, true)))
+	b.WriteString("\nfi\n\n")
 	b.WriteString(populateEnvFiles)
 	b.WriteString(composeEnvOverride(c))
 	b.WriteString(composeImageOverride(c))
@@ -897,7 +924,15 @@ func composeScript(c Config) string {
 	b.WriteString(bundleBlock(c))
 	b.WriteString("\n")
 	b.WriteString(`echo "Swapping to new containers (built on the runner, no build here)..."
-docker compose $COMPOSE_ARGS up -d --no-build --force-recreate --remove-orphans
+# --remove-orphans on a deploy: the stack is the compose file, so a service the
+# operator deleted should go. It is deliberately NOT passed on a rollback — a
+# service that exists today but not in the target release would be stopped
+# silently, which is a destructive surprise rather than a rollback.
+if [ "$MOUNTABO_MODE" = rollback ]; then
+  docker compose $COMPOSE_ARGS up -d --no-build --force-recreate
+else
+  docker compose $COMPOSE_ARGS up -d --no-build --force-recreate --remove-orphans
+fi
 
 docker compose $COMPOSE_ARGS ps
 `)
@@ -918,15 +953,19 @@ func dockerScript(c Config) string {
 	b.WriteString(header(c))
 	b.WriteByte('\n')
 	b.WriteString(lockPreamble(c))
+	b.WriteString(rollbackKindBlock)
 	b.WriteString(artifactIdentityBlock)
 	b.WriteByte('\n')
 	b.WriteString(workDirNoClone)
 	b.WriteString("\n\n")
 	b.WriteString(loadImageBlock(c, true))
 	b.WriteString("\n")
+	// See composeScript: a rollback reuses the .env already on the box, because
+	// GitHub Actions secret values cannot be read back to rebuild it.
+	b.WriteString("if [ \"$MOUNTABO_MODE\" = deploy ]; then\n")
 	b.WriteString("# Write .env (your environment variables) for the container.\n")
-	b.WriteString(envWriteBlock(c, false))
-	b.WriteString("\n")
+	b.WriteString(indentShell(envWriteBlock(c, false)))
+	b.WriteString("\nfi\n\n")
 	b.WriteString(stateHelpers)
 	// The recovery record is complete while the previous container is still
 	// running; only then is it replaced.
@@ -935,7 +974,20 @@ func dockerScript(c Config) string {
 
 	// The exact image tag the runner built + loaded is forwarded as MOUNTABO_IMAGE;
 	// running it (not <app>:$BRANCH) guarantees we run precisely what was shipped.
-	b.WriteString("IMAGE=\"${MOUNTABO_IMAGE:?MOUNTABO_IMAGE must be set by the workflow}\"\n")
+	// On a deploy the workflow forwards the exact tag it built and shipped; on a
+	// rollback the tag comes from the target release's own manifest, so the
+	// container starts the same image that release ran rather than anything
+	// resolved fresh.
+	b.WriteString(`if [ "$MOUNTABO_MODE" = rollback ]; then
+  IMAGE="$(jq -r '.images[0].ref // empty' "$BUNDLE/manifest.json" 2>/dev/null)"
+  if [ -z "$IMAGE" ]; then
+    echo "error: release $ARTIFACT_ID has no image recorded, so it cannot be rolled back to" >&2
+    exit 1
+  fi
+else
+  IMAGE="${MOUNTABO_IMAGE:?MOUNTABO_IMAGE must be set by the workflow}"
+fi
+`)
 	// The container is named for the deployment, not "<app>-<branch>": two
 	// environments of one app on the same branch previously produced the same
 	// container name, so whichever deployed last replaced the other's container.

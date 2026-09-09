@@ -162,7 +162,7 @@ func TestDeployScript_EnvIsNameAgnostic(t *testing.T) {
 		t.Errorf("deploy.sh must not bake env-var names into .env:\n%s", s)
 	}
 	// Verification: reports the count and fails an empty .env when keys were expected.
-	for _, want := range []string{"wrote $written environment variable(s) to .env", "is empty", "exit 1"} {
+	for _, want := range []string{"wrote $written environment variable(s) to .env", "is not set on this GitHub environment", "exit 1"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("deploy.sh missing verification %q:\n%s", want, s)
 		}
@@ -262,5 +262,53 @@ func TestWorkflow_ConcurrencySerializes(t *testing.T) {
 		if !strings.Contains(w, want) {
 			t.Errorf("workflow concurrency missing %q", want)
 		}
+	}
+}
+
+// TestAppRoot_StripsOnlyWhatItShould pins a real corruption. The previous
+// implementation used strings.TrimLeft with the cutset "./", which strips every
+// leading "." and "/" character rather than one "./" prefix — so a dotted
+// directory had its name silently rewritten and the runner built from the wrong
+// place. It reached both the runner's build context and the script's cd.
+func TestAppRoot_StripsOnlyWhatItShould(t *testing.T) {
+	for in, want := range map[string]string{
+		"./apps/web":  "apps/web",
+		"apps/web":    "apps/web",
+		"/apps/web/":  "apps/web",
+		".config/app": ".config/app", // previously became "config/app"
+		"..hidden":    "..hidden",    // previously became "hidden"
+		"":            "",
+		".":           "",
+		"./":          "",
+		"/":           "",
+	} {
+		c := base()
+		c.RootDir = in
+		if got := appRoot(c); got != want {
+			t.Errorf("appRoot(%q) = %q, want %q", in, got, want)
+		}
+		// rootDirOrDot is the runner's build context; "" must become "." there.
+		wantDot := want
+		if wantDot == "" {
+			wantDot = "."
+		}
+		if got := rootDirOrDot(c); got != wantDot {
+			t.Errorf("rootDirOrDot(%q) = %q, want %q", in, got, wantDot)
+		}
+	}
+}
+
+// TestCdRoot_MatchesAppRoot keeps the script's cd and the runner's build context
+// derived from the same value; they addressed the same directory by two
+// different broken paths before.
+func TestCdRoot_MatchesAppRoot(t *testing.T) {
+	c := base()
+	c.RootDir = ".config/app"
+	if got := cdRoot(c); got != "cd \".config/app\"\n" {
+		t.Errorf("cdRoot = %q", got)
+	}
+	c.RootDir = ""
+	if got := cdRoot(c); got != "" {
+		t.Errorf("cdRoot at repo root = %q, want empty", got)
 	}
 }

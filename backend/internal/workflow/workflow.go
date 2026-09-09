@@ -66,6 +66,10 @@ type Config struct {
 	// namespace, the lock and the state document. Empty only in a preview
 	// rendered before the id is known, which falls back to the environment.
 	DeploymentID string
+	// ComposeFile is an explicit path to the stack's compose file, for projects
+	// that do not use one of the four conventional names (docker-compose.prod.yml
+	// being the common case). Empty falls back to those names.
+	ComposeFile string
 	// Incarnation is how many times this deployment has been created. Baked into
 	// the generated script so a run queued against a deleted deployment, whose
 	// successor has since been recreated, is rejected rather than deploying into
@@ -356,9 +360,23 @@ func rsyncArtifacts(c Config) string {
 
 // rootDirOrDot is the app root relative to the repo, or "." at the repo root.
 func rootDirOrDot(c Config) string {
-	root := strings.TrimRight(strings.TrimLeft(c.RootDir, "./"), "/")
-	if root == "" {
-		return "."
+	if root := appRoot(c); root != "" {
+		return root
+	}
+	return "."
+}
+
+// appRoot is the app's directory relative to the repo root, or "" at the root.
+//
+// It strips one leading "./" and any surrounding slashes — and nothing else. The
+// previous implementation used strings.TrimLeft with the cutset "./", which
+// removes EVERY leading "." and "/" character, so a legitimate dotted directory
+// like ".config/app" silently became "config/app": the runner built from the
+// wrong directory, or failed to find one at all.
+func appRoot(c Config) string {
+	root := strings.Trim(strings.TrimPrefix(strings.TrimSpace(c.RootDir), "./"), "/")
+	if root == "." {
+		return ""
 	}
 	return root
 }
@@ -485,14 +503,55 @@ else
   cd "$DEPLOY_DIR"
 fi`
 
-// populateEnvFiles copies the .env just written into any per-service env file
-// the compose declares (env_file:), since those files are not committed to the
-// repo. It only touches paths ending in .env and only when the file is missing,
-// so a committed env file is never overwritten and unrelated list items (ports,
+// populateEnvFiles regenerates every per-service env file a compose declares
+// (env_file:) from the .env just written, so configured variables reach every
+// service. Only paths ending in .env are touched, so unrelated list items (ports,
 // volumes) are ignored. Paths are relative to the compose file in the current
 // directory, matching how compose resolves env_file.
-const populateEnvFiles = `# Create any per-service env files the compose references (env_file:) from the
-# .env above, so the configured variables reach every service.
+//
+// It used to write each file ONLY when it was missing ("[ -f "$ef" ] || cp"),
+// which is the single biggest reason a changed secret never reached a running
+// container. These files are untracked, and the deploy resets the tree with
+// "git reset --hard", which leaves untracked files alone — so a file created by
+// the first deploy survived every later one, pinning that service to the values
+// it had on day one. The root .env looked correct the whole time, which is what
+// made it so hard to see.
+//
+// Three cases have to be distinguished, and getting any of them wrong
+// reintroduces a bug:
+//
+//   - env_file pointing AT the project .env: copying a file onto itself fails,
+//     and appending it to itself would double every line. Skipped outright.
+//   - a COMMITTED env file: restored from git first so its defaults come back,
+//     then the operator's values appended after them. Later assignments win in
+//     both dotenv and docker --env-file, so the operator overrides the default
+//     rather than the other way round.
+//   - an UNTRACKED file: it is ours from a previous deploy, so it is replaced.
+//
+// The trailing-newline check matters: appending to a committed file that does
+// not end in a newline would fuse its last entry with the first appended one
+// into a single malformed line.
+const populateEnvFiles = `# Regenerate any per-service env files the compose references (env_file:) from
+# the .env above, so a changed secret reaches every service and not just the root.
+mountabo_write_service_env() {
+  ef="$1"
+  if [ "$(readlink -f "$ef" 2>/dev/null || echo "$ef")" = "$(readlink -f .env)" ]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$ef")"
+  if git ls-files --error-unmatch -- "$ef" >/dev/null 2>&1; then
+    git checkout -- "$ef"
+    if [ -s "$ef" ] && [ "$(tail -c1 "$ef" | wc -l)" -eq 0 ]; then
+      printf '\n' >> "$ef"
+    fi
+    cat .env >> "$ef"
+    echo "refreshed $ef (committed defaults + your configured values)"
+  else
+    cp .env "$ef"
+    echo "refreshed $ef"
+  fi
+}
+
 for cf in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do
   [ -f "$cf" ] || continue
   awk '
@@ -503,7 +562,7 @@ for cf in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do
   ' "$cf"
 done | sort -u | while IFS= read -r ef; do
   case "$ef" in
-    *.env) mkdir -p "$(dirname "$ef")"; [ -f "$ef" ] || cp .env "$ef" ;;
+    *.env) mountabo_write_service_env "$ef" ;;
   esac
 done
 
@@ -523,44 +582,101 @@ done
 // no compose file is found so compose falls back to auto-detection. The override
 // file is regenerated each deploy and never committed (git reset --hard leaves
 // untracked files, so it simply persists/refreshes).
+// composeEnvOverride mounts the operator's .env into every compose service as
+// container environment. Docker Compose reads a project .env only for ${VAR}
+// interpolation in the compose file, NOT as container env — so a service that
+// declares no env_file:/environment: never receives the operator's secrets. This
+// generates a mountabo-owned override that attaches "env_file: .env" and this
+// deployment's ownership labels to each service, merged in with -f. It reads only
+// service NAMES; the user's compose is never parsed or edited.
+//
+// Two failure modes are fixed here, both of which produced a green deploy with no
+// configuration in it:
+//
+//   - Service discovery swallowed every error ("2>/dev/null || true"). When it
+//     produced nothing, no override was written and NOT ONE variable reached ANY
+//     service — silently, with the deploy reporting success. It now captures the
+//     compose error, prints it, and fails the run rather than shipping an
+//     unconfigured app.
+//   - The compose file was matched against four hardcoded names, so a project
+//     using docker-compose.prod.yml was never found. The file is now configurable
+//     (Config.ComposeFile), falling back to those names.
+//
+// Services are read from "config --format json" via jq rather than inferred from
+// YAML text: anchors, extends and multiple -f files all normalise there, and jq
+// is guaranteed by bootstrap. Older compose builds without --format fall back to
+// "config --services". --no-interpolate matches the runner's build step: only the
+// structure is needed here, and a compose file referencing a variable that is
+// only defined at runtime must not fail discovery.
 func composeEnvOverride(c Config) string {
+	var candidates []string
+	if f := strings.TrimSpace(c.ComposeFile); f != "" {
+		candidates = append(candidates, f)
+	}
+	candidates = append(candidates, "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
+
+	// Two renderings: quoted for the shell loop (a path may contain a space), and
+	// a plain list for the error message, which is itself inside a double-quoted
+	// echo and so cannot carry embedded quotes.
+	quoted := make([]string, 0, len(candidates))
+	for _, f := range candidates {
+		quoted = append(quoted, fmt.Sprintf("%q", f))
+	}
+
 	return fmt.Sprintf(`# Mount the operator's .env into every compose service as container environment
-# (compose otherwise uses .env only for interpolation, not as container env).
-# Stamped onto every service so teardown can select this deployment's containers
-# by ownership rather than by guessing at names. Compose also labels them with
-# com.docker.compose.project, which is the deployment id.
-MOUNTABO_LABELS=%[1]q
+# (compose otherwise uses .env only for interpolation, not as container env), and
+# stamp this deployment's ownership labels so teardown can select them.
+MOUNTABO_LABELS=%[3]q
 COMPOSE=""
-for cf in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do
+for cf in %[1]s; do
   if [ -f "$cf" ]; then COMPOSE="$cf"; break; fi
 done
-COMPOSE_ARGS=""
-if [ -n "$COMPOSE" ]; then
-  COMPOSE_ARGS="-f $COMPOSE"
-  for ov in docker-compose.override.yml docker-compose.override.yaml compose.override.yml compose.override.yaml; do
-    if [ -f "$ov" ]; then COMPOSE_ARGS="$COMPOSE_ARGS -f $ov"; break; fi
-  done
-  services=$(docker compose $COMPOSE_ARGS config --services 2>/dev/null || true)
-  if [ -n "$services" ]; then
-    {
-      echo "services:"
-      for s in $services; do
-        printf '  %%s:\n    env_file:\n      - .env\n    labels:\n' "$s"
-        for l in $MOUNTABO_LABELS; do printf '      - %%s\n' "$l"; done
-      done
-    } > mountabo.env.override.yml
-    COMPOSE_ARGS="$COMPOSE_ARGS -f mountabo.env.override.yml"
-    echo "mounting .env into services: $services"
-  fi
+if [ -z "$COMPOSE" ]; then
+  echo "error: no compose file found (looked for: %[2]s)" >&2
+  echo "       set the compose file for this environment in mountabo if yours is named differently" >&2
+  exit 1
 fi
 
-`, c.ownershipLabels())
+COMPOSE_ARGS="-f $COMPOSE"
+for ov in docker-compose.override.yml docker-compose.override.yaml compose.override.yml compose.override.yaml; do
+  if [ -f "$ov" ]; then COMPOSE_ARGS="$COMPOSE_ARGS -f $ov"; break; fi
+done
+
+# Enumerate services, keeping the error if it fails. A stack whose services
+# cannot be listed cannot have configuration injected into it, and shipping that
+# silently is exactly what this replaces.
+compose_err="$(mktemp)"
+services="$(docker compose $COMPOSE_ARGS config --no-interpolate --format json 2>"$compose_err" | jq -r '.services | keys[]' 2>/dev/null || true)"
+if [ -z "$services" ]; then
+  # Older compose plugins have no --format; fall back before treating it as fatal.
+  services="$(docker compose $COMPOSE_ARGS config --services 2>>"$compose_err" || true)"
+fi
+if [ -z "$services" ]; then
+  echo "error: could not read the services from $COMPOSE, so no environment variables can be injected." >&2
+  echo "       docker compose reported:" >&2
+  sed 's/^/       /' "$compose_err" >&2 || true
+  rm -f "$compose_err"
+  exit 1
+fi
+rm -f "$compose_err"
+
+{
+  echo "services:"
+  for s in $services; do
+    printf '  %%s:\n    env_file:\n      - .env\n    labels:\n' "$s"
+    for l in $MOUNTABO_LABELS; do printf '      - %%s\n' "$l"; done
+  done
+} > mountabo.env.override.yml
+COMPOSE_ARGS="$COMPOSE_ARGS -f mountabo.env.override.yml"
+echo "mounting .env into services: $(echo $services | tr '\n' ' ')"
+
+`, strings.Join(quoted, " "), strings.Join(candidates, ", "), c.ownershipLabels())
 }
 
 // cdRoot is the `cd <rootDir>` line (with trailing newline) when the app lives
 // in a sub-directory, or "" for the repo root.
 func cdRoot(c Config) string {
-	root := strings.TrimRight(strings.TrimLeft(c.RootDir, "./"), "/")
+	root := appRoot(c)
 	if root == "" {
 		return ""
 	}
@@ -596,12 +712,17 @@ func envWriteBlock(c Config, includePorts bool) string {
 	}
 	b.WriteString(`written=0
 for k in ${MOUNTABO_ENV_KEYS:-}; do
-  v="${!k-}"
-  if [ -z "$v" ]; then
-    echo "warning: env var $k is empty (set it in the secrets tab, then redeploy)"
+  # Test whether the variable is SET, not whether it is non-empty. A variable an
+  # operator deliberately set to "" is a configured value: dropping it made the
+  # application see an unset variable instead of an empty one, which for most
+  # runtimes is a different thing entirely (undefined vs ""). Only a name that
+  # never arrived — not configured on the GitHub environment, or not forwarded —
+  # is skipped.
+  if [ -z "${!k+x}" ]; then
+    echo "warning: env var $k is not set on this GitHub environment (add it in the secrets tab, then redeploy)"
     continue
   fi
-  printf '%s=%s\n' "$k" "$v" >> .env
+  printf '%s=%s\n' "$k" "${!k}" >> .env
   written=$((written + 1))
 done
 echo "wrote $written environment variable(s) to .env"

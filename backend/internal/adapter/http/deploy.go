@@ -34,6 +34,7 @@ type deployRequest struct {
 	Strategy    string `json:"strategy"`
 	RootDir     string `json:"rootDir"`
 	DeployDir   string `json:"deployDir"`
+	ComposeFile string `json:"composeFile"`
 	Ports       []struct {
 		EnvVar    string `json:"envVar"`
 		Value     string `json:"value"`
@@ -66,6 +67,7 @@ func (req deployRequest) input(serverID string) usecase.DeployInput {
 		Strategy:    req.Strategy,
 		RootDir:     req.RootDir,
 		DeployDir:   req.DeployDir,
+		ComposeFile: req.ComposeFile,
 		Ports:       ports,
 		EnvVars:     envVars,
 	}

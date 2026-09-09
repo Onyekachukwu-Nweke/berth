@@ -40,7 +40,12 @@ func runComposeOverride(t *testing.T, c Config, dockerStub string, composeFiles 
 		}
 	}
 
-	script := "#!/usr/bin/env bash\nset -euo pipefail\ncd " + dir + "\n" + composeEnvOverride(c) + "\necho REACHED_BUILD\n"
+	// artifactIdentityBlock normally defines this earlier in the script; the
+	// override is exercised on its own, so it is supplied here. "set -euo
+	// pipefail" matches the generated script, so an unbound reference fails this
+	// harness the way it would fail a real deploy.
+	script := "#!/usr/bin/env bash\nset -euo pipefail\ncd " + dir + "\n" +
+		"ARTIFACT_ID=test-artifact\n" + composeEnvOverride(c) + "\necho REACHED_BUILD\n"
 	path := filepath.Join(dir, "run.sh")
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatalf("write: %v", err)

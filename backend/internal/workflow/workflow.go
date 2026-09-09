@@ -185,12 +185,19 @@ func Workflow(c Config) string {
 	}
 	fmt.Fprintf(&envBlock, "          MOUNTABO_ENV_KEYS: %q", strings.Join(appKeys, " "))
 
-	forwardNames := append(append([]string{}, names...), "MOUNTABO_ENV_KEYS")
+	// Release identity, forwarded so the script can record what it deployed.
+	// MOUNTABO_ARTIFACT_ID names the build (not the commit — see ArtifactIDExpr);
+	// MOUNTABO_OPERATION_ID names this run so re-reading it is idempotent.
+	fmt.Fprintf(&envBlock, "\n          MOUNTABO_ARTIFACT_ID: %s", ArtifactIDExpr)
+	fmt.Fprintf(&envBlock, "\n          MOUNTABO_OPERATION_ID: %s", OperationIDExpr)
+	fmt.Fprintf(&envBlock, "\n          %s", commitEnvLine())
+	forwardNames := append(append([]string{}, names...),
+		"MOUNTABO_ENV_KEYS", "MOUNTABO_ARTIFACT_ID", "MOUNTABO_OPERATION_ID", "MOUNTABO_COMMIT")
 	// The docker strategy runs one known image tag; forward it so deploy.sh runs
 	// exactly what the runner built and loaded. Compose gets the mapping from the
 	// image-override file instead, so it needs no extra env.
 	if c.strategy() == Docker {
-		fmt.Fprintf(&envBlock, "\n          MOUNTABO_IMAGE: %s:${{ github.sha }}", c.imageRepo())
+		fmt.Fprintf(&envBlock, "\n          MOUNTABO_IMAGE: %s:%s", c.imageRepo(), ArtifactIDExpr)
 		forwardNames = append(forwardNames, "MOUNTABO_IMAGE")
 	}
 	forward := strings.Join(forwardNames, ",")
@@ -262,18 +269,23 @@ jobs:
 }
 
 // buildStep renders the runner build+save step for the strategy: it builds the
-// image(s) and writes image.tar.zst next to deploy.sh so the transfer step can
-// ship them. The image tag is derived from github.sha so each commit loads a
-// distinct, known tag on the server.
+// image(s) and writes image.tar.zst next to the deploy script so the transfer
+// step can ship them.
+//
+// The tag is the ARTIFACT id, not the commit sha. Keying it on the sha meant the
+// same commit rebuilt with different build arguments, a moved base image or newly
+// resolved dependencies overwrote the earlier image in place — so the artifact
+// that had been running was no longer recoverable. A secret change triggers
+// exactly such a rebuild.
 func buildStep(c Config) string {
 	root := rootDirOrDot(c)
 	if c.strategy() == Docker {
 		// Single image from the repo's Dockerfile; context is the app root.
 		return fmt.Sprintf(`      - name: Build image on the runner
         run: |
-          docker build -t %[1]s:${{ github.sha }} %[2]s
-          docker save %[1]s:${{ github.sha }} | zstd -T0 -o image.tar.zst
-`, c.imageRepo(), root)
+          docker build -t %[1]s:%[3]s %[2]s
+          docker save %[1]s:%[3]s | zstd -T0 -o image.tar.zst
+`, c.imageRepo(), root, ArtifactIDExpr)
 	}
 	// Compose: pin every build-service to a deterministic tag via a generated
 	// image override, build with it, then save only those tags. jq enumerates the
@@ -297,7 +309,7 @@ func buildStep(c Config) string {
           rm -f mountabo.image.override.yml
           for s in $services; do
             svc=$(printf '%%s' "$s" | tr '[:upper:]' '[:lower:]')
-            tag="%[1]s-$svc:${{ github.sha }}"
+            tag="%[1]s-$svc:%[3]s"
             [ -f mountabo.image.override.yml ] || echo "services:" > mountabo.image.override.yml
             printf '  %%s:\n    image: %%s\n' "$s" "$tag" >> mountabo.image.override.yml
             tags="$tags $tag"
@@ -311,7 +323,7 @@ func buildStep(c Config) string {
           else
             echo "no build: services in compose; images will be pulled on the server"
           fi
-`, c.imageRepo(), root)
+`, c.imageRepo(), root, ArtifactIDExpr)
 }
 
 // ownershipLabels are the labels stamped on every resource this deployment
@@ -670,7 +682,7 @@ rm -f "$compose_err"
 COMPOSE_ARGS="$COMPOSE_ARGS -f mountabo.env.override.yml"
 echo "mounting .env into services: $(echo $services | tr '\n' ' ')"
 
-`, strings.Join(quoted, " "), strings.Join(candidates, ", "), c.ownershipLabels())
+`, strings.Join(quoted, " "), strings.Join(candidates, ", "), c.allLabels())
 }
 
 // cdRoot is the `cd <rootDir>` line (with trailing newline) when the app lives
@@ -810,22 +822,6 @@ echo "app responded on :%[1]s (HTTP $code)"
 `, port)
 }
 
-// untagOldImages bounds disk on the server by removing older mountabo image tags
-// for this app, keeping the just-loaded one(s) in $loaded. `docker image prune`
-// would not help here: these tags are named (one per commit sha), not dangling.
-// referencePattern is a docker `reference=` filter (shell wildcards) scoping the
-// removal to this app's images only. Best-effort: an image still in use (the one
-// just started) is excluded via $loaded, and any rmi failure is swallowed.
-func untagOldImages(referencePattern string) string {
-	return fmt.Sprintf(`# Bound disk: drop older mountabo image tags for this app, keeping the loaded one(s).
-if [ -n "$loaded" ]; then
-  docker images --filter=reference=%[1]q --format '{{.Repository}}:{{.Tag}}' \
-    | grep -vxF -f <(printf '%%s\n' "$loaded") \
-    | xargs -r docker rmi -f 2>/dev/null || true
-fi
-`, referencePattern)
-}
-
 // composeImageOverride copies the runner-generated image override (rsynced next
 // to the tarball) into the app directory and merges it into COMPOSE_ARGS LAST, so
 // its `image:` pins win over anything in the user's compose/override and every
@@ -858,6 +854,7 @@ func composeScript(c Config) string {
 	b.WriteString(header(c))
 	b.WriteByte('\n')
 	b.WriteString(lockPreamble(c))
+	b.WriteString(artifactIdentityBlock)
 
 	var exports []string
 	for _, p := range c.Ports {
@@ -894,6 +891,10 @@ func composeScript(c Config) string {
 	b.WriteString(composeEnvOverride(c))
 	b.WriteString(composeImageOverride(c))
 	b.WriteString(loadImageBlock(c, false))
+	b.WriteString(stateHelpers)
+	// The recovery record is complete while the previous release is still
+	// serving; only then is the swap attempted.
+	b.WriteString(bundleBlock(c))
 	b.WriteString("\n")
 	b.WriteString(`echo "Swapping to new containers (built on the runner, no build here)..."
 docker compose $COMPOSE_ARGS up -d --no-build --force-recreate --remove-orphans
@@ -905,7 +906,8 @@ docker compose $COMPOSE_ARGS ps
 	if primaryHostPort(c) != "" {
 		b.WriteString("\n")
 	}
-	b.WriteString(untagOldImages(c.imageRepo() + "-*:*"))
+	b.WriteString(verifyAndPromoteBlock(c))
+	b.WriteString(pruneBlock)
 	b.WriteString(`echo "=== Deployment complete ==="
 `)
 	return b.String()
@@ -916,6 +918,7 @@ func dockerScript(c Config) string {
 	b.WriteString(header(c))
 	b.WriteByte('\n')
 	b.WriteString(lockPreamble(c))
+	b.WriteString(artifactIdentityBlock)
 	b.WriteByte('\n')
 	b.WriteString(workDirNoClone)
 	b.WriteString("\n\n")
@@ -923,6 +926,11 @@ func dockerScript(c Config) string {
 	b.WriteString("\n")
 	b.WriteString("# Write .env (your environment variables) for the container.\n")
 	b.WriteString(envWriteBlock(c, false))
+	b.WriteString("\n")
+	b.WriteString(stateHelpers)
+	// The recovery record is complete while the previous container is still
+	// running; only then is it replaced.
+	b.WriteString(bundleBlock(c))
 	b.WriteString("\n")
 
 	// The exact image tag the runner built + loaded is forwarded as MOUNTABO_IMAGE;
@@ -936,7 +944,7 @@ func dockerScript(c Config) string {
 docker rm -f "$CONTAINER" 2>/dev/null || true
 docker run -d --name "$CONTAINER" --restart unless-stopped \
   `)
-	for _, l := range c.ownershipLabelArgs() {
+	for _, l := range c.artifactLabelArgs() {
 		fmt.Fprintf(&b, "--label %s \\\n  ", l)
 	}
 	b.WriteString(`--env-file .env`)
@@ -952,7 +960,8 @@ docker run -d --name "$CONTAINER" --restart unless-stopped \
 	if primaryHostPort(c) != "" {
 		b.WriteString("\n")
 	}
-	b.WriteString(untagOldImages(c.imageRepo() + ":*"))
+	b.WriteString(verifyAndPromoteBlock(c))
+	b.WriteString(pruneBlock)
 	b.WriteString(`echo "=== Deployment complete ==="
 `)
 	return b.String()

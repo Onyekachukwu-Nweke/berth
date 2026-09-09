@@ -2,7 +2,9 @@ package repository
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,70 +139,6 @@ func TestDeploymentSQL_EnvironmentsCoexist(t *testing.T) {
 	}
 }
 
-// TestOpenSQLite_MigratesBranchKeyToEnvironment proves a database whose
-// deployments table still keys by (owner, repo, branch) is rebuilt under the
-// (owner, repo, environment) key on open, preserving rows.
-func TestOpenSQLite_MigratesBranchKeyToEnvironment(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "legacy-key.db")
-
-	legacy, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatalf("open legacy db: %v", err)
-	}
-	// Old schema: deployments keyed by (owner, repo, branch).
-	if _, err := legacy.Exec(`CREATE TABLE deployments (
-		owner TEXT NOT NULL, repo TEXT NOT NULL, branch TEXT NOT NULL,
-		id TEXT NOT NULL, app TEXT NOT NULL, environment TEXT NOT NULL,
-		server_id TEXT NOT NULL, workflow_file TEXT NOT NULL,
-		port INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
-		PRIMARY KEY (owner, repo, branch)
-	)`); err != nil {
-		t.Fatalf("create legacy deployments: %v", err)
-	}
-	if _, err := legacy.Exec(`INSERT INTO deployments
-		(owner, repo, branch, id, app, environment, server_id, workflow_file, port, created_at)
-		VALUES ('acme','shop','main','d1','shop','main','s1','mountabo-deploy-main.yml',8080,'2026-01-01T00:00:00Z')`); err != nil {
-		t.Fatalf("seed legacy row: %v", err)
-	}
-	_ = legacy.Close()
-
-	db, err := OpenSQLite(path)
-	if err != nil {
-		t.Fatalf("OpenSQLite on branch-keyed db: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	// The row survived the rebuild.
-	list, err := NewDeploymentSQL(db).List()
-	if err != nil {
-		t.Fatalf("List after key migration: %v", err)
-	}
-	if len(list) != 1 || list[0].Environment != "main" || list[0].App != "shop" {
-		t.Fatalf("migrated deployments = %+v, want one acme/shop/main row", list)
-	}
-	// The new key is now enforced: the pragma reports environment as a PK column.
-	rows, err := db.Query(`PRAGMA table_info(deployments)`)
-	if err != nil {
-		t.Fatalf("pragma: %v", err)
-	}
-	defer func() { _ = rows.Close() }()
-	envIsKey := false
-	for rows.Next() {
-		var cid, notnull, pk int
-		var name, ctype string
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			t.Fatalf("scan pragma: %v", err)
-		}
-		if name == "environment" && pk > 0 {
-			envIsKey = true
-		}
-	}
-	if !envIsKey {
-		t.Error("after migration, environment should be part of the primary key")
-	}
-}
-
 func TestDeploymentSQL_RecordsReleasesAndLinksPrevious(t *testing.T) {
 	db, err := OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -246,94 +184,6 @@ func TestDeploymentSQL_RecordsReleasesAndLinksPrevious(t *testing.T) {
 	}
 	if oldest.PrevReleaseID != nil {
 		t.Errorf("oldest prevReleaseID = %v, want nil", *oldest.PrevReleaseID)
-	}
-}
-
-// TestOpenSQLite_MigratesRootDir proves a database whose deployments table
-// predates the root_dir column is migrated in place: opening it adds the column
-// and existing rows read back with the empty-string (repo-root) default.
-func TestOpenSQLite_MigratesRootDir(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "pre-rootdir.db")
-
-	// Build an environment-keyed deployments table without root_dir and seed a row.
-	legacy, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatalf("open legacy db: %v", err)
-	}
-	if _, err := legacy.Exec(`CREATE TABLE deployments (
-		owner TEXT NOT NULL, repo TEXT NOT NULL, branch TEXT NOT NULL, id TEXT NOT NULL,
-		app TEXT NOT NULL, environment TEXT NOT NULL, server_id TEXT NOT NULL,
-		workflow_file TEXT NOT NULL, port INTEGER NOT NULL DEFAULT 0,
-		created_at TEXT NOT NULL, PRIMARY KEY (owner, repo, environment)
-	)`); err != nil {
-		t.Fatalf("create legacy table: %v", err)
-	}
-	if _, err := legacy.Exec(`INSERT INTO deployments
-		(owner, repo, branch, id, app, environment, server_id, workflow_file, port, created_at)
-		VALUES ('acme','shop','main','dep1','shop','production','s1','wf.yml',3000,'2026-01-01T00:00:00Z')`); err != nil {
-		t.Fatalf("seed legacy row: %v", err)
-	}
-	_ = legacy.Close()
-
-	db, err := OpenSQLite(path)
-	if err != nil {
-		t.Fatalf("OpenSQLite on pre-root_dir db: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	deployments, err := NewDeploymentSQL(db).List()
-	if err != nil {
-		t.Fatalf("List after migration: %v", err)
-	}
-	if len(deployments) != 1 {
-		t.Fatalf("want 1 deployment, got %d", len(deployments))
-	}
-	if d := deployments[0]; d.RootDir != "" || d.Environment != "production" || d.Port != 3000 {
-		t.Errorf("migrated row = %+v, want empty root_dir and preserved fields", d)
-	}
-}
-
-// TestOpenSQLite_MigratesLegacyDeployEvents proves an old database whose
-// deploy_events table predates the release columns is migrated in place: opening
-// it adds the columns without error and existing rows read back with defaults.
-func TestOpenSQLite_MigratesLegacyDeployEvents(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "legacy.db")
-
-	// Build a pre-release-columns deploy_events table and seed one row.
-	legacy, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatalf("open legacy db: %v", err)
-	}
-	if _, err := legacy.Exec(`CREATE TABLE deploy_events (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		owner TEXT NOT NULL, repo TEXT NOT NULL, branch TEXT NOT NULL,
-		environment TEXT NOT NULL, server_id TEXT NOT NULL, app TEXT NOT NULL, at TEXT NOT NULL
-	)`); err != nil {
-		t.Fatalf("create legacy table: %v", err)
-	}
-	if _, err := legacy.Exec(`INSERT INTO deploy_events (owner, repo, branch, environment, server_id, app, at)
-		VALUES ('acme','shop','main','main','s1','shop','2026-01-01T00:00:00Z')`); err != nil {
-		t.Fatalf("seed legacy row: %v", err)
-	}
-	_ = legacy.Close()
-
-	// Opening through OpenSQLite must add the release columns idempotently.
-	db, err := OpenSQLite(path)
-	if err != nil {
-		t.Fatalf("OpenSQLite on legacy db: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	releases, total, err := NewDeploymentSQL(db).Releases("acme", "shop", "main", 10)
-	if err != nil {
-		t.Fatalf("Releases after migration: %v", err)
-	}
-	if total != 1 || len(releases) != 1 {
-		t.Fatalf("releases total=%d len=%d, want 1/1", total, len(releases))
-	}
-	// The legacy row reads back with defaulted release fields.
-	if r := releases[0]; r.Status != "pending" || r.CommitSHA != "" || r.PrevReleaseID != nil {
-		t.Errorf("migrated row = %+v, want pending/empty/nil defaults", r)
 	}
 }
 
@@ -386,5 +236,155 @@ func TestDeploymentSQL_PersistsDeployConfig(t *testing.T) {
 	}
 	if byEnv["staging"].Config != nil {
 		t.Errorf("a record saved without config should read back legacy (nil), got %+v", byEnv["staging"].Config)
+	}
+}
+
+// TestOpenSQLite_RefusesAnOlderDatabase pins the deliberate absence of
+// migrations. mountabo's database is entirely derived state — configured servers
+// and deployments, plus a deploy log — all recreated by reconnecting and
+// redeploying. Migration code for that could only ever run on a developer's own
+// machine, would be exercised by nothing real, and a rebuild that silently drops
+// a column is far worse than being told to start clean. So an older database is
+// refused, by version, with an actionable message.
+func TestOpenSQLite_RefusesAnOlderDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+
+	// A database from before versioning: tables present, user_version still 0.
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := old.Exec(`CREATE TABLE deployments (owner TEXT, repo TEXT, branch TEXT, id TEXT, app TEXT,
+		environment TEXT, server_id TEXT, workflow_file TEXT, created_at TEXT, PRIMARY KEY (owner, repo, branch))`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_ = old.Close()
+
+	db, err := OpenSQLite(path)
+	if err == nil {
+		_ = db.Close()
+		t.Fatal("an older database was opened instead of refused")
+	}
+	var tooOld *ErrSchemaTooOld
+	if !errors.As(err, &tooOld) {
+		t.Fatalf("want ErrSchemaTooOld, got %T: %v", err, err)
+	}
+	// The message has to tell the operator exactly what to do, naming the file —
+	// a bare SQL error would leave them stuck.
+	if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "rm ") {
+		t.Errorf("error is not actionable:\n%s", err)
+	}
+}
+
+func TestOpenSQLite_CreatesAndReopensAFreshDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fresh.db")
+
+	db, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatalf("read version: %v", err)
+	}
+	if version != schemaVersion {
+		t.Errorf("user_version = %d, want %d", version, schemaVersion)
+	}
+	if err := NewDeploymentSQL(db).Save(usecase.Deployment{
+		ID: "d1", App: "shop", Owner: "acme", Repo: "shop", Branch: "main",
+		Environment: "production", ServerID: "s1", WorkflowFile: "w.yml",
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	_ = db.Close()
+
+	// Reopening a current database must be a no-op, not a refusal.
+	again, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("reopen a current database: %v", err)
+	}
+	defer func() { _ = again.Close() }()
+	list, err := NewDeploymentSQL(again).List()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("List after reopen: %v err=%v", list, err)
+	}
+}
+
+// TestDeploymentSQL_PersistsDeploymentIDOnceAndNeverMovesIt pins the "written
+// once" rule. The stored id names the containers, images, volumes and paths that
+// already exist on the server, so a later deploy that renames the app or moves
+// the branch must not be able to re-home them.
+func TestDeploymentSQL_PersistsDeploymentIDOnceAndNeverMovesIt(t *testing.T) {
+	db, err := OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	store := NewDeploymentSQL(db)
+
+	d := usecase.Deployment{
+		ID: "d1", App: "shop", Owner: "acme", Repo: "shop", Branch: "main",
+		Environment: "production", ServerID: "s1", WorkflowFile: "w.yml",
+		DeploymentID: usecase.DeriveDeploymentID("acme", "shop", "production"),
+		CreatedAt:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	if err := store.Save(d); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	moved := d
+	moved.App = "renamed"
+	moved.Branch = "other"
+	moved.DeploymentID = "mtb-000000000000"
+	if err := store.Save(moved); err != nil {
+		t.Fatalf("Save again: %v", err)
+	}
+
+	list, err := store.List()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("List: %v err=%v", list, err)
+	}
+	if got := list[0].DeploymentID; got != d.DeploymentID {
+		t.Errorf("deployment id moved to %q, want the original %q", got, d.DeploymentID)
+	}
+	if list[0].App != "renamed" || list[0].Branch != "other" {
+		t.Errorf("other fields should still update: app=%q branch=%q", list[0].App, list[0].Branch)
+	}
+}
+
+// TestDeploymentSQL_EnvironmentsGetDistinctIdentities is the storage half of
+// acceptance criterion 3. Two environments of one repo previously shared
+// "<app>-<branch>" for their compose project, containers and image namespace;
+// their identities must now differ at the point they are recorded.
+func TestDeploymentSQL_EnvironmentsGetDistinctIdentities(t *testing.T) {
+	db, err := OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	store := NewDeploymentSQL(db)
+
+	// Same repo, same branch, two environments — the exact collision case.
+	for _, env := range []string{"production", "staging"} {
+		if err := store.Save(usecase.Deployment{
+			ID: "d-" + env, App: "shop", Owner: "acme", Repo: "shop", Branch: "main",
+			Environment: env, ServerID: "s1", WorkflowFile: "w.yml",
+			DeploymentID: usecase.DeriveDeploymentID("acme", "shop", env),
+		}); err != nil {
+			t.Fatalf("Save %s: %v", env, err)
+		}
+	}
+
+	list, err := store.List()
+	if err != nil || len(list) != 2 {
+		t.Fatalf("List: %v err=%v", list, err)
+	}
+	if list[0].DeploymentID == list[1].DeploymentID {
+		t.Errorf("both environments share the identity %q", list[0].DeploymentID)
+	}
+	for _, d := range list {
+		if d.DeploymentID == "" {
+			t.Errorf("environment %q has no identity", d.Environment)
+		}
 	}
 }

@@ -177,12 +177,15 @@ func TestDeploy_WritesArtifactsProvisionsEnvAndSecrets(t *testing.T) {
 		t.Fatalf("Deploy: %v", err)
 	}
 
-	// Two commits: deploy.sh at the repo root, then the per-branch workflow.
+	// Two commits: the per-deployment script, then the per-environment workflow.
 	if len(repo.calls) != 2 {
 		t.Fatalf("want 2 file writes, got %d", len(repo.calls))
 	}
-	if repo.calls[0].path != "deploy.sh" {
-		t.Errorf("first write path = %q, want deploy.sh", repo.calls[0].path)
+	// Scoped to the deployment id, not a shared repo-root deploy.sh, so a second
+	// environment of this repo cannot overwrite it.
+	wantScript := ".mountabo/deploy-" + DeriveDeploymentID("acme", "shop", "main") + ".sh"
+	if repo.calls[0].path != wantScript {
+		t.Errorf("first write path = %q, want %q", repo.calls[0].path, wantScript)
 	}
 	if repo.calls[1].path != ".github/workflows/mountabo-deploy-main.yml" {
 		t.Errorf("second write path = %q", repo.calls[1].path)
@@ -513,8 +516,9 @@ func TestReapplyWorkflow_RegeneratesBothAndDispatches(t *testing.T) {
 	for _, c := range repo.calls {
 		paths = append(paths, c.path)
 	}
-	if len(paths) != 2 || paths[0] != "deploy.sh" || paths[1] != ".github/workflows/mountabo-deploy-production.yml" {
-		t.Errorf("re-apply should commit deploy.sh + workflow, got %v", paths)
+	wantScript := ".mountabo/deploy-" + DeriveDeploymentID("acme", "shop", "production") + ".sh"
+	if len(paths) != 2 || paths[0] != wantScript || paths[1] != ".github/workflows/mountabo-deploy-production.yml" {
+		t.Errorf("re-apply should commit %s + workflow, got %v", wantScript, paths)
 	}
 	// The regenerated workflow carries the new key.
 	if !strings.Contains(repo.calls[1].content, "API_KEY") {

@@ -24,15 +24,15 @@ func (f fakeReleaseReader) Releases(_, _, _ string, _ int) ([]Release, int, erro
 	return f.releases, f.total, nil
 }
 
-// fakeContainerTeardown records the apps it was asked to remove, so a test can
-// assert the container teardown ran for the right app.
+// fakeContainerTeardown records the deployment identities it was asked to remove,
+// so a test can assert teardown ran against the right deployment — and only it.
 type fakeContainerTeardown struct {
 	removed []string
 	err     error
 }
 
-func (f *fakeContainerTeardown) RemoveApp(_ context.Context, _ SSHTarget, app, _ string) error {
-	f.removed = append(f.removed, app)
+func (f *fakeContainerTeardown) RemoveApp(_ context.Context, _ SSHTarget, deploymentID string) error {
+	f.removed = append(f.removed, deploymentID)
 	return f.err
 }
 
@@ -242,12 +242,18 @@ func TestMonitorDelete_TearsDownContainerWorkflowAndRecord(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	// The container was stopped for the right app.
-	if len(teardown.removed) != 1 || teardown.removed[0] != "shop" {
-		t.Errorf("container teardown = %v, want [shop]", teardown.removed)
+	// Teardown ran against the deployment's canonical identity, not its app name:
+	// an app name is shared by every environment of the repo, so tearing down by
+	// app could remove a sibling environment's containers.
+	wantID := DeriveDeploymentID("acme", "shop", "production")
+	if len(teardown.removed) != 1 || teardown.removed[0] != wantID {
+		t.Errorf("container teardown = %v, want [%s]", teardown.removed, wantID)
 	}
 	// Both committed artifacts were deleted from the repo.
-	wantFiles := []string{"acme/shop:deploy.sh", "acme/shop:.github/workflows/mountabo-deploy-production.yml"}
+	wantFiles := []string{
+		"acme/shop:.mountabo/deploy-" + DeriveDeploymentID("acme", "shop", "production") + ".sh",
+		"acme/shop:.github/workflows/mountabo-deploy-production.yml",
+	}
 	if len(files.deleted) != len(wantFiles) {
 		t.Fatalf("deleted files = %v, want %v", files.deleted, wantFiles)
 	}

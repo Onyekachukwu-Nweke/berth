@@ -60,11 +60,54 @@ type Config struct {
 	// under the deploy user's ~/.ssh; deploy.sh uses it for git over SSH. Empty
 	// falls back to whatever key the server's git already has.
 	DeployKeyFile string
+	// DeploymentID is the canonical identity every server-side resource is named
+	// from (usecase.DeriveDeploymentID): the committed script, the staging
+	// directory, the checkout, the compose project, container names, the image
+	// namespace, the lock and the state document. Empty only in a preview
+	// rendered before the id is known, which falls back to the environment.
+	DeploymentID string
+	// Incarnation is how many times this deployment has been created. Baked into
+	// the generated script so a run queued against a deleted deployment, whose
+	// successor has since been recreated, is rejected rather than deploying into
+	// it. Zero is treated as the first incarnation.
+	Incarnation int
 }
 
-// DeployScriptPath is where deploy.sh is committed (repo root). The workflow's
-// scp step copies it from here by name.
-const DeployScriptPath = "deploy.sh"
+// scriptDir holds the per-deployment scripts, one file per deployment.
+const scriptDir = ".mountabo/"
+
+// ScriptPath is where this deployment's script is committed. It is keyed on the
+// canonical deployment id rather than the branch or app name: a single repo-root
+// deploy.sh meant two environments of one repo on the same branch overwrote each
+// other's strategy, ports and deploy directory.
+func ScriptPath(c Config) string { return scriptDir + ScriptName(c) }
+
+// ScriptName is the script's bare file name, which is also what it is called on
+// the server after the transfer flattens it by basename.
+func ScriptName(c Config) string { return "deploy-" + c.deploymentID() + ".sh" }
+
+// StagingDir is where the workflow ships the script and image tarball on the
+// server. Scoped to the deployment so two environments never overwrite each
+// other's artifacts mid-transfer.
+func StagingDir(c Config) string { return "/tmp/" + c.deploymentID() + "-deploy" }
+
+// deploymentID falls back to the environment when no id was supplied, so a
+// preview rendered before the id is known still produces coherent paths.
+func (c Config) deploymentID() string {
+	if id := strings.TrimSpace(c.DeploymentID); id != "" {
+		return id
+	}
+	return c.environment()
+}
+
+// incarnation defaults to the first, so a preview or a config built without it
+// renders a script that is not treated as superseded.
+func (c Config) incarnation() int {
+	if c.Incarnation < 1 {
+		return 1
+	}
+	return c.Incarnation
+}
 
 func (c Config) environment() string {
 	if e := strings.TrimSpace(c.Environment); e != "" {
@@ -105,11 +148,14 @@ func Path(c Config) string {
 }
 
 // imageRepo is the deterministic image repository mountabo tags a build under,
-// namespaced per app. Docker repository names must be lowercase, so the app is
-// lowercased here; the runner tags `<imageRepo>:<sha>` (docker) or
+// namespaced per DEPLOYMENT rather than per app. Namespacing it by app meant two
+// environments of one app produced the identical tag for the same commit, so
+// staging's image and production's image were the same object on the server and
+// on the runner. The runner tags `<imageRepo>:<sha>` (docker) or
 // `<imageRepo>-<service>:<sha>` (compose) and the server loads exactly that.
+// Docker repository names must be lowercase; the deployment id already is.
 func (c Config) imageRepo() string {
-	return "mountabo/" + strings.ToLower(strings.TrimSpace(c.App))
+	return "mountabo/" + c.deploymentID()
 }
 
 // Workflow renders the GitHub Actions workflow YAML. The build happens on the
@@ -186,13 +232,14 @@ jobs:
           chmod 600 "$key"
           ssh_opts="ssh -i $key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
           ssh -i "$key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            "$SERVER_USER@$SERVER_HOST" "mkdir -p /tmp/%[1]s-deploy"
-          # deploy.sh is always shipped; the tarball (and compose image override)
-          # only when the build produced them — a pull-only compose stack has none.
-          srcs="deploy.sh"
+            "$SERVER_USER@$SERVER_HOST" "mkdir -p %[8]s"
+          # The deploy script is always shipped; the tarball (and compose image
+          # override) only when the build produced them — a pull-only compose
+          # stack has none.
+          srcs="%[9]s"
           for f in %[7]s; do [ -f "$f" ] && srcs="$srcs $f"; done
           rsync -a --partial -e "$ssh_opts" $srcs \
-            "$SERVER_USER@$SERVER_HOST:/tmp/%[1]s-deploy/"
+            "$SERVER_USER@$SERVER_HOST:%[8]s/"
 
       - name: Deploy on the server
         uses: appleboy/ssh-action@v1.1.0
@@ -204,9 +251,10 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           envs: %[5]s
           script: |
-            chmod +x /tmp/%[1]s-deploy/deploy.sh
-            /tmp/%[1]s-deploy/deploy.sh %[2]s
-`, c.App, c.Branch, c.environment(), envBlock.String(), forward, buildStep(c), rsyncArtifacts(c))
+            chmod +x %[8]s/%[10]s
+            %[8]s/%[10]s %[2]s
+`, c.App, c.Branch, c.environment(), envBlock.String(), forward, buildStep(c), rsyncArtifacts(c),
+		StagingDir(c), ScriptPath(c), ScriptName(c))
 }
 
 // buildStep renders the runner build+save step for the strategy: it builds the
@@ -262,12 +310,38 @@ func buildStep(c Config) string {
 `, c.imageRepo(), root)
 }
 
+// ownershipLabels are the labels stamped on every resource this deployment
+// creates, as a space-separated "k=v" list. Teardown selects on
+// mountabo.deployment to remove exactly this deployment's containers, networks
+// and volumes — rather than guessing from names, which cannot distinguish two
+// deployments that happen to share an app or a branch.
+func (c Config) ownershipLabels() string {
+	return strings.Join([]string{
+		"mountabo.deployment=" + c.deploymentID(),
+		"mountabo.owner=" + strings.ToLower(strings.TrimSpace(c.Owner)),
+		"mountabo.repo=" + strings.ToLower(strings.TrimSpace(c.Repo)),
+		"mountabo.environment=" + c.environment(),
+	}, " ")
+}
+
+// ownershipLabelArgs is the same set, quoted for use as individual --label
+// arguments in a docker run invocation.
+func (c Config) ownershipLabelArgs() []string {
+	parts := strings.Split(c.ownershipLabels(), " ")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, fmt.Sprintf("%q", p))
+	}
+	return out
+}
+
 // rsyncArtifacts is the space-separated list of build outputs the transfer step
 // ships alongside deploy.sh (which it always ships). The ship step guards each
 // with a `[ -f ]` test, so a pull-only compose stack that produced no tarball or
 // override simply ships neither. Docker writes image.tar.zst at the workspace
 // root; the compose build step cd's into the app root first, so its artifacts
-// carry that prefix. rsync flattens them into /tmp/<app>-deploy/ by basename.
+// carry that prefix. rsync flattens them into the deployment's staging
+// directory by basename.
 func rsyncArtifacts(c Config) string {
 	if c.strategy() == Docker {
 		return "image.tar.zst"
@@ -304,10 +378,79 @@ func header(c Config) string {
 set -euo pipefail
 
 BRANCH="${1:-%[1]s}"
-DEPLOY_DIR="${DEPLOY_DIR:-%[2]s}/$BRANCH"
+DEPLOYMENT_ID=%[6]q
+DEPLOY_DIR="${DEPLOY_DIR:-%[2]s}/$DEPLOYMENT_ID"
 REPO_URL="git@github.com:%[3]s/%[4]s.git"
 
-echo "=== %[5]s deploy (branch: $BRANCH) ==="`, c.Branch, c.DeployDir, c.Owner, c.Repo, c.App)
+echo "=== %[5]s deploy (branch: $BRANCH) ==="`, c.Branch, c.DeployDir, c.Owner, c.Repo, c.App, c.deploymentID())
+}
+
+// lockPreamble serializes the whole operation on the server and refuses to run
+// against a deleted or superseded deployment. It is emitted into every generated
+// script, immediately after the header.
+//
+// The lock has to live on the box. mountabo's in-process DeployLocker only
+// covers operations mountabo itself starts, and a GitHub Actions concurrency
+// group only covers Actions runs — neither can see an SSH-direct rollback, hook
+// or teardown. A file lock on the server is the one point all of them pass
+// through, so it is the only real serialization boundary.
+//
+// It fails closed. flock is installed and verified during bootstrap; if it is
+// missing here the guarantee is simply absent, and continuing would risk two
+// operations interleaving on one working tree — so the script stops instead.
+//
+// The state document doubles as the deletion tombstone. It outlives a teardown
+// on purpose: a run queued before a deployment was deleted must find "deleted"
+// and stop, rather than recreating the app that was just torn down. Recreating a
+// deployment bumps its incarnation, so a run generated under an older one is
+// rejected as superseded instead of deploying into its successor.
+func lockPreamble(c Config) string {
+	return fmt.Sprintf(`
+# --- mountabo: serialize on the server, and refuse superseded work ------------
+MOUNTABO_STATE="${MOUNTABO_STATE:-$HOME/.mountabo}"
+MOUNTABO_MODE="${MOUNTABO_MODE:-deploy}"
+STATE_FILE="$MOUNTABO_STATE/state/$DEPLOYMENT_ID.json"
+LOCK_FILE="$MOUNTABO_STATE/locks/$DEPLOYMENT_ID.lock"
+EXPECT_INCARNATION=%[1]d
+
+umask 077
+mkdir -p "$MOUNTABO_STATE/state" "$MOUNTABO_STATE/locks" "$MOUNTABO_STATE/releases"
+chmod 700 "$MOUNTABO_STATE" 2>/dev/null || true
+
+if ! command -v flock >/dev/null 2>&1; then
+  echo "error: flock is missing on this server, so mountabo cannot serialize this deploy" >&2
+  echo "       install it (apt-get install -y util-linux) and re-run setup for this server" >&2
+  exit 1
+fi
+exec 9>"$LOCK_FILE"
+if ! flock -w "${MOUNTABO_LOCK_WAIT:-900}" 9; then
+  echo "error: another operation on this deployment holds the lock; it did not finish in time" >&2
+  exit 1
+fi
+
+# Everything below runs under the lock, so the state read cannot race a teardown.
+if [ -f "$STATE_FILE" ]; then
+  state_lifecycle="$(jq -r '.lifecycle // "active"' "$STATE_FILE" 2>/dev/null || echo active)"
+  state_incarnation="$(jq -r '.incarnation // 1' "$STATE_FILE" 2>/dev/null || echo 1)"
+  case "$state_lifecycle" in
+    deleting|deleted)
+      echo "This deployment was deleted in mountabo, so this run will not deploy."
+      echo "Recreate it from mountabo if you want it back; that resets its state deliberately."
+      exit 0
+      ;;
+    blocked)
+      echo "error: this deployment is blocked on an unresolved migration outcome." >&2
+      echo "       Resolve it in mountabo (confirm whether the migration applied) before deploying." >&2
+      exit 1
+      ;;
+  esac
+  if [ "$state_incarnation" -gt "$EXPECT_INCARNATION" ] 2>/dev/null; then
+    echo "This run was generated for an earlier incarnation of this deployment (#$EXPECT_INCARNATION,"
+    echo "now #$state_incarnation), so it has been superseded and will not deploy."
+    exit 0
+  fi
+fi
+`, c.incarnation())
 }
 
 // gitAuth points git at the repo's read-only deploy key for SSH clones, when
@@ -380,8 +523,13 @@ done
 // no compose file is found so compose falls back to auto-detection. The override
 // file is regenerated each deploy and never committed (git reset --hard leaves
 // untracked files, so it simply persists/refreshes).
-const composeEnvOverride = `# Mount the operator's .env into every compose service as container environment
+func composeEnvOverride(c Config) string {
+	return fmt.Sprintf(`# Mount the operator's .env into every compose service as container environment
 # (compose otherwise uses .env only for interpolation, not as container env).
+# Stamped onto every service so teardown can select this deployment's containers
+# by ownership rather than by guessing at names. Compose also labels them with
+# com.docker.compose.project, which is the deployment id.
+MOUNTABO_LABELS=%[1]q
 COMPOSE=""
 for cf in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do
   if [ -f "$cf" ]; then COMPOSE="$cf"; break; fi
@@ -397,7 +545,8 @@ if [ -n "$COMPOSE" ]; then
     {
       echo "services:"
       for s in $services; do
-        printf '  %s:\n    env_file:\n      - .env\n' "$s"
+        printf '  %%s:\n    env_file:\n      - .env\n    labels:\n' "$s"
+        for l in $MOUNTABO_LABELS; do printf '      - %%s\n' "$l"; done
       done
     } > mountabo.env.override.yml
     COMPOSE_ARGS="$COMPOSE_ARGS -f mountabo.env.override.yml"
@@ -405,7 +554,8 @@ if [ -n "$COMPOSE" ]; then
   fi
 fi
 
-`
+`, c.ownershipLabels())
+}
 
 // cdRoot is the `cd <rootDir>` line (with trailing newline) when the app lives
 // in a sub-directory, or "" for the repo root.
@@ -478,8 +628,9 @@ cd "$DEPLOY_DIR"`
 // captures the loaded tag(s) into $loaded (from `docker load`'s "Loaded image:"
 // lines) for the later untag step, and installs a trap to remove the tarball on
 // exit (success or failure). zstd/rsync are assumed present (modern distros ship
-// them). The tarball path uses the raw app name to match the workflow's rsync
-// target (/tmp/<app>-deploy).
+// them). The tarball path is the deployment's staging directory, matching the
+// workflow's rsync target, so two deployments never overwrite each other's
+// tarball mid-transfer.
 //
 // required=true (docker) treats a missing tarball as a hard error — the docker
 // strategy has nothing to run without it. required=false (compose) tolerates a
@@ -503,11 +654,11 @@ else
   echo "no image tarball shipped; images will be pulled on the server"
 fi`
 	}
-	return fmt.Sprintf(`TARBALL="/tmp/%[1]s-deploy/image.tar.zst"
+	return fmt.Sprintf(`TARBALL="%[1]s/image.tar.zst"
 trap 'rm -f "$TARBALL"' EXIT
 echo "Loading image from $TARBALL..."
 %[2]s
-`, c.App, load)
+`, StagingDir(c), load)
 }
 
 // healthCheckBlock probes the app's primary published port on the loopback after
@@ -561,12 +712,12 @@ fi
 func composeImageOverride(c Config) string {
 	return fmt.Sprintf(`# Pin build-services to the runner-built images (loaded above); merged last so
 # its image: wins and the server never rebuilds.
-if [ -f "/tmp/%[1]s-deploy/mountabo.image.override.yml" ]; then
-  cp "/tmp/%[1]s-deploy/mountabo.image.override.yml" ./mountabo.image.override.yml
+if [ -f "%[1]s/mountabo.image.override.yml" ]; then
+  cp "%[1]s/mountabo.image.override.yml" ./mountabo.image.override.yml
   COMPOSE_ARGS="$COMPOSE_ARGS -f mountabo.image.override.yml"
 fi
 
-`, c.App)
+`, StagingDir(c))
 }
 
 // primaryHostPort is the app's main published host port (the first configured
@@ -585,6 +736,7 @@ func composeScript(c Config) string {
 	var b strings.Builder
 	b.WriteString(header(c))
 	b.WriteByte('\n')
+	b.WriteString(lockPreamble(c))
 
 	var exports []string
 	for _, p := range c.Ports {
@@ -607,12 +759,18 @@ func composeScript(c Config) string {
 	// known set of containers (compose otherwise defaults the project name to
 	// the deploy directory basename, which makes the delete teardown unable to
 	// find the containers by app name).
-	fmt.Fprintf(&b, "export COMPOSE_PROJECT_NAME='%s-%s'\n\n", c.App, c.Branch)
+	// The compose project is the deployment id. It used to be "<app>-<branch>",
+	// which two environments of one repo on the same branch shared — one compose
+	// project, one set of containers, one set of project-scoped volumes. Labels
+	// carry the same identity onto every container compose creates, so teardown
+	// can select this deployment's resources by ownership instead of by name.
+	fmt.Fprintf(&b, "export COMPOSE_PROJECT_NAME=%q\n", c.deploymentID())
+	b.WriteByte('\n')
 	b.WriteString("# Write .env (ports + your environment variables) for docker compose.\n")
 	b.WriteString(envWriteBlock(c, true))
 	b.WriteString("\n")
 	b.WriteString(populateEnvFiles)
-	b.WriteString(composeEnvOverride)
+	b.WriteString(composeEnvOverride(c))
 	b.WriteString(composeImageOverride(c))
 	b.WriteString(loadImageBlock(c, false))
 	b.WriteString("\n")
@@ -635,7 +793,9 @@ docker compose $COMPOSE_ARGS ps
 func dockerScript(c Config) string {
 	var b strings.Builder
 	b.WriteString(header(c))
-	b.WriteString("\n\n")
+	b.WriteByte('\n')
+	b.WriteString(lockPreamble(c))
+	b.WriteByte('\n')
 	b.WriteString(workDirNoClone)
 	b.WriteString("\n\n")
 	b.WriteString(loadImageBlock(c, true))
@@ -647,11 +807,18 @@ func dockerScript(c Config) string {
 	// The exact image tag the runner built + loaded is forwarded as MOUNTABO_IMAGE;
 	// running it (not <app>:$BRANCH) guarantees we run precisely what was shipped.
 	b.WriteString("IMAGE=\"${MOUNTABO_IMAGE:?MOUNTABO_IMAGE must be set by the workflow}\"\n")
-	fmt.Fprintf(&b, "CONTAINER=%q\n\n", c.App+"-$BRANCH")
+	// The container is named for the deployment, not "<app>-<branch>": two
+	// environments of one app on the same branch previously produced the same
+	// container name, so whichever deployed last replaced the other's container.
+	fmt.Fprintf(&b, "CONTAINER=%q\n\n", c.deploymentID())
 	b.WriteString(`echo "Swapping container..."
 docker rm -f "$CONTAINER" 2>/dev/null || true
 docker run -d --name "$CONTAINER" --restart unless-stopped \
-  --env-file .env`)
+  `)
+	for _, l := range c.ownershipLabelArgs() {
+		fmt.Fprintf(&b, "--label %s \\\n  ", l)
+	}
+	b.WriteString(`--env-file .env`)
 	for _, p := range c.Ports {
 		if p.Container != "" {
 			fmt.Fprintf(&b, " \\\n  -p %s:%s", hostValue(p), p.Container)

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"golang.org/x/sync/errgroup"
+
+	"github.com/goodylili/mountabo/internal/workflow"
 )
 
 // ErrDeploymentNotFound is returned when no tracked deployment matches an app.
@@ -25,6 +27,14 @@ type Deployment struct {
 	Environment  string `json:"environment"`
 	ServerID     string `json:"serverId"`
 	WorkflowFile string `json:"workflowFile"`
+	// DeploymentID is the canonical server-side identity every resource this
+	// deployment owns is named from: the compose project, containers, the image
+	// namespace, the checkout path, the staging directory, the lock, the state
+	// document and the ownership labels teardown selects on. Derived once from
+	// (owner, repo, environment) by DeriveDeploymentID and persisted, so renaming
+	// the app — or a future change to the derivation — can never re-home a live
+	// deployment's resources.
+	DeploymentID string `json:"deploymentId"`
 	// Port is the app's primary published host port on the server (the first
 	// configured deploy port), so a health check can probe 127.0.0.1:<port> over
 	// SSH. Zero when no port was configured (e.g. a compose stack with no host
@@ -74,15 +84,16 @@ type DeploymentPortSetter interface {
 	SetPort(owner, repo, environment string, port int) (updated bool, err error)
 }
 
-// ContainerTeardown stops and removes an app's running container(s) on a server
-// over SSH (both a docker compose stack and a plain container named after the
-// app), so the app stops existing. Branch is passed so the teardown also
-// catches legacy containers labelled with compose's default project name (the
-// deploy directory basename, which equalled the branch on older deploys before
-// the project name was pinned). It is best-effort: docker missing on the box
-// or no matching container is not an error.
+// ContainerTeardown removes the resources one deployment owns on a server over
+// SSH — its containers (compose stack or plain container), the images mountabo
+// built for it, and its staging directory — so the deployment stops existing.
+//
+// It is keyed on the deployment id and selects by ownership label, never by
+// name: an app name and a branch can be shared by two deployments, so a
+// name-based sweep could remove another deployment's containers. It is
+// best-effort: docker missing on the box or no matching resource is not an error.
 type ContainerTeardown interface {
-	RemoveApp(ctx context.Context, t SSHTarget, app, branch string) error
+	RemoveApp(ctx context.Context, t SSHTarget, deploymentID string) error
 }
 
 // RepoEnvironmentDeleter removes a GitHub deployment environment (and the
@@ -219,8 +230,7 @@ const (
 // remove them: the deploy script (repo root) and the per-branch workflow (under
 // .github/workflows by its stored file name).
 const (
-	teardownDeployScriptPath = "deploy.sh"
-	teardownWorkflowDir      = ".github/workflows/"
+	teardownWorkflowDir = ".github/workflows/"
 )
 
 // MonitorService reports deploy history: the configured deployments enriched
@@ -400,7 +410,7 @@ func (s *MonitorService) removeContainer(ctx context.Context, dep Deployment) {
 		return
 	}
 	t := SSHTarget{Host: server.IP, Port: server.SSHPort, User: BootstrapUser, PrivateKey: key, Fingerprint: server.Fingerprint}
-	if err := s.teardown.RemoveApp(ctx, t, dep.App, dep.Branch); err != nil {
+	if err := s.teardown.RemoveApp(ctx, t, DeploymentIDFor(dep)); err != nil {
 		s.log.Warn("teardown: remove app container failed", "app", dep.App, "serverId", dep.ServerID, "err", err)
 	}
 }
@@ -415,7 +425,12 @@ func (s *MonitorService) removeWorkflowFiles(ctx context.Context, dep Deployment
 		s.log.Warn("teardown: skip workflow removal, github token unavailable", "app", dep.App, "err", err)
 		return
 	}
-	paths := []string{teardownDeployScriptPath}
+	// This deployment's own script. There is no repo-root deploy.sh to also
+	// remove: the script has always been committed per deployment.
+	paths := []string{workflow.ScriptPath(workflow.Config{
+		Environment:  dep.Environment,
+		DeploymentID: DeploymentIDFor(dep),
+	})}
 	if dep.WorkflowFile != "" {
 		paths = append(paths, teardownWorkflowDir+dep.WorkflowFile)
 	}

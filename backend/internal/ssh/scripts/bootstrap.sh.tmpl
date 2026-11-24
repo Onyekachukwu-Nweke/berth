@@ -16,6 +16,25 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 log() { echo "==> $*"; }
+# apt_update tolerates a broken third-party repository (a PPA that renamed
+# itself, a retired mirror): it accepts benign Label/Suite changes and, if some
+# repository still fails, carries on with the lists it could fetch instead of
+# aborting. Package installs below fail loudly on their own if that matters.
+apt_update() {
+  if ! apt-get update -y -o Acquire::AllowReleaseInfoChange::Label=true -o Acquire::AllowReleaseInfoChange::Suite=true; then
+    log "warning: apt-get update reported errors (often a broken or retired third-party repository); continuing with the package lists it could fetch"
+  fi
+}
+
+# A server that already runs services (anything listening besides sshd and the
+# systemd-resolved DNS stub, matched by process so a custom SSH port counts) is set up gently: no system upgrade, which would restart
+# what's serving traffic, and no timezone change, which would shift its cron
+# jobs and logs. A fresh server gets the full treatment.
+IN_USE=0
+if ss -Hltnp 2>/dev/null | grep -vE '"(sshd|systemd-resolve)"' | grep -q .; then
+  IN_USE=1
+  log "this server already runs services; setup will leave them, its packages and its timezone alone"
+fi
 
 log "creating user {{.User}}"
 if ! id -u {{.User}} >/dev/null 2>&1; then
@@ -35,10 +54,14 @@ chown {{.User}}:{{.User}} /home/{{.User}}/.ssh/authorized_keys
 chmod 600 /home/{{.User}}/.ssh/authorized_keys
 
 log "updating package lists"
-apt-get update -y
+apt_update
 
-log "upgrading system (this can take several minutes)"
-apt-get upgrade -y
+if [ "$IN_USE" = 0 ]; then
+  log "upgrading system (this can take several minutes)"
+  apt-get upgrade -y
+else
+  log "skipping the system upgrade (existing services); turn on automatic security updates under hardening if you want them"
+fi
 
 log "installing base packages"
 # flock and jq are required, not optional:
@@ -52,8 +75,12 @@ log "installing base packages"
 # Both ship in util-linux/jq on Debian and Ubuntu.
 apt-get install -y curl ca-certificates util-linux jq
 
-log "setting timezone to {{.Timezone}}"
-timedatectl set-timezone '{{.Timezone}}'
+if [ "$IN_USE" = 0 ]; then
+  log "setting timezone to {{.Timezone}}"
+  timedatectl set-timezone '{{.Timezone}}'
+else
+  log "keeping the server's timezone ($(timedatectl show -p Timezone --value 2>/dev/null || echo unknown))"
+fi
 
 log "installing docker"
 # get.docker.com re-runs its whole install (and can rewrite the apt repo config)

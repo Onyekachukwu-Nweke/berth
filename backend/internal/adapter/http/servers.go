@@ -339,7 +339,7 @@ func (h *ServersHandler) RemoveDomain(w nethttp.ResponseWriter, r *nethttp.Reque
 func (h *ServersHandler) SetProxy(w nethttp.ResponseWriter, r *nethttp.Request) {
 	id := r.PathValue("id")
 	to := r.URL.Query().Get("to")
-	streamSSE(w, h.log, "proxy switched to "+to, func(out io.Writer) error {
+	streamSSE(w, h.log, "proxy switched", func(out io.Writer) error {
 		return h.svc.SetProxy(r.Context(), id, to, out)
 	})
 }

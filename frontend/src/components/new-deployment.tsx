@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge, type Tone } from "@/components/badge";
 import { ServerAvatar } from "@/components/server-avatar";
@@ -20,7 +19,7 @@ import { AddServerForm } from "@/components/add-server-form";
 import { OwnerDropdown } from "@/components/owner-dropdown";
 import { ServerOptions } from "@/components/server-options";
 import { ServerDomains, type DomainFormValue } from "@/components/server-domains";
-import { ServerSelect } from "@/components/server-select";
+import { TargetSelect, type Pick } from "@/components/target-select";
 import { StreamLog } from "@/components/stream-log";
 import { ConfirmAction } from "@/components/confirm-action";
 import type { Source } from "@/lib/data";
@@ -49,7 +48,6 @@ export function NewDeployment({
   mode: "repos" | "servers";
   isAdmin: boolean;
 }) {
-  const router = useRouter();
   // Repositories load in the browser from a 12 hour localStorage cache (keyed by
   // account), falling back to /api/repos on a miss. reposReady gates the empty
   // state so the list shows "loading" instead of "no repositories" while fetching.
@@ -61,6 +59,9 @@ export function NewDeployment({
   const [query, setQuery] = useState("");
   const [source, setSource] = useState<string | null>(null);
   const [server, setServer] = useState<string | null>(null);
+  // Where the picked source deploys: an environment (its server follows from
+  // the access rules) or, for admins, any ready server.
+  const [pick, setPick] = useState<Pick | null>(null);
   const [serverList, setServerList] = useState<ServerView[]>(servers);
   const view = mode;
   const [ownerFilter, setOwnerFilter] = useState<string | null>(null);
@@ -279,7 +280,7 @@ export function NewDeployment({
   const domainPreview = addHost !== null && previewState?.host === addHost ? previewState.data : null;
   const domainPreviewLoading = addHost !== null && previewState?.host !== addHost;
 
-  // ⌘K / ctrl-K focuses the palette; Enter continues when both are picked.
+  // ⌘K / ctrl-K or "/" focuses the filter.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const typing = e.target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
@@ -287,17 +288,10 @@ export function NewDeployment({
         e.preventDefault();
         searchRef.current?.focus();
       }
-      if (e.key === "Enter" && source && server && document.activeElement !== searchRef.current) {
-        const picked = sources.find((s) => `${s.owner}/${s.name}` === source);
-        const branch = picked?.branch ?? "";
-        router.push(
-          `/configure?repo=${encodeURIComponent(source)}&branch=${encodeURIComponent(branch)}&server=${server}`,
-        );
-      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [source, server, sources, router]);
+  }, []);
 
   const q = query.trim().toLowerCase();
   // Distinct repo owners (account + organizations) for the owner dropdown.
@@ -325,8 +319,7 @@ export function NewDeployment({
     [serverList, q],
   );
 
-  const readyServers = serverList.filter((s) => s.status === "ready");
-  const ready = Boolean(source && server);
+  const ready = Boolean(source && pick);
   // Branch comes from the picked source so the configure page does not need to
   // fetch the full repo listing again just to find it. Without it the configure
   // page would hit the slowest call in the app on every navigation.
@@ -334,9 +327,12 @@ export function NewDeployment({
     () => sources.find((s) => `${s.owner}/${s.name}` === source)?.branch ?? "",
     [sources, source],
   );
-  const configureHref = ready
-    ? `/configure?repo=${encodeURIComponent(source as string)}&branch=${encodeURIComponent(pickedBranch)}&server=${server}`
-    : "#";
+  const configureHref =
+    ready && pick
+      ? `/configure?repo=${encodeURIComponent(source as string)}&branch=${encodeURIComponent(pickedBranch)}&server=${encodeURIComponent(pick.serverId)}${
+          pick.environment ? `&environment=${encodeURIComponent(pick.environment)}` : ""
+        }`
+      : "#";
 
   return (
     <>
@@ -482,7 +478,10 @@ export function NewDeployment({
                     </span>
                   </div>
                   <button
-                    onClick={() => setSource(full)}
+                    onClick={() => {
+                      setSource(full);
+                      setPick(null);
+                    }}
                     className={`flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-1.5 text-[12px] transition-colors ${
                       active
                         ? "border-line-strong bg-surface-hover text-cream"
@@ -662,22 +661,22 @@ export function NewDeployment({
       {source && (
         <div className="sticky bottom-4 mt-5 flex flex-col gap-3 rounded-lg border border-line-strong bg-surface-2 px-4 py-3 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.6)] sm:flex-row sm:items-center sm:justify-between">
           <span className="flex min-w-0 items-center gap-2 text-[14px] text-cream">
-            <span className="shrink-0 text-cream">→ deploy</span>
+            <span className="shrink-0 text-muted">Deploy</span>
             <span className="truncate">{source}</span>
           </span>
           <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center">
-            <ServerSelect servers={readyServers} value={server} onChange={setServer} />
+            <TargetSelect key={source} repo={source} servers={serverList} isAdmin={isAdmin} value={pick} onChange={setPick} />
             <Link
               href={configureHref}
               aria-disabled={!ready}
               tabIndex={ready ? 0 : -1}
-              className={`flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-[13px] font-bold transition-transform sm:py-2 ${
+              className={`flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-[13px] font-semibold transition-opacity sm:py-2 ${
                 ready
-                  ? "cta-glow bg-cream text-bg hover:-translate-y-0.5"
+                  ? "bg-cream text-bg hover:opacity-90"
                   : "pointer-events-none border border-line text-muted opacity-50"
               }`}
             >
-              deploy <ArrowRight />
+              Continue <ArrowRight />
             </Link>
           </div>
         </div>

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	nethttp "net/http"
+	"strings"
 
 	"github.com/goodylili/mountabo/internal/usecase"
 )
@@ -69,6 +70,37 @@ func (h *ReleaseHandler) Redeploy(w nethttp.ResponseWriter, r *nethttp.Request) 
 	owner, repo, env := r.PathValue("owner"), r.PathValue("repo"), r.PathValue("environment")
 	// See Rollback: the operation must outlive the request that created it.
 	id := h.ops.start(func(w2 opWriter) error { return h.svc.Redeploy(context.Background(), owner, repo, env, w2) })
+	h.writeJSON(w, nethttp.StatusAccepted, map[string]string{"operationId": id})
+}
+
+// approveRequest authorises one candidate's gated hooks.
+type approveRequest struct {
+	Artifact     string   `json:"artifact"`
+	HooksVersion string   `json:"hooksVersion"`
+	HookIDs      []string `json:"hookIds"`
+	Actor        string   `json:"actor"`
+}
+
+// Approve runs a candidate's gated hooks and continues the deploy that halted
+// waiting for them. It is the only path that sets the approval marker: the
+// generated workflow never forwards it, so a push cannot run a gated migration.
+func (h *ReleaseHandler) Approve(w nethttp.ResponseWriter, r *nethttp.Request) {
+	owner, repo, env := r.PathValue("owner"), r.PathValue("repo"), r.PathValue("environment")
+	var req approveRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	if strings.TrimSpace(req.Artifact) == "" || strings.TrimSpace(req.HooksVersion) == "" {
+		h.writeError(w, nethttp.StatusBadRequest, "an approval must name the release and the hook set it was reviewed against")
+		return
+	}
+	in := usecase.ApproveInput{
+		Owner: owner, Repo: repo, Environment: env,
+		ArtifactID: req.Artifact, HooksVersion: req.HooksVersion,
+		HookIDs: req.HookIDs, Actor: req.Actor,
+	}
+	// See Rollback: the operation must outlive the request that created it.
+	id := h.ops.start(func(w2 opWriter) error { return h.svc.ApproveAndContinue(context.Background(), in, w2) })
 	h.writeJSON(w, nethttp.StatusAccepted, map[string]string{"operationId": id})
 }
 

@@ -63,6 +63,21 @@ func TestGeneratedScriptsParse(t *testing.T) {
 		// Values and names that are shell-significant if ever interpolated
 		// unquoted. Only the KEY reaches the script, but a key is still emitted
 		// into the workflow's env block and MOUNTABO_ENV_KEYS list.
+		// A hook-heavy config: the dispatcher, the gate and the timeout machinery
+		// are the most intricate shell this package emits.
+		hooked := full
+		hooked.HooksVersion = "v1"
+		hooked.Hooks = []Hook{
+			{ID: "migrate", When: HookMigration, Name: "migrate", Command: `php artisan migrate --force`,
+				Target: "container", Service: "api", Blocking: true, Confirm: true},
+			{ID: "warm", When: HookPostDeploy, Name: "warm", Command: `echo "it's fine"`,
+				Target: "container", Service: "api", WithDeps: true},
+			{ID: "prep", When: HookPreBuild, Name: "prep", Command: "ls -la", Target: "host", Dir: "scripts"},
+			{ID: "compensate", When: HookRollback, Name: "flush", Command: "redis-cli FLUSHALL", Target: "host"},
+			{ID: "probe", When: HookHealthCheck, Name: "probe", Command: "curl -sf localhost", Target: "host"},
+		}
+		cases[name+"/hooks"] = hooked
+
 		hostile := withEnv(full,
 			EnvVar{Key: "DATABASE_URL", Value: `p@ss w'ord$(id)`},
 			EnvVar{Key: "A_B_C", Value: "#comment ${x} `id`"},

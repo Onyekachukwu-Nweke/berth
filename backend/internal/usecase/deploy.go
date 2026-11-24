@@ -56,6 +56,10 @@ type DeployConfig struct {
 	DeployDir     string       `json:"deployDir"`
 	DeployKeyFile string       `json:"deployKeyFile"`
 	Ports         []DeployPort `json:"ports"`
+	// Hooks are the operator's release hooks. Persisted here because they are baked
+	// into the committed script, so ReapplyWorkflow must regenerate it from this
+	// record alone.
+	Hooks []Hook `json:"hooks,omitempty"`
 	// ComposeFile is an explicit compose file path for stacks that do not use one
 	// of the conventional names (docker-compose.prod.yml being the common case).
 	// Empty falls back to those names. Persisted because ReapplyWorkflow
@@ -79,6 +83,7 @@ type DeployInput struct {
 	RootDir     string
 	DeployDir   string
 	ComposeFile string
+	Hooks       []Hook
 	Ports       []DeployPort
 	EnvVars     []DeployEnvVar
 }
@@ -257,6 +262,11 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 		return fmt.Errorf("load server key: %w", err)
 	}
 
+	// Use the validated set: it is in canonical phase order and has the production
+	// migration gate forced on, neither of which the caller can be trusted to do.
+	if hooks, herr := ValidateHooks(in.Hooks, in.Strategy, env); herr == nil {
+		in.Hooks = hooks
+	}
 	cfg := buildConfig(in)
 	// An already-configured deployment keeps the identity its live containers,
 	// images and paths are named from. buildConfig only derives one because
@@ -361,6 +371,7 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 			DeployKeyFile: cfg.DeployKeyFile,
 			Ports:         in.Ports,
 			ComposeFile:   strings.TrimSpace(in.ComposeFile),
+			Hooks:         in.Hooks,
 		},
 		CreatedAt: time.Now().UTC(),
 		CommitSHA: commitSHA,
@@ -417,6 +428,11 @@ func validateDeploy(in DeployInput) error {
 			return fmt.Errorf("invalid environment variable name %q", k)
 		}
 	}
+	// Reject an unrunnable hook here rather than committing it into the operator's
+	// repository and failing on the server, where the error is far harder to read.
+	if _, err := ValidateHooks(in.Hooks, in.Strategy, env); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -463,6 +479,8 @@ func (s *DeployService) ReapplyWorkflow(ctx context.Context, t Token, owner, rep
 		DeployKeyFile: dep.Config.DeployKeyFile,
 		DeploymentID:  DeploymentIDFor(dep),
 		ComposeFile:   dep.Config.ComposeFile,
+		Hooks:         WorkflowHooks(dep.Config.Hooks),
+		HooksVersion:  HooksVersion(dep.Config.Hooks),
 	}
 
 	const msg = "mountabo: sync deploy config for secrets change [skip ci]"
@@ -522,6 +540,8 @@ func buildConfig(in DeployInput) workflow.Config {
 		RootDir:      in.RootDir,
 		DeployDir:    strings.TrimSpace(in.DeployDir),
 		ComposeFile:  strings.TrimSpace(in.ComposeFile),
+		Hooks:        WorkflowHooks(in.Hooks),
+		HooksVersion: HooksVersion(in.Hooks),
 		Strategy:     strategy,
 		Ports:        ports,
 		EnvVars:      envs,

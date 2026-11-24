@@ -41,7 +41,16 @@ log "upgrading system (this can take several minutes)"
 apt-get upgrade -y
 
 log "installing base packages"
-apt-get install -y curl ca-certificates
+# flock and jq are required, not optional:
+#   flock serializes every operation on a deployment (deploy, rollback, hooks,
+#     teardown) on the box itself. It is the only thing that can serialize a
+#     push-triggered Actions run against an SSH-direct operation mountabo starts,
+#     because those two never see each other's locks. Proceeding without it would
+#     silently drop the guarantee at exactly the moment it matters.
+#   jq reads the deployment's state document, which decides whether a run is
+#     allowed to proceed at all.
+# Both ship in util-linux/jq on Debian and Ubuntu.
+apt-get install -y curl ca-certificates util-linux jq
 
 log "setting timezone to {{.Timezone}}"
 timedatectl set-timezone '{{.Timezone}}'
@@ -70,6 +79,20 @@ else
   log "installing docker compose plugin"
   apt-get install -y docker-compose-plugin
 fi
+
+log "verifying required tooling"
+# Fail closed. A server missing either of these cannot run a deploy safely, and
+# finding that out here — with a clear message — beats finding out mid-deploy on
+# a half-applied stack.
+for tool in flock jq; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "ERROR: $tool is required but could not be installed." >&2
+    echo "       mountabo uses flock to serialize deploys and jq to read deployment state." >&2
+    echo "       Install it manually (apt-get install -y util-linux jq) and run setup again." >&2
+    exit 1
+  fi
+done
+log "flock and jq present"
 
 log "verifying docker"
 docker --version

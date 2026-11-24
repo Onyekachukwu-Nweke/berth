@@ -251,6 +251,12 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 	}
 
 	cfg := buildConfig(in)
+	// An already-configured deployment keeps the identity its live containers,
+	// images and paths are named from. buildConfig only derives one because
+	// Preview has no record to read.
+	if existing, found := s.findDeployment(in.Owner, in.Repo, env); found {
+		cfg.DeploymentID = DeploymentIDFor(existing)
+	}
 	// The docker strategy runs an image built + shipped from the runner and never
 	// clones on the server, so it needs no deploy key. Only the compose strategy
 	// (which clones the repo for its compose file) gets one.
@@ -259,8 +265,9 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 		cfg.DeployKeyFile = deployKeyFileName(in.Owner, in.Repo)
 	}
 
-	progress(out, "writing %s", workflow.DeployScriptPath)
-	if err := s.repo.PutFile(ctx, token, in.Owner, in.Repo, in.Branch, workflow.DeployScriptPath, workflow.DeployScript(cfg), "mountabo: add deploy script"); err != nil {
+	scriptPath := workflow.ScriptPath(cfg)
+	progress(out, "writing %s", scriptPath)
+	if err := s.repo.PutFile(ctx, token, in.Owner, in.Repo, in.Branch, scriptPath, workflow.DeployScript(cfg), "mountabo: add deploy script"); err != nil {
 		return fmt.Errorf("write deploy script: %w", err)
 	}
 
@@ -335,6 +342,10 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 		Environment:  env,
 		ServerID:     in.ServerID,
 		WorkflowFile: workflow.FileName(env),
+		// The canonical identity every server-side resource is named from. Save
+		// writes it only on first insert, so an existing deployment keeps the id
+		// its live containers, images and paths already carry.
+		DeploymentID: DeriveDeploymentID(in.Owner, in.Repo, env),
 		Port:         primaryPort(in.Ports),
 		RootDir:      in.RootDir,
 		Config: &DeployConfig{
@@ -442,10 +453,11 @@ func (s *DeployService) ReapplyWorkflow(ctx context.Context, t Token, owner, rep
 		Ports:         ports,
 		EnvVars:       envs,
 		DeployKeyFile: dep.Config.DeployKeyFile,
+		DeploymentID:  DeploymentIDFor(dep),
 	}
 
 	const msg = "mountabo: sync deploy config for secrets change [skip ci]"
-	if err := s.repo.PutFile(ctx, t, owner, repo, dep.Branch, workflow.DeployScriptPath, workflow.DeployScript(cfg), msg); err != nil {
+	if err := s.repo.PutFile(ctx, t, owner, repo, dep.Branch, workflow.ScriptPath(cfg), workflow.DeployScript(cfg), msg); err != nil {
 		return fmt.Errorf("update deploy script: %w", err)
 	}
 	if err := s.repo.PutFile(ctx, t, owner, repo, dep.Branch, workflow.Path(cfg), workflow.Workflow(cfg), msg); err != nil {
@@ -485,17 +497,24 @@ func buildConfig(in DeployInput) workflow.Config {
 	for _, v := range in.EnvVars {
 		envs = append(envs, workflow.EnvVar{Key: v.Key, Value: v.Value})
 	}
+	env := strings.TrimSpace(in.Environment)
+	if env == "" {
+		env = strings.TrimSpace(in.Branch)
+	}
 	return workflow.Config{
 		App:         strings.TrimSpace(in.App),
 		Owner:       strings.TrimSpace(in.Owner),
 		Repo:        strings.TrimSpace(in.Repo),
 		Branch:      strings.TrimSpace(in.Branch),
 		Environment: strings.TrimSpace(in.Environment),
-		RootDir:     in.RootDir,
-		DeployDir:   strings.TrimSpace(in.DeployDir),
-		Strategy:    strategy,
-		Ports:       ports,
-		EnvVars:     envs,
+		// Derived, not read from a record: Preview has no stored deployment. The
+		// Deploy path overrides this with the stored id when one exists.
+		DeploymentID: DeriveDeploymentID(strings.TrimSpace(in.Owner), strings.TrimSpace(in.Repo), env),
+		RootDir:      in.RootDir,
+		DeployDir:    strings.TrimSpace(in.DeployDir),
+		Strategy:     strategy,
+		Ports:        ports,
+		EnvVars:      envs,
 	}
 }
 

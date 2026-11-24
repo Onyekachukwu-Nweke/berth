@@ -6,27 +6,36 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/goodylili/mountabo/internal/usecase"
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no CGO), registers "sqlite"
 )
 
-// schema is applied on open; idempotent so it runs every startup. deployments
-// holds the current state (one row per target); deploy_events is an append-only
-// log so deploy history is tracked and queryable over time. Each deploy_events
-// row is a release: the extra columns (commit_sha, image_ref, status, health,
-// actor, run_url, prev_event_id) turn the bare event into a durable release
-// record that rollback and release history build on. Fields known only after a
-// deploy runs (image_ref, health, and the terminal status/run_url) are provisioned
-// here and populated by later phases; status defaults to 'pending'.
+// schemaVersion is bumped whenever the schema below changes shape.
+//
+// mountabo carries no migrations. It is a local-first tool whose entire database
+// is a single file of derived state — which servers and repos you configured,
+// and a log of deploys — all of which is recreated by redeploying. Migration
+// code for that is pure liability: it can only ever run on a developer's own
+// machine, it is exercised by nothing real, and a rebuild that silently drops a
+// column is far worse than a clear instruction to start clean.
+//
+// An older database is therefore refused, by version, with an actionable
+// message, rather than being rescued in place.
+const schemaVersion = 1
+
+// schema is the whole database, stated once. deployments holds current state
+// (one row per target); deploy_events is an append-only log, one row per
+// release, carrying the artifact and health fields rollback and release history
+// build on.
+//
 // The deployment identity is (owner, repo, environment): a repo can have several
 // first-class environments (production, staging, ...), each with its own branch,
 // server, domain and release history. branch is an attribute of the environment,
-// not part of the key. Older databases keyed by (owner, repo, branch) are
-// rebuilt in place on open (see migrateDeploymentsKey); since environment
-// defaulted to the branch, that rebuild is a no-op for existing data.
+// not part of the key. deployment_id is the canonical name every server-side
+// resource derives from (see usecase.DeriveDeploymentID); it is written once and
+// never updated, because it names containers, images and paths that already exist.
 const schema = `
 CREATE TABLE IF NOT EXISTS deployments (
 	owner TEXT NOT NULL,
@@ -40,6 +49,7 @@ CREATE TABLE IF NOT EXISTS deployments (
 	port INTEGER NOT NULL DEFAULT 0,
 	root_dir TEXT NOT NULL DEFAULT '',
 	deploy_config TEXT NOT NULL DEFAULT '',
+	deployment_id TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	PRIMARY KEY (owner, repo, environment)
 );
@@ -63,23 +73,23 @@ CREATE TABLE IF NOT EXISTS deploy_events (
 CREATE INDEX IF NOT EXISTS idx_deploy_events_target ON deploy_events(owner, repo, environment, at);
 `
 
-// releaseColumns are the deploy_events columns added after the table first
-// shipped. CREATE TABLE IF NOT EXISTS leaves an existing table's columns
-// untouched, so each is added via ALTER TABLE on open; a "duplicate column"
-// error just means a current-schema DB already has it. Kept in one place so the
-// migration and the release schema never drift.
-var releaseColumns = []string{
-	`ALTER TABLE deploy_events ADD COLUMN commit_sha TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE deploy_events ADD COLUMN image_ref TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE deploy_events ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'`,
-	`ALTER TABLE deploy_events ADD COLUMN health TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE deploy_events ADD COLUMN actor TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE deploy_events ADD COLUMN run_url TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE deploy_events ADD COLUMN prev_event_id INTEGER`,
+// ErrSchemaTooOld is returned when the database on disk predates the current
+// schema. It names the file so the operator can act on it directly.
+type ErrSchemaTooOld struct {
+	Path string
+	Got  int
+	Want int
+}
+
+func (e *ErrSchemaTooOld) Error() string {
+	return fmt.Sprintf("the mountabo database at %s was written by an older version (schema v%d, this build needs v%d).\n"+
+		"mountabo keeps only derived state — your servers, deployments and history are recreated by reconnecting and redeploying.\n"+
+		"Delete the file and start it again:\n\n    rm %s\n", e.Path, e.Got, e.Want, e.Path)
 }
 
 // OpenSQLite opens (creating if needed) the SQLite database at path and applies
-// the schema. The caller owns the returned *sql.DB and must Close it.
+// the schema. A database written by an older schema is refused rather than
+// migrated: see schemaVersion. The caller owns the returned *sql.DB.
 func OpenSQLite(path string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
@@ -88,125 +98,41 @@ func OpenSQLite(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %s: %w", path, err)
 	}
+
+	// user_version is SQLite's own per-database integer, stored in the file
+	// header. A brand-new file reads 0, which is indistinguishable from a
+	// pre-versioning database — so the tables decide: no tables means new.
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("read schema version: %w", err)
+	}
+	if version == 0 {
+		var tables int
+		if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('deployments', 'deploy_events')`).Scan(&tables); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("inspect database: %w", err)
+		}
+		if tables > 0 {
+			_ = db.Close()
+			return nil, &ErrSchemaTooOld{Path: path, Got: 0, Want: schemaVersion}
+		}
+	} else if version != schemaVersion {
+		_ = db.Close()
+		return nil, &ErrSchemaTooOld{Path: path, Got: version, Want: schemaVersion}
+	}
+
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
-	// Migrate databases created before the port column existed. CREATE TABLE IF
-	// NOT EXISTS leaves an old table's columns untouched, so add it here; a
-	// "duplicate column" error just means a current-schema DB already has it.
-	if _, err := db.Exec(`ALTER TABLE deployments ADD COLUMN port INTEGER NOT NULL DEFAULT 0`); err != nil &&
-		!strings.Contains(err.Error(), "duplicate column") {
+	// PRAGMA does not accept a bound parameter, and schemaVersion is an untainted
+	// integer constant.
+	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("add port column: %w", err)
-	}
-	// Migrate databases created before the root_dir column existed (same idempotent
-	// ALTER pattern). Old rows default to '' = repo root, their prior behavior.
-	if _, err := db.Exec(`ALTER TABLE deployments ADD COLUMN root_dir TEXT NOT NULL DEFAULT ''`); err != nil &&
-		!strings.Contains(err.Error(), "duplicate column") {
-		_ = db.Close()
-		return nil, fmt.Errorf("add root_dir column: %w", err)
-	}
-	// Migrate databases created before deploy_config existed (same idempotent
-	// pattern). Empty '' marks a legacy deployment that can't be re-applied from
-	// the secrets tab until it is redeployed from configure.
-	if _, err := db.Exec(`ALTER TABLE deployments ADD COLUMN deploy_config TEXT NOT NULL DEFAULT ''`); err != nil &&
-		!strings.Contains(err.Error(), "duplicate column") {
-		_ = db.Close()
-		return nil, fmt.Errorf("add deploy_config column: %w", err)
-	}
-	// Migrate databases created before deploy_events carried release fields. Same
-	// idempotent ALTER pattern: a "duplicate column" error means a current-schema
-	// DB already has the column, anything else is a real failure.
-	for _, stmt := range releaseColumns {
-		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-			_ = db.Close()
-			return nil, fmt.Errorf("add release column: %w", err)
-		}
-	}
-	// Migrate databases whose deployments table still keys by (owner, repo,
-	// branch) to the environment key. Runs after the port migration so the rebuild
-	// can carry the port column across.
-	if err := migrateDeploymentsKey(db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("re-key deployments: %w", err)
+		return nil, fmt.Errorf("record schema version: %w", err)
 	}
 	return db, nil
-}
-
-// migrateDeploymentsKey rebuilds an old deployments table (PRIMARY KEY on
-// branch) under the environment key. SQLite cannot alter a primary key in place,
-// so it copies into a new table and swaps. It is a no-op when the table is
-// already environment-keyed (fresh DBs, or an already-migrated one). Rows are
-// deduped to the latest created_at per (owner, repo, environment) — a collision
-// only arises if an operator explicitly reused one environment name across
-// branches, which never happened while environment defaulted to the branch.
-func migrateDeploymentsKey(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(deployments)`)
-	if err != nil {
-		return fmt.Errorf("inspect deployments: %w", err)
-	}
-	branchIsKey := false
-	for rows.Next() {
-		var cid, notnull, pk int
-		var name, ctype string
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			_ = rows.Close()
-			return fmt.Errorf("scan column info: %w", err)
-		}
-		if name == "branch" && pk > 0 {
-			branchIsKey = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return err
-	}
-	_ = rows.Close()
-	if !branchIsKey {
-		return nil // already environment-keyed
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin migration: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.Exec(`CREATE TABLE deployments_new (
-		owner TEXT NOT NULL,
-		repo TEXT NOT NULL,
-		branch TEXT NOT NULL,
-		id TEXT NOT NULL,
-		app TEXT NOT NULL,
-		environment TEXT NOT NULL,
-		server_id TEXT NOT NULL,
-		workflow_file TEXT NOT NULL,
-		port INTEGER NOT NULL DEFAULT 0,
-		root_dir TEXT NOT NULL DEFAULT '',
-		deploy_config TEXT NOT NULL DEFAULT '',
-		created_at TEXT NOT NULL,
-		PRIMARY KEY (owner, repo, environment)
-	)`); err != nil {
-		return fmt.Errorf("create rebuilt table: %w", err)
-	}
-	// OR REPLACE + ORDER BY created_at ASC: rows are inserted oldest-first, so on
-	// an (owner, repo, environment) conflict the latest deploy wins. root_dir and
-	// deploy_config were added by the ALTERs above (default '') before this rebuild.
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO deployments_new
-		(owner, repo, branch, id, app, environment, server_id, workflow_file, port, root_dir, deploy_config, created_at)
-		SELECT owner, repo, branch, id, app, environment, server_id, workflow_file, port, root_dir, deploy_config, created_at
-		FROM deployments ORDER BY created_at ASC`); err != nil {
-		return fmt.Errorf("copy rows: %w", err)
-	}
-	if _, err := tx.Exec(`DROP TABLE deployments`); err != nil {
-		return fmt.Errorf("drop old table: %w", err)
-	}
-	if _, err := tx.Exec(`ALTER TABLE deployments_new RENAME TO deployments`); err != nil {
-		return fmt.Errorf("rename rebuilt table: %w", err)
-	}
-	return tx.Commit()
 }
 
 // DeploymentSQL persists configured deployments in SQLite and records an
@@ -230,7 +156,7 @@ func NewDeploymentSQL(db *sql.DB) *DeploymentSQL {
 
 // List returns the current deployments (one per target), oldest first.
 func (s *DeploymentSQL) List() ([]usecase.Deployment, error) {
-	rows, err := s.db.Query(`SELECT id, app, owner, repo, branch, environment, server_id, workflow_file, port, root_dir, deploy_config, created_at
+	rows, err := s.db.Query(`SELECT id, app, owner, repo, branch, environment, server_id, workflow_file, port, root_dir, deploy_config, deployment_id, created_at
 		FROM deployments ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("query deployments: %w", err)
@@ -241,7 +167,7 @@ func (s *DeploymentSQL) List() ([]usecase.Deployment, error) {
 	for rows.Next() {
 		var d usecase.Deployment
 		var createdAt, deployConfig string
-		if err := rows.Scan(&d.ID, &d.App, &d.Owner, &d.Repo, &d.Branch, &d.Environment, &d.ServerID, &d.WorkflowFile, &d.Port, &d.RootDir, &deployConfig, &createdAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.App, &d.Owner, &d.Repo, &d.Branch, &d.Environment, &d.ServerID, &d.WorkflowFile, &d.Port, &d.RootDir, &deployConfig, &d.DeploymentID, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan deployment: %w", err)
 		}
 		if deployConfig != "" {
@@ -281,9 +207,13 @@ func (s *DeploymentSQL) Save(d usecase.Deployment) error {
 
 	// Keep the original id and created_at on conflict (first-deploy time), so
 	// the deploy_events log carries the per-deploy history instead.
+	// deployment_id is written once and never updated on conflict: it names the
+	// containers, images, volumes and paths that already exist on the server, so a
+	// re-deploy must not be able to move it. COALESCE-style CASE keeps the stored
+	// value even if a caller passes an empty one.
 	if _, err := tx.Exec(`INSERT INTO deployments
-		(owner, repo, branch, id, app, environment, server_id, workflow_file, port, root_dir, deploy_config, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		(owner, repo, branch, id, app, environment, server_id, workflow_file, port, root_dir, deploy_config, deployment_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(owner, repo, environment) DO UPDATE SET
 			branch = excluded.branch,
 			app = excluded.app,
@@ -291,9 +221,10 @@ func (s *DeploymentSQL) Save(d usecase.Deployment) error {
 			workflow_file = excluded.workflow_file,
 			port = excluded.port,
 			root_dir = excluded.root_dir,
-			deploy_config = excluded.deploy_config`,
+			deploy_config = excluded.deploy_config,
+			deployment_id = CASE WHEN deployments.deployment_id != '' THEN deployments.deployment_id ELSE excluded.deployment_id END`,
 		d.Owner, d.Repo, d.Branch, d.ID, d.App, d.Environment, d.ServerID, d.WorkflowFile, d.Port, d.RootDir, deployConfig,
-		createdAt.UTC().Format(time.RFC3339)); err != nil {
+		usecase.DeploymentIDFor(d), createdAt.UTC().Format(time.RFC3339)); err != nil {
 		return fmt.Errorf("upsert deployment: %w", err)
 	}
 

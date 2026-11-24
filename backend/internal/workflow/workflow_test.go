@@ -5,12 +5,18 @@ import (
 	"testing"
 )
 
+// testID is a stand-in for a real usecase.DeriveDeploymentID result. Every
+// server-side name derives from it, so the assertions below read in terms of it
+// rather than the app or branch.
+const testID = "mtb-aaaaaaaaaaaa"
+
 func base() Config {
 	return Config{
 		App: "shop", Owner: "acme", Repo: "shop", Branch: "main",
 		RootDir: "./apps/web", DeployDir: "/opt/shop",
-		Ports:   []Port{{EnvVar: "FRONTEND_PORT", Value: "3000", Container: "3000"}},
-		EnvVars: []EnvVar{{Key: "DATABASE_URL", Value: "x"}},
+		DeploymentID: testID,
+		Ports:        []Port{{EnvVar: "FRONTEND_PORT", Value: "3000", Container: "3000"}},
+		EnvVars:      []EnvVar{{Key: "DATABASE_URL", Value: "x"}},
 	}
 }
 
@@ -89,10 +95,10 @@ func TestDockerScript_OffloadShape(t *testing.T) {
 		"zstd -dc",
 		"docker load",
 		`trap 'rm -f "$TARBALL"' EXIT`,
-		"curl -sS -k",                          // health check probe
-		"http://127.0.0.1:3000",                // primary port
-		"docker rmi -f",                        // untag older images
-		`--filter=reference="mountabo/shop:*"`, // scoped to this app (lowercased)
+		"curl -sS -k",           // health check probe
+		"http://127.0.0.1:3000", // primary port
+		"docker rmi -f",         // untag older images
+		`--filter=reference="mountabo/` + testID + `:*"`, // scoped to this deployment
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("docker offload script missing %q:\n%s", want, s)
@@ -117,7 +123,7 @@ func TestComposeScript_OffloadShape(t *testing.T) {
 		"docker compose $COMPOSE_ARGS up -d --no-build",
 		"mountabo.image.override.yml",
 		"docker rmi -f",
-		`--filter=reference="mountabo/shop-*:*"`,
+		`--filter=reference="mountabo/` + testID + `-*:*"`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("compose offload script missing %q:\n%s", want, s)
@@ -175,12 +181,12 @@ func TestWorkflow_DockerBuildsAndShips(t *testing.T) {
 	c.Strategy = Docker
 	w := Workflow(c)
 	for _, want := range []string{
-		"docker build -t mountabo/shop:${{ github.sha }}",
-		"docker save mountabo/shop:${{ github.sha }} | zstd",
+		"docker build -t mountabo/" + testID + ":${{ github.sha }}",
+		"docker save mountabo/" + testID + ":${{ github.sha }} | zstd",
 		"rsync -a --partial",
-		`srcs="deploy.sh"`,
+		`srcs=".mountabo/deploy-` + testID + `.sh"`,
 		"for f in image.tar.zst; do",
-		"MOUNTABO_IMAGE: mountabo/shop:${{ github.sha }}",
+		"MOUNTABO_IMAGE: mountabo/" + testID + ":${{ github.sha }}",
 		",MOUNTABO_IMAGE", // forwarded over SSH
 	} {
 		if !strings.Contains(w, want) {
@@ -203,7 +209,7 @@ func TestWorkflow_ComposeBuildsImagesAndShipsOverride(t *testing.T) {
 	for _, want := range []string{
 		`docker compose -f "$compose" config --no-interpolate --format json`,
 		"mountabo.image.override.yml",
-		`tag="mountabo/shop-$svc:${{ github.sha }}"`,
+		`tag="mountabo/` + testID + `-$svc:${{ github.sha }}"`,
 		"docker save $tags | zstd",
 		"apps/web/image.tar.zst", // rsync source carries the app-root prefix
 		"apps/web/mountabo.image.override.yml",
@@ -221,7 +227,7 @@ func TestWorkflow_PinsEnvironmentAndSecrets(t *testing.T) {
 	c := base()
 	c.Environment = "production"
 	w := Workflow(c)
-	for _, want := range []string{"environment: production", "DATABASE_URL: ${{ secrets.DATABASE_URL }}", "envs: DATABASE_URL,DEPLOY_DIR", "deploy.sh main"} {
+	for _, want := range []string{"environment: production", "DATABASE_URL: ${{ secrets.DATABASE_URL }}", "envs: DATABASE_URL,DEPLOY_DIR", ScriptName(base()) + " main"} {
 		if !strings.Contains(w, want) {
 			t.Errorf("workflow missing %q", want)
 		}

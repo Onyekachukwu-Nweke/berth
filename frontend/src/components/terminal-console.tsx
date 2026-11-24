@@ -128,18 +128,14 @@ export function TerminalConsole({ servers }: { servers: ServerView[] }) {
   const windowTitle = selected ? `${host}  ~  ssh` : "mountabo  ~  no server selected";
 
   return (
-    <main className="mx-auto w-full max-w-[1100px] flex-1 px-4 pb-16 pt-10 sm:px-6 sm:pt-16 lg:px-8">
-      <p className="label">terminal</p>
-      <h1 className="mt-6 text-4xl font-extrabold leading-[1.02] tracking-tight text-cream sm:text-5xl sm:leading-[0.98] lg:text-6xl">
-        a shell on your server,
-        <br />
-        right in the <span className="italic text-lime">browser.</span>
-      </h1>
-      <p className="mt-6 max-w-2xl text-[16px] leading-8 text-body">
-        pick a server, run shell commands over ssh, and read the output here. ask the helper for a
-        command and it suggests one you review and run, never on its own. everything runs as the
-        mountabo user, confirmed before it runs unless you turn on express mode.
-      </p>
+    <main className="mx-auto w-full max-w-[1200px] flex-1 px-4 pb-16 pt-6 sm:px-6 lg:px-8 lg:pt-8">
+      <div className="border-b border-line pb-5">
+        <h1 className="text-[22px] font-semibold tracking-tight text-cream">Terminal</h1>
+        <p className="mt-1 max-w-3xl text-[13px] text-muted">
+          Run commands on a server over SSH as the mountabo user. The helper suggests commands; you review and run
+          them. Each one is confirmed first unless express mode is on.
+        </p>
+      </div>
 
       <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
         <ServerSelect
@@ -164,11 +160,11 @@ export function TerminalConsole({ servers }: { servers: ServerView[] }) {
           title="Express mode runs commands immediately, without confirming each one."
           className={`flex items-center gap-2 rounded-md border px-3 py-1.5 text-[12px] font-medium transition-colors sm:ml-auto ${
             express
-              ? "border-lime/50 bg-lime/[0.08] text-lime"
+              ? "border-line-strong bg-surface-hover text-cream"
               : "border-line text-muted hover:border-line-strong hover:text-cream"
           }`}
         >
-          <span className={`h-1.5 w-1.5 rounded-full ${express ? "bg-lime" : "bg-muted"}`} />
+          <span className={`h-1.5 w-1.5 rounded-full ${express ? "bg-warn" : "bg-muted"}`} />
           express mode {express ? "on" : "off"}
         </button>
       </div>
@@ -246,7 +242,7 @@ function TerminalWindow({
   }
 
   return (
-    <div className="mt-5 overflow-hidden rounded-xl border border-line-strong bg-[#000000] shadow-2xl">
+    <div className="mt-5 overflow-hidden rounded-lg border border-line-strong bg-[#000000] shadow-2xl">
       {/* title bar: traffic light dots on the left, centered ssh title */}
       <div className="relative flex h-9 items-center border-b border-line bg-surface-2 px-4">
         <div className="flex items-center gap-2" aria-hidden>
@@ -304,7 +300,7 @@ function TerminalWindow({
             />
             {/* a blinking block caret shows the prompt is live when empty */}
             {!disabled && command === "" && (
-              <span className="-ml-1 inline-block h-[1.05em] w-[0.55em] animate-pulse self-center bg-lime/80" aria-hidden />
+              <span className="-ml-1 inline-block h-[1.05em] w-[0.55em] animate-pulse self-center bg-surface-hover" aria-hidden />
             )}
           </form>
         )}
@@ -319,7 +315,7 @@ function TerminalWindow({
 function PromptSigil({ host, path }: { host: string; path?: string }) {
   return (
     <span className="shrink-0 select-none font-mono text-[13.5px]">
-      <span className="text-lime">{host}</span>
+      <span className="text-cream">{host}</span>
       <span className="text-blue"> {path && path !== "" ? path : "~"} </span>
       <span className="text-muted">%</span>
     </span>
@@ -336,7 +332,7 @@ function TranscriptEntry({ entry }: { entry: Entry }) {
     );
   }
   if (entry.kind === "error") {
-    return <pre className="mt-1 whitespace-pre-wrap break-words text-red-300">{entry.text}</pre>;
+    return <pre className="mt-1 whitespace-pre-wrap break-words text-err">{entry.text}</pre>;
   }
   const ok = entry.exitCode === 0;
   return (
@@ -344,7 +340,7 @@ function TranscriptEntry({ entry }: { entry: Entry }) {
       {entry.text !== "" && (
         <pre className="whitespace-pre-wrap break-words text-body">{entry.text}</pre>
       )}
-      <p className={`mt-0.5 text-[12px] ${ok ? "text-lime" : "text-red-300"}`}>
+      <p className={`mt-0.5 text-[12px] ${ok ? "text-cream" : "text-err"}`}>
         exit {entry.exitCode}
         {entry.truncated && <span className="text-faint"> · output truncated</span>}
       </p>
@@ -388,7 +384,7 @@ function AIHelper({
   }
 
   return (
-    <section className="mt-6 rounded-xl border border-line bg-surface">
+    <section className="mt-6 rounded-lg border border-line bg-surface">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -430,7 +426,7 @@ function AIHelper({
             </button>
           </form>
 
-          {error && <p className="mt-3 text-[12px] text-red-300">{error}</p>}
+          {error && <p className="mt-3 text-[12px] text-err">{error}</p>}
 
           {result && !result.configured && (
             <div className="mt-3 rounded-lg border border-line bg-bg px-4 py-3 text-[12px] leading-6 text-muted">
@@ -451,7 +447,7 @@ function AIHelper({
                   )}
                   <button
                     onClick={() => onUse(result.command)}
-                    className="mt-3 rounded-md border border-lime/50 bg-lime/[0.08] px-4 py-1.5 text-[12px] font-medium text-lime transition-colors hover:bg-lime/[0.16]"
+                    className="mt-3 rounded-md border border-line-strong bg-surface-hover px-4 py-1.5 text-[12px] font-medium text-cream transition-colors hover:bg-surface-hover"
                   >
                     use this command
                   </button>

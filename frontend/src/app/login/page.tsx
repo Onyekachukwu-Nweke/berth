@@ -2,13 +2,15 @@ import { redirect } from "next/navigation";
 import { GithubMark, LogoMark } from "@/components/icons";
 import { getCurrentUser } from "@/lib/session";
 
+export const metadata = { title: "Sign in" };
+
 const ERRORS: Record<string, string> = {
   no_access:
-    "your GitHub account can't reach any repository mountabo is installed on. ask an admin to add you to the project's repo on GitHub, then sign in again.",
-  state: "the sign-in link expired or was opened twice. start again.",
-  exchange: "GitHub didn't accept the sign-in. start again.",
-  backend: "couldn't reach the mountabo API. try again in a moment.",
-  config: "sign-in isn't configured on this install (GITHUB_CLIENT_ID is missing).",
+    "Your GitHub account can't reach any repository Mountabo is installed on. Ask an admin to add you to your project's repo on GitHub, then sign in again.",
+  state: "The sign-in link expired or was opened twice. Start again.",
+  exchange: "GitHub didn't accept the sign-in. Start again.",
+  backend: "Couldn't reach the Mountabo API. Try again in a moment.",
+  config: "Sign-in isn't configured on this install (GITHUB_CLIENT_ID is missing).",
 };
 
 export default async function LoginPage({
@@ -21,29 +23,32 @@ export default async function LoginPage({
   const href = `/api/auth/login${next ? `?next=${encodeURIComponent(next)}` : ""}`;
 
   return (
-    <main className="flex min-h-screen items-center justify-center px-4">
-      <div className="w-full max-w-[420px] rounded-xl border border-line bg-surface p-8">
-        <div className="mb-6 flex items-center gap-2 text-cream">
-          <LogoMark className="text-lime" width={30} height={30} />
-          <span className="text-lg font-bold tracking-tight">mountabo</span>
+    <main className="flex min-h-screen flex-col items-center justify-center px-4">
+      <div className="w-full max-w-[360px]">
+        <div className="mb-8 flex items-center gap-2 text-cream">
+          <LogoMark className="text-lime" width={26} height={26} />
+          <span className="text-[17px] font-semibold tracking-tight">Mountabo</span>
         </div>
-        <h1 className="mb-2 text-[15px] font-bold text-cream">sign in to deploy</h1>
-        <p className="mb-6 text-[13px] leading-relaxed text-muted">
-          sign in with GitHub. you&apos;ll see the repositories you already have access to on GitHub, and deploy
-          them to the environments your team has set up.
+        <h1 className="text-[22px] font-semibold tracking-tight text-cream">Sign in</h1>
+        <p className="mt-1.5 text-[13px] leading-relaxed text-muted">
+          Use your GitHub account. You&apos;ll see the repositories you already have on GitHub and deploy them to the
+          environments your team has set up.
         </p>
         {error && (
-          <p role="alert" className="mb-5 rounded-md border border-red-400/40 bg-red-400/10 px-3 py-2 text-[13px] text-red-300">
-            {ERRORS[error] ?? "sign-in failed. start again."}
+          <p role="alert" className="mt-5 rounded-md border border-err/40 bg-err/10 px-3 py-2 text-[13px] text-err">
+            {ERRORS[error] ?? "Sign-in failed. Start again."}
           </p>
         )}
         <a
           href={href}
-          className="flex w-full items-center justify-center gap-2 rounded-md bg-lime px-4 py-2.5 text-[13px] font-bold text-bg transition-opacity hover:opacity-90"
+          className="mt-6 flex w-full items-center justify-center gap-2 rounded-md bg-cream px-4 py-2.5 text-[13px] font-medium text-bg transition-opacity hover:opacity-90"
         >
           <GithubMark />
-          sign in with GitHub
+          Continue with GitHub
         </a>
+        <p className="mt-6 text-[12px] leading-relaxed text-faint">
+          Access follows GitHub: push access to a repo lets you deploy it, read access lets you view it.
+        </p>
       </div>
     </main>
   );

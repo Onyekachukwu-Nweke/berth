@@ -1,9 +1,10 @@
 import { redirect } from "next/navigation";
-import { Header } from "@/components/header";
 import { ConfigureView } from "@/components/configure-view";
 import type { Source } from "@/lib/data";
 import { getServers, toDisplayServer } from "@/lib/servers";
 import { getGithubConnection } from "@/lib/session";
+
+export const metadata = { title: "Configure" };
 
 export default async function ConfigurePage({
   searchParams,
@@ -25,30 +26,20 @@ export default async function ConfigurePage({
   const branch = branchParam ?? "";
   const real = servers.find((s) => s.id === serverId);
   if (!account || !owner || !name || !branch || !real) {
-    redirect("/");
+    redirect("/new");
   }
 
   const server = toDisplayServer(real);
   const source: Source = { owner, name, branch, updated: "", language: "" };
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <Header
-        crumbs={[
-          { label: "new", href: "/" },
-          { label: `${source.name} / configure` },
-        ]}
-        back
-        container="max-w-[1100px]"
-      />
-      <ConfigureView
+    <ConfigureView
         source={source}
         server={server}
         branch={branch}
         account={account}
         environment={environment}
-        isAdmin={conn.connected && conn.isAdmin}
-      />
-    </div>
+      isAdmin={conn.connected && conn.isAdmin}
+    />
   );
 }

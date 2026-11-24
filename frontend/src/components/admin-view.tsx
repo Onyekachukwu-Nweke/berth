@@ -23,14 +23,14 @@ const input =
   "rounded-md border border-line bg-bg px-2.5 py-1.5 text-[13px] text-cream outline-none placeholder:text-faint focus:border-line-strong";
 const button =
   "rounded-md border border-line px-3 py-1.5 text-[13px] text-cream transition-colors hover:bg-surface-hover disabled:opacity-50";
-const primary = "rounded-md bg-lime px-3 py-1.5 text-[13px] font-bold text-bg transition-opacity hover:opacity-90 disabled:opacity-50";
+const primary = "rounded-md bg-cream px-3 py-1.5 text-[13px] font-bold text-bg transition-opacity hover:opacity-90 disabled:opacity-50";
 
 function Card({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
   return (
-    <section className="rounded-xl border border-line bg-surface">
+    <section className="rounded-lg border border-line bg-surface">
       <div className="border-b border-line px-5 py-3">
-        <h2 className="text-[13px] font-bold text-cream">{title}</h2>
-        {hint && <p className="mt-0.5 text-[12px] text-muted">{hint}</p>}
+        <h2 className="text-[13px] font-semibold text-cream first-letter:uppercase">{title}</h2>
+        {hint && <p className="mt-0.5 text-[12px] text-muted first-letter:uppercase">{hint}</p>}
       </div>
       <div className="px-5 py-4">{children}</div>
     </section>
@@ -82,9 +82,9 @@ export function AdminView({ initial }: { initial: AdminData }) {
     servers.filter((s) => !s.clientId || s.clientId === clientId);
 
   return (
-    <main className="mx-auto w-full max-w-[1100px] space-y-5 px-4 py-6 sm:px-6 lg:px-8">
+    <div className="mt-6 space-y-5">
       {error && (
-        <p role="alert" className="rounded-md border border-red-400/40 bg-red-400/10 px-3 py-2 text-[13px] text-red-300">
+        <p role="alert" className="rounded-md border border-err/40 bg-err/10 px-3 py-2 text-[13px] text-err">
           {error}
         </p>
       )}
@@ -95,7 +95,7 @@ export function AdminView({ initial }: { initial: AdminData }) {
       >
         <div className="flex flex-wrap items-center gap-2 text-[13px]">
           {installations === null ? (
-            <span className="text-red-300">couldn&apos;t read installations (check GITHUB_APP_ID / private key)</span>
+            <span className="text-err">couldn&apos;t read installations (check GITHUB_APP_ID / private key)</span>
           ) : installations.length === 0 ? (
             <span className="text-muted">not installed anywhere yet</span>
           ) : (
@@ -106,7 +106,7 @@ export function AdminView({ initial }: { initial: AdminData }) {
             ))
           )}
           {installUrl && (
-            <a href={installUrl} target="_blank" rel="noreferrer" className="ml-auto text-lime hover:text-cream">
+            <a href={installUrl} target="_blank" rel="noreferrer" className="ml-auto text-cream hover:text-cream">
               install on another account →
             </a>
           )}
@@ -121,7 +121,7 @@ export function AdminView({ initial }: { initial: AdminData }) {
               <span className="text-faint">{c.id}</span>
               {c.id !== "agency" && (
                 <button
-                  className="ml-auto text-muted hover:text-red-300"
+                  className="ml-auto text-muted hover:text-err"
                   disabled={busy}
                   onClick={() => confirm(`delete client ${c.name}? its repo links and rules go too.`) && call("DELETE", `/api/admin/clients/${c.id}`)}
                 >
@@ -174,7 +174,7 @@ export function AdminView({ initial }: { initial: AdminData }) {
             <li key={`${l.owner}/${l.repo}`} className="flex items-center gap-3 py-2">
               <span className="text-cream">{l.owner}/{l.repo}</span>
               <span className="text-muted">→ {clientName(l.clientId)}</span>
-              <button className="ml-auto text-muted hover:text-red-300" disabled={busy} onClick={() => call("DELETE", `/api/admin/links/${encodeURIComponent(l.owner)}/${encodeURIComponent(l.repo)}`)}>
+              <button className="ml-auto text-muted hover:text-err" disabled={busy} onClick={() => call("DELETE", `/api/admin/links/${encodeURIComponent(l.owner)}/${encodeURIComponent(l.repo)}`)}>
                 remove
               </button>
             </li>
@@ -203,9 +203,9 @@ export function AdminView({ initial }: { initial: AdminData }) {
           {policy.envRules.map((r) => (
             <li key={`${r.clientId}/${r.environment}`} className="flex flex-wrap items-center gap-3 py-2">
               <span className="text-cream">{clientName(r.clientId)}</span>
-              <span className="text-lime">{r.environment}</span>
+              <span className="text-cream">{r.environment}</span>
               <span className="text-muted">→ {serverName(r.serverId)}</span>
-              <button className="ml-auto text-muted hover:text-red-300" disabled={busy} onClick={() => call("DELETE", `/api/admin/clients/${r.clientId}/environments/${encodeURIComponent(r.environment)}`)}>
+              <button className="ml-auto text-muted hover:text-err" disabled={busy} onClick={() => call("DELETE", `/api/admin/clients/${r.clientId}/environments/${encodeURIComponent(r.environment)}`)}>
                 remove
               </button>
             </li>
@@ -239,9 +239,9 @@ export function AdminView({ initial }: { initial: AdminData }) {
           {policy.repoRules.map((r) => (
             <li key={`${r.owner}/${r.repo}/${r.environment}`} className="flex flex-wrap items-center gap-3 py-2">
               <span className="text-cream">{r.owner}/{r.repo}</span>
-              <span className="text-lime">{r.environment}</span>
+              <span className="text-cream">{r.environment}</span>
               <span className="text-muted">→ {serverName(r.serverId)}</span>
-              <button className="ml-auto text-muted hover:text-red-300" disabled={busy} onClick={() => call("DELETE", `/api/admin/repo-rules/${encodeURIComponent(r.owner)}/${encodeURIComponent(r.repo)}/${encodeURIComponent(r.environment)}`)}>
+              <button className="ml-auto text-muted hover:text-err" disabled={busy} onClick={() => call("DELETE", `/api/admin/repo-rules/${encodeURIComponent(r.owner)}/${encodeURIComponent(r.repo)}/${encodeURIComponent(r.environment)}`)}>
                 remove
               </button>
             </li>
@@ -272,12 +272,12 @@ export function AdminView({ initial }: { initial: AdminData }) {
             <li key={u.id} className="flex items-center gap-3 py-2">
               <span className="text-cream">{u.login}</span>
               {u.name && <span className="text-muted">{u.name}</span>}
-              {u.isAdmin && <span className="rounded border border-line px-1.5 text-[11px] text-lime">admin</span>}
+              {u.isAdmin && <span className="rounded border border-line px-1.5 text-[11px] text-cream">admin</span>}
               <span className="ml-auto text-faint">last in {new Date(u.lastLoginAt).toLocaleDateString()}</span>
             </li>
           ))}
         </ul>
       </Card>
-    </main>
+    </div>
   );
 }

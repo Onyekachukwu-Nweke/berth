@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Badge } from "@/components/badge";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Badge, type Tone } from "@/components/badge";
 import { ServerAvatar } from "@/components/server-avatar";
 import {
   ArrowRight,
@@ -14,7 +14,6 @@ import {
   Plus,
   Refresh,
   Search,
-  Shield,
   Trash,
 } from "@/components/icons";
 import { AddServerForm } from "@/components/add-server-form";
@@ -29,21 +28,26 @@ import { clearCachedRepos, fetchRepos, readCachedRepos, writeCachedRepos } from 
 import { type DomainPreview, fetchDomainPreview } from "@/lib/domain-preview";
 import type { Domain, ServerStatus, ServerView, SetupOption } from "@/lib/servers";
 
-const statusTone: Record<ServerStatus, "blue" | "lime" | "gray" | "red"> = {
-  ready: "blue",
-  setting_up: "lime",
-  probed: "gray",
-  failed: "red",
+const statusTone: Record<ServerStatus, Tone> = {
+  ready: "ok",
+  setting_up: "warn",
+  probed: "neutral",
+  failed: "err",
 };
 
+// NewDeployment is two pages over one body of state: "repos" picks a source and
+// a server to deploy to, "servers" lists the servers and, for admins, manages
+// them (add, set up, harden, domains, remove). Developers only read servers.
 export function NewDeployment({
   servers,
   account,
-  stamp,
+  mode,
+  isAdmin,
 }: {
   servers: ServerView[];
   account: string | null;
-  stamp: string;
+  mode: "repos" | "servers";
+  isAdmin: boolean;
 }) {
   const router = useRouter();
   // Repositories load in the browser from a 12 hour localStorage cache (keyed by
@@ -58,7 +62,7 @@ export function NewDeployment({
   const [source, setSource] = useState<string | null>(null);
   const [server, setServer] = useState<string | null>(null);
   const [serverList, setServerList] = useState<ServerView[]>(servers);
-  const [view, setView] = useState<"repos" | "servers">("repos");
+  const view = mode;
   const [ownerFilter, setOwnerFilter] = useState<string | null>(null);
   const [visibility, setVisibility] = useState<"all" | "public" | "private">("all");
   const [container, setContainer] = useState<"all" | "compose" | "docker" | "none">("all");
@@ -278,7 +282,8 @@ export function NewDeployment({
   // ⌘K / ctrl-K focuses the palette; Enter continues when both are picked.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      const typing = e.target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+      if (((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") || (e.key === "/" && !typing)) {
         e.preventDefault();
         searchRef.current?.focus();
       }
@@ -335,58 +340,27 @@ export function NewDeployment({
 
   return (
     <>
-    <main className="mx-auto flex w-full max-w-[1100px] flex-1 flex-col px-4 pb-10 pt-10 sm:px-6 sm:pt-16 lg:px-8">
-      {/* hero */}
-      <div className="rise">
-        <p className="label">
-          new deployment · {stamp}
-        </p>
-        <h1 className="mt-6 text-4xl font-extrabold leading-[1.02] tracking-tight text-cream sm:text-5xl sm:leading-[0.98] lg:text-6xl">
-          deploy something
-          <br />
-          of your <span className="italic text-lime">own</span> by{" "}
-          <span className="italic text-lime">yourself.</span>
-        </h1>
-        <p className="mt-6 max-w-2xl text-[16px] leading-8 text-body">
-          Vercel Style Frontend for your VPS. pick a source, point it at a server. mountabo writes{" "}
-          <span className="text-cream">.github/workflows/mountabo-deploy.yml</span> (or a local
-          script) and steps out of the way. no middleman, no surprises, nothing leaves your machine.
-        </p>
-      </div>
-
-      {/* command palette */}
-      <div className="rise mt-10" style={{ animationDelay: "70ms" }}>
-        <label className="flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3.5 transition-colors focus-within:border-line-strong">
-          <Search className="text-muted" />
-          <input
-            ref={searchRef}
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setPage(0);
-            }}
-            placeholder="filter sources and servers, or jump anywhere…"
-            className="flex-1 bg-transparent text-[14px] text-cream placeholder:text-muted focus:outline-none"
-          />
-          <kbd className="rounded-md border border-line bg-surface-2 px-2 py-0.5 text-[11px] text-muted">⌘</kbd>
-          <kbd className="rounded-md border border-line bg-surface-2 px-2 py-0.5 text-[11px] text-muted">K</kbd>
-        </label>
-      </div>
-
-      {/* view tabs: repositories / servers, each full-width */}
-      <div className="rise mt-6 flex items-center gap-1" style={{ animationDelay: "120ms" }}>
-        <ViewTab active={view === "repos"} onClick={() => setView("repos")} count={filteredSources.length}>
-          repositories
-        </ViewTab>
-        <ViewTab active={view === "servers"} onClick={() => setView("servers")} count={serverList.length}>
-          servers
-        </ViewTab>
-      </div>
+    <div className="mt-6 flex flex-1 flex-col">
+      {/* filter */}
+      <label className="mb-4 flex items-center gap-2.5 rounded-md border border-line bg-surface px-3 py-2 transition-colors focus-within:border-line-strong">
+        <Search className="text-muted" />
+        <input
+          ref={searchRef}
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setPage(0);
+          }}
+          placeholder={view === "repos" ? "Filter repositories…" : "Filter servers…"}
+          className="flex-1 bg-transparent text-[13px] text-cream placeholder:text-muted focus:outline-none"
+        />
+        <kbd className="rounded border border-line bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted">/</kbd>
+      </label>
 
       {/* active view */}
-      <div className="rise mt-4 flex flex-1 flex-col" style={{ animationDelay: "140ms" }}>
+      <div className="flex flex-1 flex-col">
         {view === "repos" && (
-        <section className="flex flex-col rounded-xl border border-line bg-surface">
+        <section className="flex flex-col rounded-lg border border-line bg-surface">
           <div className="flex items-center justify-between border-b border-line px-5 py-4">
             <span className="flex items-center gap-2">
               <span className="label">sources</span>
@@ -405,7 +379,7 @@ export function NewDeployment({
               <button
                 onClick={refreshRepos}
                 disabled={refreshing || clearing || !account}
-                className="flex items-center gap-1.5 text-[12px] text-lime transition-colors hover:text-cream disabled:opacity-60"
+                className="flex items-center gap-1.5 text-[12px] text-cream transition-colors hover:text-cream disabled:opacity-60"
               >
                 <Refresh className={refreshing ? "animate-spin" : ""} /> {refreshing ? "refreshing…" : "refresh"}
               </button>
@@ -433,7 +407,7 @@ export function NewDeployment({
 
           <div className="flex flex-wrap items-center gap-x-8 gap-y-3 border-b border-line px-5 py-4">
             <span className="flex items-center gap-3">
-              <span className="text-[12px] font-medium uppercase tracking-wide text-muted">visibility</span>
+              <span className="text-[12px] font-medium text-muted">visibility</span>
               <FilterChips
                 value={visibility}
                 onChange={(v) => {
@@ -448,7 +422,7 @@ export function NewDeployment({
               />
             </span>
             <span className="flex items-center gap-3">
-              <span className="text-[12px] font-medium uppercase tracking-wide text-muted">container</span>
+              <span className="text-[12px] font-medium text-muted">container</span>
               <FilterChips
                 value={container}
                 onChange={(v) => {
@@ -473,7 +447,7 @@ export function NewDeployment({
                 <li
                   key={full}
                   className={`flex items-center gap-3 px-5 transition-colors ${
-                    active ? "bg-lime/[0.08]" : "hover:bg-surface-hover"
+                    active ? "bg-surface-hover" : "hover:bg-surface-hover"
                   }`}
                 >
                   <div className="min-w-0 flex-1 py-3.5">
@@ -482,7 +456,7 @@ export function NewDeployment({
                       target="_blank"
                       rel="noopener noreferrer"
                       title={`open ${full} on GitHub`}
-                      className="inline-flex items-center gap-2 text-[15px] font-medium text-cream transition-colors hover:text-lime hover:underline"
+                      className="inline-flex items-center gap-2 text-[15px] font-medium text-cream transition-colors hover:text-cream hover:underline"
                     >
                       {s.name}
                       {s.private && <Lock className="text-muted" />}
@@ -493,8 +467,8 @@ export function NewDeployment({
                       )}
                     </a>
                     <span className="mt-1 flex items-center gap-2 text-[12px] text-muted">
-                      <Branch className={s.branchAccent ? "text-lime" : "text-muted"} />
-                      <span className={s.branchAccent ? "text-lime" : ""}>{s.branch}</span>
+                      <Branch className={s.branchAccent ? "text-cream" : "text-muted"} />
+                      <span className={s.branchAccent ? "text-cream" : ""}>{s.branch}</span>
                       <span className="text-faint">·</span>
                       {s.updated}
                       <span className="text-faint">·</span>
@@ -511,13 +485,13 @@ export function NewDeployment({
                     onClick={() => setSource(full)}
                     className={`flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-1.5 text-[12px] transition-colors ${
                       active
-                        ? "border-lime/60 bg-lime/[0.08] text-lime"
-                        : "border-line text-muted hover:border-lime/50 hover:text-lime"
+                        ? "border-line-strong bg-surface-hover text-cream"
+                        : "border-line text-muted hover:border-line-strong hover:text-cream"
                     }`}
                   >
                     {active ? (
                       <>
-                        selected <ArrowRight className="text-lime" />
+                        selected <ArrowRight className="text-cream" />
                       </>
                     ) : (
                       "select"
@@ -531,7 +505,7 @@ export function NewDeployment({
                 {!account ? (
                   <>
                     sign in to list your repositories.{" "}
-                    <Link href="/login" className="text-lime hover:text-cream">
+                    <Link href="/login" className="text-cream hover:text-cream">
                       sign in →
                     </Link>
                   </>
@@ -574,7 +548,7 @@ export function NewDeployment({
         )}
 
         {view === "servers" && (
-        <section className="flex flex-col rounded-xl border border-line bg-surface">
+        <section className="flex flex-col rounded-lg border border-line bg-surface">
           <div className="flex items-center justify-between border-b border-line px-5 py-4">
             <span className="flex items-center gap-2">
               <span className="label">servers</span>
@@ -592,7 +566,7 @@ export function NewDeployment({
                 <li
                   key={s.id}
                   className={`rounded-lg border bg-surface-2 transition-colors ${
-                    active ? "border-lime/60" : "border-line hover:border-line-strong"
+                    active ? "border-line-strong" : "border-line hover:border-line-strong"
                   }`}
                 >
                   <div className="flex items-center gap-4 px-4 py-3.5">
@@ -612,27 +586,31 @@ export function NewDeployment({
                       </div>
                     </button>
                     {s.status === "ready" ? (
-                      <span className="text-[12px] text-blue">✓ ready</span>
+                      <span className="text-[12px] text-ok">Ready</span>
+                    ) : !isAdmin ? (
+                      <span className="text-[12px] text-muted">{s.status === "setting_up" ? "Setting up" : "Not ready"}</span>
                     ) : (
                       <button
                         onClick={() => setConfirmSetup(s)}
                         disabled={s.status === "setting_up"}
-                        className="rounded-md border border-lime/40 px-3 py-1.5 text-[12px] text-lime transition-colors hover:bg-lime/10 disabled:opacity-50"
+                        className="rounded-md border border-line-strong px-3 py-1.5 text-[12px] text-cream transition-colors hover:bg-surface-hover disabled:opacity-50"
                       >
                         {s.status === "failed" ? "retry setup" : s.status === "setting_up" ? "setting up…" : "set up"}
                       </button>
                     )}
+                    {isAdmin && (
                     <button
                       onClick={() => setConfirmDelete(s)}
                       disabled={s.status === "setting_up"}
                       title={`remove ${s.name} from mountabo`}
                       aria-label={`remove ${s.name}`}
-                      className="shrink-0 rounded-md border border-line px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:border-red-400/50 hover:text-red-300 disabled:opacity-50"
+                      className="shrink-0 rounded-md border border-line px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:border-err/50 hover:text-err disabled:opacity-50"
                     >
                       <Trash />
                     </button>
+                    )}
                   </div>
-                  {active && s.status === "ready" && (
+                  {isAdmin && active && s.status === "ready" && (
                     <>
                       <ServerDomains
                         key={`dom:${(s.domains ?? []).map((d) => d.host).join(",")}`}
@@ -655,7 +633,7 @@ export function NewDeployment({
             {/* Adding a server needs its ip + root password (to bootstrap it).
                 Once a server is selected, that's irrelevant, deploys use its SSH
                 key, so the onboarding fields are hidden. */}
-            {!server && (
+            {isAdmin && !server && (
               <li>
                 {showAddServer ? (
                   <AddServerForm
@@ -668,7 +646,7 @@ export function NewDeployment({
                 ) : (
                   <button
                     onClick={() => setShowAddServer(true)}
-                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-line-strong px-4 py-4 text-[13px] text-muted transition-colors hover:border-lime/50 hover:text-cream"
+                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-line-strong px-4 py-4 text-[13px] text-muted transition-colors hover:border-line-strong hover:text-cream"
                   >
                     <Plus /> add a server (ip + root password)
                   </button>
@@ -682,9 +660,9 @@ export function NewDeployment({
 
       {/* deploy bar: pick a target server, then head to the deployment page */}
       {source && (
-        <div className="rise mt-5 flex flex-col gap-3 rounded-xl border border-lime/50 bg-lime/[0.06] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="sticky bottom-4 mt-5 flex flex-col gap-3 rounded-lg border border-line-strong bg-surface-2 px-4 py-3 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.6)] sm:flex-row sm:items-center sm:justify-between">
           <span className="flex min-w-0 items-center gap-2 text-[14px] text-cream">
-            <span className="shrink-0 text-lime">→ deploy</span>
+            <span className="shrink-0 text-cream">→ deploy</span>
             <span className="truncate">{source}</span>
           </span>
           <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center">
@@ -695,7 +673,7 @@ export function NewDeployment({
               tabIndex={ready ? 0 : -1}
               className={`flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-[13px] font-bold transition-transform sm:py-2 ${
                 ready
-                  ? "cta-glow bg-lime-fill text-black hover:-translate-y-0.5"
+                  ? "cta-glow bg-cream text-bg hover:-translate-y-0.5"
                   : "pointer-events-none border border-line text-muted opacity-50"
               }`}
             >
@@ -705,22 +683,7 @@ export function NewDeployment({
         </div>
       )}
 
-      {/* footer */}
-      <div className="mt-8 flex flex-col gap-4 border-t border-line pt-5 sm:flex-row sm:items-center sm:justify-between">
-        <p className="flex items-center gap-2 text-[12px] text-muted">
-          <Shield className="text-faint" />
-          this stays on your machine. credentials live in your os keychain.
-        </p>
-        <div className="flex items-center gap-3 text-[12px]">
-          <button className="rounded-md border border-line px-3 py-2 text-muted transition-colors hover:border-line-strong hover:text-cream">
-            view cli command
-          </button>
-          <button className="rounded-md border border-line px-3 py-2 text-muted transition-colors hover:border-line-strong hover:text-cream">
-            import .yml
-          </button>
-        </div>
-      </div>
-    </main>
+    </div>
 
     {setupTarget && (
       <StreamLog
@@ -786,7 +749,7 @@ export function NewDeployment({
           "connect to the server as root over SSH using the password you provided",
           "create the unprivileged mountabo user with sudo and a locked password",
           "generate an ed25519 deploy key and install its public key for the mountabo user",
-          "store the private key in your OS keychain, never on the server beyond its authorized_keys",
+          "store the private key encrypted in Mountabo's vault; the server only gets the public half in authorized_keys",
           "apply the base hardening and confirm mountabo can log in with the new key",
         ]}
         confirmLabel={confirmSetup.status === "failed" ? "retry setup" : "set up server"}
@@ -812,7 +775,7 @@ export function NewDeployment({
               mountabo will connect to <span className="text-cream">{confirmApply.server.name}</span> as
               the mountabo user (with sudo) and change its hardening:{" "}
               {added.length > 0 && (
-                <span className="text-lime">install {added.map(optionName).join(", ")}</span>
+                <span className="text-cream">install {added.map(optionName).join(", ")}</span>
               )}
               {added.length > 0 && removed.length > 0 && ", "}
               {removed.length > 0 && (
@@ -921,8 +884,8 @@ export function NewDeployment({
           </>
         }
         steps={[
-          "destroy the server's mountabo deploy key in your OS keychain",
-          "destroy any retained root password for the server in your OS keychain",
+          "delete the server's mountabo key from the vault",
+          "delete any retained root password for the server from the vault",
           "delete the server from mountabo's records, along with its domains and history",
         ]}
         confirmLabel="remove server"
@@ -987,7 +950,7 @@ function FilterChips<T extends string>({
           onClick={() => onChange(o.v)}
           className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-colors ${
             value === o.v
-              ? "bg-lime/15 text-lime"
+              ? "bg-surface-hover text-cream"
               : "text-muted hover:bg-surface-2 hover:text-cream"
           }`}
         >
@@ -995,31 +958,5 @@ function FilterChips<T extends string>({
         </button>
       ))}
     </span>
-  );
-}
-
-function ViewTab({
-  active,
-  onClick,
-  count,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  count: number;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`flex items-center gap-2 rounded-lg px-4 py-2 text-[13px] transition-colors ${
-        active ? "bg-surface-2 text-cream" : "text-muted hover:text-cream"
-      }`}
-    >
-      {children}
-      <span className="rounded border border-line px-1.5 py-0.5 text-[11px] text-muted">
-        {String(count).padStart(2, "0")}
-      </span>
-    </button>
   );
 }

@@ -111,7 +111,7 @@ export function ServerDomains({
             onKeyDown={(e) => e.key === "Enter" && add()}
             placeholder="app.example.com"
             className={`w-full rounded-md border bg-surface px-3 py-2.5 text-[14px] text-cream placeholder:text-muted focus:outline-none ${
-              !host || validHost ? "border-line focus:border-line-strong" : "border-red-500/40"
+              !host || validHost ? "border-line focus:border-line-strong" : "border-err/40"
             }`}
           />
         </label>
@@ -126,7 +126,7 @@ export function ServerDomains({
               placeholder={DEFAULT_PORT}
               inputMode="numeric"
               className={`w-full rounded-md border bg-surface px-3 py-2.5 text-[14px] text-cream placeholder:text-muted focus:outline-none ${
-                validPort ? "border-line focus:border-line-strong" : "border-red-500/40"
+                validPort ? "border-line focus:border-line-strong" : "border-err/40"
               }`}
             />
           </label>
@@ -180,7 +180,7 @@ export function ServerDomains({
         <button
           onClick={add}
           disabled={!canAdd}
-          className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg border border-lime/50 bg-lime/[0.06] px-4 py-2.5 text-[12.5px] font-medium text-lime transition-colors hover:bg-lime/[0.12] disabled:cursor-not-allowed disabled:opacity-40"
+          className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg border border-line-strong bg-surface-hover px-4 py-2.5 text-[12.5px] font-medium text-cream transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Plus /> {!host ? "add a domain" : validHost ? `add ${cleanHost}` : "enter a valid domain"}
         </button>
@@ -205,12 +205,12 @@ function DomainRow({ domain, onRemove }: { domain: Domain; onRemove: () => void 
           href={`https://${domain.host}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex items-center gap-2 text-[14px] font-medium text-cream transition-colors hover:text-lime hover:underline"
+          className="inline-flex items-center gap-2 text-[14px] font-medium text-cream transition-colors hover:text-cream hover:underline"
         >
           {domain.host}
         </a>
         <span className="mt-1 flex flex-wrap items-center gap-2 text-[12px] text-muted">
-          <span className="text-lime">https</span>
+          <span className="text-cream">https</span>
           <span className="text-faint">·</span>
           <span>→ localhost:{domain.upstream}</span>
           {aliases.map((a) => (
@@ -222,7 +222,7 @@ function DomainRow({ domain, onRemove }: { domain: Domain; onRemove: () => void 
       </span>
       <button
         onClick={onRemove}
-        className="shrink-0 rounded-md border border-line px-3 py-1.5 text-[12px] text-muted transition-colors hover:border-red-400/50 hover:text-red-300"
+        className="shrink-0 rounded-md border border-line px-3 py-1.5 text-[12px] text-muted transition-colors hover:border-err/50 hover:text-err"
       >
         remove
       </button>

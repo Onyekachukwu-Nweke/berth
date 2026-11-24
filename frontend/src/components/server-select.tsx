@@ -50,7 +50,7 @@ export function ServerSelect({
                   setOpen(false);
                 }}
                 className={`block w-full px-3 py-2 text-left text-[13px] transition-colors ${
-                  s.id === value ? "bg-lime/[0.1] text-cream" : "text-muted hover:bg-surface-hover hover:text-cream"
+                  s.id === value ? "bg-surface-hover text-cream" : "text-muted hover:bg-surface-hover hover:text-cream"
                 }`}
               >
                 {s.name} · {s.ip}

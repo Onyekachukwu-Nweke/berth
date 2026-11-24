@@ -64,7 +64,7 @@ function Item({ label, active, onClick }: { label: string; active: boolean; onCl
     <button
       onClick={onClick}
       className={`block w-full px-3 py-1.5 text-left text-[13px] transition-colors ${
-        active ? "bg-lime/[0.1] text-cream" : "text-muted hover:bg-surface-hover hover:text-cream"
+        active ? "bg-surface-hover text-cream" : "text-muted hover:bg-surface-hover hover:text-cream"
       }`}
     >
       {label}

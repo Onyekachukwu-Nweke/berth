@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/badge";
@@ -295,17 +297,15 @@ export function ConfigureView({
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-[1480px] flex-1 flex-col gap-10 px-4 py-8 sm:px-6 lg:flex-row lg:items-start lg:gap-20 lg:px-8 lg:py-10">
+    <main className="mx-auto flex w-full max-w-[1480px] flex-1 flex-col gap-10 px-4 py-6 sm:px-6 lg:flex-row lg:items-start lg:gap-12 lg:px-8 lg:py-8">
       {/* ── left: the walkthrough form. Fixed width and wider than the preview,
           so it keeps its size across viewports rather than stretching. ── */}
-      <div className="rise flex flex-col lg:w-[800px] lg:shrink-0">
-        <p className="label">step 02 / 02 · configure</p>
-        <h1 className="mt-5 text-4xl font-extrabold leading-[1.05] tracking-tight text-cream sm:text-5xl sm:leading-[1.02]">
-          configure your deployment.
-        </h1>
+      <div className="flex flex-col lg:w-[720px] lg:shrink-0">
+        <Link href="/new" className="text-[12px] text-muted hover:text-cream">← New deployment</Link>
+        <h1 className="mt-2 text-[22px] font-semibold tracking-tight text-cream">Configure deployment</h1>
 
         <div className="mt-5 rounded-lg border border-line bg-surface px-4 py-3 text-[13px]">
-          <span className="text-muted">importing from</span>
+          <span className="text-muted">Importing from</span>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-cream">
             <GithubMark />
             {source.owner}/{source.name}
@@ -340,7 +340,7 @@ export function ConfigureView({
                 onClick={() => setEnvironment(name)}
                 className={`rounded-md border px-2.5 py-1 text-[12px] transition-colors ${
                   environment === name
-                    ? "border-lime/50 bg-lime/10 text-cream"
+                    ? "border-line-strong bg-surface-hover text-cream"
                     : "border-line text-muted hover:text-cream"
                 }`}
               >
@@ -349,20 +349,20 @@ export function ConfigureView({
             ))}
           </div>
           {environmentInvalid && (
-            <p className="mt-2 text-[12px] text-red-300">
+            <p className="mt-2 text-[12px] text-err">
               use only letters, numbers, dots, dashes or underscores (no slashes or spaces)
               {environment.trim() === "" ? ` — the branch "${branch}" isn't a valid environment name, so type one` : ""}.
             </p>
           )}
           {placementReason && (
-            <p className={`mt-2 text-[12px] ${placementBlocked ? "text-red-300" : "text-muted"}`}>
+            <p className={`mt-2 text-[12px] ${placementBlocked ? "text-err" : "text-muted"}`}>
               {targets?.clientName && <span className="text-cream">{targets.clientName} · </span>}
               {placementReason}
               {placement && placement.serverId !== server.id && (
                 <>
                   {" "}
                   <a
-                    className="text-lime hover:text-cream"
+                    className="text-cream hover:text-cream"
                     href={`/configure?repo=${encodeURIComponent(`${source.owner}/${source.name}`)}&branch=${encodeURIComponent(branch)}&server=${encodeURIComponent(placement.serverId)}&environment=${encodeURIComponent(effectiveEnvironment)}`}
                   >
                     switch to it →
@@ -411,7 +411,7 @@ export function ConfigureView({
                       <span className="mb-1 flex items-center gap-1.5 text-[11px] text-muted">
                         <span className="truncate" title={label}>{label}</span>
                         {occupied && (
-                          <span className="text-red-300" title={`${value} is already in use on ${server.name}`}>
+                          <span className="text-err" title={`${value} is already in use on ${server.name}`}>
                             {"\u{1F6AB}"} in use on the server
                           </span>
                         )}
@@ -422,7 +422,7 @@ export function ConfigureView({
                           onChange={(e) => setPortValues((v) => ({ ...v, [key]: e.target.value }))}
                           inputMode="numeric"
                           aria-invalid={occupied}
-                          className={`${inputCls} ${occupied ? "border-red-400/60" : ""}`}
+                          className={`${inputCls} ${occupied ? "border-err/60" : ""}`}
                         />
                       ) : (
                         <div
@@ -470,13 +470,13 @@ export function ConfigureView({
             {exampleKeys.length > 0 && (
               <button
                 onClick={() => setEnvVars((rows) => addEnvKeys(rows, exampleKeys))}
-                className="rounded-md border border-lime/40 px-2.5 py-1.5 text-[12px] text-lime transition-colors hover:bg-lime/10"
+                className="rounded-md border border-line-strong px-2.5 py-1.5 text-[12px] text-cream transition-colors hover:bg-surface-hover"
               >
                 use repo .env.example ({exampleKeys.length})
               </button>
             )}
             {imported !== null && (
-              <span className="text-[12px] text-lime">imported {imported}</span>
+              <span className="text-[12px] text-cream">imported {imported}</span>
             )}
             <input
               ref={fileRef}
@@ -509,7 +509,7 @@ export function ConfigureView({
                     setShowPaste(false);
                   }}
                   disabled={!paste.trim()}
-                  className="rounded-md border border-lime/40 px-3 py-1.5 text-[12px] text-lime transition-colors hover:bg-lime/10 disabled:opacity-40"
+                  className="rounded-md border border-line-strong px-3 py-1.5 text-[12px] text-cream transition-colors hover:bg-surface-hover disabled:opacity-40"
                 >
                   parse &amp; add
                 </button>
@@ -541,10 +541,10 @@ export function ConfigureView({
                       spellCheck={false}
                       data-1p-ignore
                       data-lpignore="true"
-                      className={`${inputCls} w-full font-mono ${badKey ? "border-red-400/60" : ""}`}
+                      className={`${inputCls} w-full font-mono ${badKey ? "border-err/60" : ""}`}
                     />
                     {badKey && (
-                      <span className="mt-1 block text-[11px] text-red-300">
+                      <span className="mt-1 block text-[11px] text-err">
                         not a valid name. use letters, digits and underscores, and don&apos;t start with a digit, for
                         example DATABASE_URL or API_KEY.
                       </span>
@@ -569,7 +569,7 @@ export function ConfigureView({
                   />
                   <button
                     onClick={() => setEnvVars((rows) => (rows.length > 1 ? rows.filter((_, idx) => idx !== i) : rows))}
-                    className="shrink-0 rounded-md border border-line px-2.5 py-2 text-[12px] text-muted transition-colors hover:border-red-400/50 hover:text-red-300"
+                    className="shrink-0 rounded-md border border-line px-2.5 py-2 text-[12px] text-muted transition-colors hover:border-err/50 hover:text-err"
                     aria-label="remove"
                   >
                     ×
@@ -579,7 +579,7 @@ export function ConfigureView({
             })}
             <button
               onClick={() => setEnvVars((rows) => [...rows, { key: "", value: "" }])}
-              className="flex items-center gap-1.5 text-[12px] text-lime transition-colors hover:text-cream"
+              className="flex items-center gap-1.5 text-[12px] text-cream transition-colors hover:text-cream"
             >
               <Plus /> add variable
             </button>
@@ -629,7 +629,7 @@ export function ConfigureView({
                 className={`${inputCls} sm:max-w-[220px]`}
               />
               {domainInvalid && (
-                <p className="mt-1.5 text-[12px] text-red-300">
+                <p className="mt-1.5 text-[12px] text-err">
                   {detectedPort
                     ? "enter the port your app publishes on the server so nginx can proxy the domain to it."
                     : "mountabo didn't detect a published port for this app. a domain proxies to a port, so enter the host port your app publishes (and make sure your compose/Dockerfile actually publishes it), otherwise remove the domain."}
@@ -638,13 +638,13 @@ export function ConfigureView({
             </div>
           )}
           {domainSkipped && (
-            <p className="mt-3 rounded-md border border-red-400/30 bg-red-400/[0.04] px-3 py-2 text-[12px] leading-5 text-red-200">
+            <p className="mt-3 rounded-md border border-err/30 bg-err/[0.04] px-3 py-2 text-[12px] leading-5 text-err">
               the deploy failed, so <span className="text-cream">{domainHost.trim()}</span> was not set up.
               fix the deploy and run it again — the domain is applied only after a successful deploy.
             </p>
           )}
           {domainLinkError && (
-            <p className="mt-3 rounded-md border border-red-400/30 bg-red-400/[0.04] px-3 py-2 text-[12px] leading-5 text-red-200">
+            <p className="mt-3 rounded-md border border-err/30 bg-err/[0.04] px-3 py-2 text-[12px] leading-5 text-err">
               {domainLinkError}
             </p>
           )}
@@ -658,7 +658,7 @@ export function ConfigureView({
               setDomainSkipped(false);
               setConfirmDeploy(previewReq);
             }}
-            className="flex w-full items-center justify-center gap-2 rounded-xl border border-lime/40 bg-lime/10 px-6 py-4 font-bold text-lime transition-colors hover:bg-lime/20 disabled:cursor-not-allowed disabled:border-line disabled:bg-surface-2 disabled:text-muted"
+            className="flex w-full items-center justify-center gap-2 rounded-md bg-cream px-6 py-3 text-[14px] font-semibold text-bg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:bg-surface-2 disabled:text-muted disabled:opacity-100"
             title={
               environmentInvalid
                 ? "the environment name must be letters, numbers, dots, dashes or underscores (no slashes)"
@@ -673,13 +673,13 @@ export function ConfigureView({
                       : "waiting for a valid configuration"
             }
           >
-            {deployed ? "re-deploy configuration" : "deploy"}
+            {deployed ? "Re-deploy configuration" : "Deploy"}
           </button>
-          <p className="mt-2 text-center text-[11px] text-muted">
+          <p className="mt-2 text-center text-[12px] text-muted first-letter:uppercase">
             commits these files and sets your {userSecrets.length} environment variables as encrypted secrets on{" "}
             {source.owner}/{source.name}. push to {branch} afterwards to ship.
           </p>
-          {previewError && <p className="mt-2 text-center text-[11px] text-red-300">{previewError}</p>}
+          {previewError && <p className="mt-2 text-center text-[11px] text-err">{previewError}</p>}
         </div>
       </div>
 
@@ -810,7 +810,7 @@ export function ConfigureView({
 
         <div className="mt-3 flex-1">
           {!preview ? (
-            <div className="rounded-xl border border-line bg-surface px-4 py-4 text-[12px] text-muted">
+            <div className="rounded-lg border border-line bg-surface px-4 py-4 text-[12px] text-muted">
               {previewError ?? "generating preview..."}
             </div>
           ) : (
@@ -818,7 +818,7 @@ export function ConfigureView({
               {tab === "workflow" && <Code path={preview.workflowPath} body={preview.workflow} />}
               {tab === "script" && <Code path="deploy.sh" body={preview.deployScript} />}
               {tab === "secrets" && (
-                <div className="overflow-hidden rounded-xl border border-line bg-surface">
+                <div className="overflow-hidden rounded-lg border border-line bg-surface">
                   <div className="border-b border-line px-5 py-3 text-[12px] text-muted">
                     your environment variables · encrypted actions secrets
                   </div>
@@ -827,7 +827,7 @@ export function ConfigureView({
                       {userSecrets.map((s) => (
                         <li key={s.name} className="flex items-center justify-between border-b border-line px-5 py-3 text-[13px]">
                           <code className="text-cream">{s.name}</code>
-                          <Badge tone="lime">your value</Badge>
+                          <Badge tone="info">your value</Badge>
                         </li>
                       ))}
                     </ul>
@@ -863,8 +863,8 @@ function Section({ label, hint, children }: { label: string; hint?: string; chil
   return (
     <div className="mt-8">
       <div className="mb-2.5 flex items-center justify-between">
-        <span className="label">{label}</span>
-        {hint && <span className="text-[11px] text-muted">{hint}</span>}
+        <span className="text-[13px] font-medium text-cream first-letter:uppercase">{label}</span>
+        {hint && <span className="text-[12px] text-muted first-letter:uppercase">{hint}</span>}
       </div>
       {children}
     </div>
@@ -886,10 +886,10 @@ function PreviewTab({ active, onClick, children }: { active: boolean; onClick: (
 
 function Code({ path, body }: { path: string; body: string }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-line bg-surface">
+    <div className="overflow-hidden rounded-lg border border-line bg-surface">
       <div className="flex items-center justify-between border-b border-line px-4 py-2.5 text-[12px]">
         <code className="text-muted">{path}</code>
-        <Badge tone="lime">will write</Badge>
+        <Badge tone="info">will write</Badge>
       </div>
       <pre className="max-h-[68vh] overflow-auto px-4 py-4 text-[12px] leading-[1.7] text-body">
         <code>{body}</code>

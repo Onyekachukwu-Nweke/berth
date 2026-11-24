@@ -73,7 +73,7 @@ export function ConfirmAction({
         role="dialog"
         aria-modal="true"
         onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-line bg-surface sm:max-h-[80vh]"
+        className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-line bg-surface sm:max-h-[80vh]"
       >
         <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3 sm:px-5">
           <span className="flex min-w-0 items-center gap-2 text-[13px] text-cream">
@@ -148,8 +148,8 @@ export function ConfirmAction({
             disabled={confirmDisabled}
             className={
               destructive
-                ? "rounded-md border border-red-400/50 bg-red-500/10 px-4 py-2 text-[12px] font-medium text-red-300 transition-colors hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
-                : "rounded-md border border-lime/50 bg-lime/[0.08] px-4 py-2 text-[12px] font-medium text-lime transition-colors hover:bg-lime/[0.16] disabled:cursor-not-allowed disabled:opacity-40"
+                ? "rounded-md border border-err/50 bg-err/10 px-4 py-2 text-[12px] font-medium text-err transition-colors hover:bg-err/20 disabled:cursor-not-allowed disabled:opacity-40"
+                : "rounded-md border border-line-strong bg-surface-hover px-4 py-2 text-[12px] font-medium text-cream transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
             }
           >
             {confirmLabel}

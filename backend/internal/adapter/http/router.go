@@ -59,6 +59,7 @@ func NewRouter(g *Guard, au *AuthHandler, ad *AdminHandler, gh *GitHubHandler, s
 	mux.HandleFunc("GET /api/servers/domains/preview", g.Admin(sv.DomainsPreview))
 	mux.HandleFunc("GET /api/servers/{id}/domains/add", g.Admin(sv.AddDomain))
 	mux.HandleFunc("GET /api/servers/{id}/domains/remove", g.Admin(sv.RemoveDomain))
+	mux.HandleFunc("GET /api/servers/{id}/proxy", g.Admin(sv.SetProxy))
 	mux.HandleFunc("POST /api/servers/{id}/exec", g.Admin(term.Exec))
 	mux.HandleFunc("POST /api/ai/command", g.Admin(term.AICommand))
 	mux.HandleFunc("DELETE /api/servers/{id}", g.Admin(sv.Delete))

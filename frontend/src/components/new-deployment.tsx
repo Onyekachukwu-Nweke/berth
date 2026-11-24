@@ -24,7 +24,7 @@ import { StreamLog } from "@/components/stream-log";
 import { ConfirmAction } from "@/components/confirm-action";
 import type { Source } from "@/lib/data";
 import { clearCachedRepos, fetchRepos, readCachedRepos, writeCachedRepos } from "@/lib/repo-cache";
-import { type DomainPreview, fetchDomainPreview } from "@/lib/domain-preview";
+import { type DomainPreview, fetchDomainPreview, formatDomainPreview } from "@/lib/domain-preview";
 import type { Domain, ServerStatus, ServerView, SetupOption } from "@/lib/servers";
 
 const statusTone: Record<ServerStatus, Tone> = {
@@ -101,6 +101,9 @@ export function NewDeployment({
   // Removing a domain needs no preview.
   const [previewState, setPreviewState] = useState<{ host: string; data: DomainPreview | null } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ServerView | null>(null);
+  // Switching a server's reverse proxy: confirm first, then stream the switch.
+  const [confirmProxy, setConfirmProxy] = useState<{ server: ServerView; to: "nginx" | "traefik" } | null>(null);
+  const [proxyTarget, setProxyTarget] = useState<{ server: ServerView; to: "nginx" | "traefik" } | null>(null);
 
   function setServerStatus(id: string, status: ServerStatus) {
     setServerList((prev) => prev.map((s) => (s.id === id ? { ...s, status } : s)));
@@ -264,7 +267,7 @@ export function NewDeployment({
     if (!confirmDomain || confirmDomain.mode !== "add") return;
     const host = confirmDomain.value.host;
     const ctrl = new AbortController();
-    fetchDomainPreview(confirmDomain.value, ctrl.signal)
+    fetchDomainPreview(confirmDomain.value, confirmDomain.server.id, ctrl.signal)
       .then((res) => {
         if (!ctrl.signal.aborted) setPreviewState({ host, data: "error" in res ? null : res });
       })
@@ -577,6 +580,7 @@ export function NewDeployment({
                           <Badge tone={statusTone[s.status]} dot>
                             {s.status.replace("_", " ")}
                           </Badge>
+                          {s.proxy === "traefik" && <Badge tone="info">traefik</Badge>}
                         </span>
                         <span className="mt-1 block text-[12px] text-muted">
                           {s.ip} · {s.specs.os || "unknown os"} · {s.specs.cpuCores || "-"} vcpu · {ramGB} ·{" "}
@@ -611,6 +615,7 @@ export function NewDeployment({
                   </div>
                   {isAdmin && active && s.status === "ready" && (
                     <>
+                      <ProxyPicker server={s} onSwitch={(to) => setConfirmProxy({ server: s, to })} />
                       <ServerDomains
                         key={`dom:${(s.domains ?? []).map((d) => d.host).join(",")}`}
                         server={s}
@@ -683,6 +688,59 @@ export function NewDeployment({
       )}
 
     </div>
+
+    {confirmProxy && (
+      <ConfirmAction
+        title={`Switch ${confirmProxy.server.name} to ${confirmProxy.to === "traefik" ? "Traefik" : "nginx"}`}
+        subtitle={confirmProxy.server.ip}
+        summary={
+          <>
+            {confirmProxy.to === "traefik"
+              ? "Traefik replaces nginx in front of this server's domains. It runs as a container on ports 80 and 443 and issues its own Let's Encrypt certificates, so each domain must still point at this server."
+              : "nginx takes over this server's domains again. Traefik is stopped and each domain gets its nginx site and certificate back."}{" "}
+            {(confirmProxy.server.domains ?? []).length > 0
+              ? `${(confirmProxy.server.domains ?? []).length} domain(s) move across; expect a short blip while the proxy changes.`
+              : "The server has no domains yet."}
+          </>
+        }
+        steps={
+          confirmProxy.to === "traefik"
+            ? [
+                "stop and disable nginx so ports 80 and 443 are free",
+                "write /etc/mountabo/traefik/traefik.yml (entry points, Let's Encrypt resolver)",
+                "start the mountabo-traefik container (host network, restarts with the server)",
+                ...(confirmProxy.server.domains ?? []).map((d) => `route ${d.host} to 127.0.0.1:${d.upstream} and wait for its certificate`),
+              ]
+            : [
+                "stop and remove the mountabo-traefik container",
+                "re-enable nginx",
+                ...(confirmProxy.server.domains ?? []).map((d) => `write the nginx site for ${d.host} and obtain its certificate`),
+              ]
+        }
+        confirmLabel={`Switch to ${confirmProxy.to === "traefik" ? "Traefik" : "nginx"}`}
+        onConfirm={() => {
+          setProxyTarget(confirmProxy);
+          setConfirmProxy(null);
+        }}
+        onCancel={() => setConfirmProxy(null)}
+      />
+    )}
+
+    {proxyTarget && (
+      <StreamLog
+        title={`switching ${proxyTarget.server.name} to ${proxyTarget.to}`}
+        subtitle={proxyTarget.server.ip}
+        timezone={proxyTarget.server.timezone}
+        url={`/api/servers/${proxyTarget.server.id}/proxy?to=${proxyTarget.to}`}
+        onDone={(ok) => {
+          if (ok)
+            setServerList((list) =>
+              list.map((x) => (x.id === proxyTarget.server.id ? { ...x, proxy: proxyTarget.to } : x)),
+            );
+        }}
+        onClose={() => setProxyTarget(null)}
+      />
+    )}
 
     {setupTarget && (
       <StreamLog
@@ -813,7 +871,7 @@ export function NewDeployment({
             mountabo will configure <span className="text-cream">{confirmDomain.server.name}</span> to
             front <span className="text-cream">{confirmDomain.value.host}</span> on https, proxying to
             your app on port <span className="text-cream">{confirmDomain.value.upstream}</span>. it
-            installs nginx if needed, writes the vhost below, and obtains a Let&apos;s Encrypt
+            {confirmDomain.server.proxy === "traefik" ? "routes it through Traefik, which obtains" : "installs nginx if needed, writes the vhost below, and obtains"} a Let&apos;s Encrypt
             certificate over http, so the domain must already point at{" "}
             <span className="text-cream">{confirmDomain.server.ip}</span>. nothing runs until you
             confirm.
@@ -822,7 +880,7 @@ export function NewDeployment({
         loading={domainPreviewLoading}
         steps={
           domainPreview
-            ? `# ${domainPreview.sitePath} (http)\n${domainPreview.httpConfig}\n\n# ${domainPreview.sitePath} (https)\n${domainPreview.tlsConfig}\n\n# setup script\n${domainPreview.script}`
+            ? formatDomainPreview(domainPreview)
             : domainPreviewLoading
               ? undefined
               : [
@@ -957,5 +1015,39 @@ function FilterChips<T extends string>({
         </button>
       ))}
     </span>
+  );
+}
+
+// ProxyPicker shows which reverse proxy fronts the server's domains and offers
+// the other one. Switching is confirmed first; it moves every domain across.
+function ProxyPicker({ server, onSwitch }: { server: ServerView; onSwitch: (to: "nginx" | "traefik") => void }) {
+  const current = server.proxy === "traefik" ? "traefik" : "nginx";
+  const options: { id: "nginx" | "traefik"; label: string; hint: string }[] = [
+    { id: "nginx", label: "nginx", hint: "default · certbot" },
+    { id: "traefik", label: "Traefik", hint: "optional · container, auto TLS" },
+  ];
+  return (
+    <div className="flex flex-col gap-2 border-t border-line px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <p className="text-[13px] font-medium text-cream">Reverse proxy</p>
+        <p className="text-[12px] text-muted">What serves this server&apos;s domains over HTTPS.</p>
+      </div>
+      <div className="inline-flex rounded-md border border-line bg-surface p-0.5">
+        {options.map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            onClick={() => o.id !== current && onSwitch(o.id)}
+            aria-pressed={o.id === current}
+            title={o.hint}
+            className={`rounded px-3 py-1 text-[12px] font-medium transition-colors ${
+              o.id === current ? "bg-surface-hover text-cream" : "text-muted hover:text-cream"
+            }`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }

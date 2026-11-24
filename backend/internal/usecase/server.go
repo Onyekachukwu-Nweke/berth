@@ -73,6 +73,23 @@ type Server struct {
 	// ClientID is the client that owns this server; empty means the agency's
 	// shared pool. A client's server only ever runs that client's repos.
 	ClientID string `json:"clientId,omitempty"`
+	// Proxy is what fronts the server's domains: "nginx" (the default, also
+	// when empty) or "traefik". Changed with SetProxy, which moves the domains.
+	Proxy string `json:"proxy,omitempty"`
+}
+
+// The reverse proxies a server's domains can run behind.
+const (
+	ProxyNginx   = "nginx"
+	ProxyTraefik = "traefik"
+)
+
+// ProxyOf is the server's proxy, nginx when unset.
+func (s Server) ProxyOf() string {
+	if s.Proxy == ProxyTraefik {
+		return ProxyTraefik
+	}
+	return ProxyNginx
 }
 
 // ChangeEvent records one configuration change applied to a server: which

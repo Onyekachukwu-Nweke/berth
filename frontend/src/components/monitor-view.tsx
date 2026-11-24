@@ -40,7 +40,7 @@ import {
 } from "@/lib/run-steps";
 import { isLogHeader, logHeaderName, splitLogTimestamp, formatLogTimestamp, fetchServerLogs } from "@/lib/server-logs";
 import { classifyJobLogLine, fetchJobLogs } from "@/lib/job-logs";
-import { type DomainPreview, fetchDomainPreview } from "@/lib/domain-preview";
+import { type DomainPreview, fetchDomainPreview, formatDomainPreview } from "@/lib/domain-preview";
 import { type DashboardTool, installedDashboards, openDashboard } from "@/lib/dashboards";
 import { type AppHealth, clearDeployLock, deleteDeployment, fetchAppHealth, setDeploymentPort } from "@/lib/app-health";
 import { getRepoBranches } from "@/lib/branches";
@@ -282,7 +282,7 @@ export function MonitorView({
     if (!confirmDomain || confirmDomain.mode !== "add") return;
     const host = confirmDomain.value.host;
     const ctrl = new AbortController();
-    fetchDomainPreview(confirmDomain.value, ctrl.signal)
+    fetchDomainPreview(confirmDomain.value, confirmDomain.server.id, ctrl.signal)
       .then((res) => {
         if (!ctrl.signal.aborted) setPreviewState({ host, data: "error" in res ? null : res });
       })
@@ -519,7 +519,7 @@ export function MonitorView({
               mountabo will configure <span className="text-cream">{confirmDomain.server.name}</span> to
               front <span className="text-cream">{confirmDomain.value.host}</span> on https, proxying to
               your app on port <span className="text-cream">{confirmDomain.value.upstream}</span>. it
-              installs nginx if needed, writes the vhost below, and obtains a Let&apos;s Encrypt
+              {confirmDomain.server.proxy === "traefik" ? "routes it through Traefik, which obtains" : "installs nginx if needed, writes the vhost below, and obtains"} a Let&apos;s Encrypt
               certificate over http, so the domain must already point at{" "}
               <span className="text-cream">{confirmDomain.server.ip}</span>. nothing runs until you
               confirm.
@@ -528,7 +528,7 @@ export function MonitorView({
           loading={domainPreviewLoading}
           steps={
             domainPreview
-              ? `# ${domainPreview.sitePath} (http)\n${domainPreview.httpConfig}\n\n# ${domainPreview.sitePath} (https)\n${domainPreview.tlsConfig}\n\n# setup script\n${domainPreview.script}`
+              ? formatDomainPreview(domainPreview)
               : domainPreviewLoading
                 ? undefined
                 : [

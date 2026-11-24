@@ -29,6 +29,8 @@ export type ServerView = {
   domains?: Domain[] | null;
   // The client that owns this server; absent means the agency's shared pool.
   clientId?: string;
+  // What fronts the server's domains; absent means nginx.
+  proxy?: "nginx" | "traefik";
 };
 
 // A custom domain fronted by nginx + HTTPS on a server, proxying to a local app

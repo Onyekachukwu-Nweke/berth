@@ -302,10 +302,11 @@ func domainInput(r *nethttp.Request) usecase.DomainInput {
 	return in
 }
 
-// DomainsPreview renders the nginx config and setup script for a domain without
+// DomainsPreview renders the proxy config and setup script for a domain without
 // touching a server, so the UI can show exactly what configuring it would do.
+// ?server= picks which proxy (nginx or Traefik) the preview is for.
 func (h *ServersHandler) DomainsPreview(w nethttp.ResponseWriter, r *nethttp.Request) {
-	artifacts, err := h.svc.PreviewDomain(domainInput(r))
+	artifacts, err := h.svc.PreviewDomain(r.URL.Query().Get("server"), domainInput(r))
 	if err != nil {
 		h.writeError(w, nethttp.StatusBadRequest, err.Error())
 		return
@@ -330,6 +331,16 @@ func (h *ServersHandler) RemoveDomain(w nethttp.ResponseWriter, r *nethttp.Reque
 	host := r.URL.Query().Get("host")
 	streamSSE(w, h.log, "domain removed", func(out io.Writer) error {
 		return h.svc.RemoveDomain(r.Context(), id, host, out)
+	})
+}
+
+// SetProxy moves the server's domains to another reverse proxy (?to=nginx or
+// ?to=traefik), streaming the live log as SSE.
+func (h *ServersHandler) SetProxy(w nethttp.ResponseWriter, r *nethttp.Request) {
+	id := r.PathValue("id")
+	to := r.URL.Query().Get("to")
+	streamSSE(w, h.log, "proxy switched to "+to, func(out io.Writer) error {
+		return h.svc.SetProxy(r.Context(), id, to, out)
 	})
 }
 

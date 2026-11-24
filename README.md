@@ -150,6 +150,8 @@ Use the monitor screen to see configured deployments, recent GitHub Actions runs
 
 For a ready server, Mountabo can configure nginx and Let's Encrypt for a custom domain pointing at one of your app ports.
 
+Each server's domains run behind **nginx** (the default: nginx sites plus certbot) or, optionally, **Traefik**. Switch under **Servers**, by expanding a ready server and choosing **Reverse proxy** (admins only). Traefik runs as the `mountabo-traefik` container on ports 80 and 443 with host networking. Its config lives in `/etc/mountabo/traefik/`: `traefik.yml` (static config) plus one route file per domain in `dynamic/`. It issues and renews Let's Encrypt certificates itself, and adding or removing a domain doesn't reload anything. Switching either way moves every existing domain across; the new proxy issues fresh certificates, so DNS must still point at the server.
+
 ## Terminal
 
 ![Terminal page with the AI helper](docs/screenshots/terminal.png)

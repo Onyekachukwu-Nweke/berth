@@ -5,11 +5,22 @@ import type { DomainFormValue } from "@/components/server-domains";
 // and where the config lives. Mirrors the backend DomainArtifacts JSON. The
 // confirmation gate previews this so nothing reaches the server unseen.
 export type DomainPreview = {
+  proxy: "nginx" | "traefik";
   sitePath: string;
   httpConfig: string;
   tlsConfig: string;
+  staticPath?: string;
   script: string;
 };
+
+// formatDomainPreview lays the artifacts out as one reviewable block: the
+// config files with their paths, then the script.
+export function formatDomainPreview(p: DomainPreview): string {
+  if (p.proxy === "traefik") {
+    return `# ${p.sitePath} (route)\n${p.httpConfig}\n# ${p.staticPath} (traefik static config)\n${p.tlsConfig}\n# setup script\n${p.script}`;
+  }
+  return `# ${p.sitePath} (http)\n${p.httpConfig}\n\n# ${p.sitePath} (https)\n${p.tlsConfig}\n\n# setup script\n${p.script}`;
+}
 
 // Builds the preview query string from the same fields the add-domain stream
 // uses, so the previewed steps match what configuring the domain will run.
@@ -28,9 +39,10 @@ function previewQuery(v: DomainFormValue): string {
 // { error } so the gate can say why the steps can't be shown yet.
 export async function fetchDomainPreview(
   v: DomainFormValue,
+  serverId: string,
   signal?: AbortSignal,
 ): Promise<DomainPreview | { error: string }> {
-  const resp = await fetch(`/api/servers/domains/preview?${previewQuery(v)}`, {
+  const resp = await fetch(`/api/servers/domains/preview?${previewQuery(v)}&server=${encodeURIComponent(serverId)}`, {
     cache: "no-store",
     signal,
   });

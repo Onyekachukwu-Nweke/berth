@@ -152,6 +152,8 @@ WEBROOT="/var/www/certbot"
 log "serving %s over HTTPS, proxying to localhost:%s"
 apt-get update -y
 apt-get install -y nginx certbot
+# Re-enable nginx if the server was switched away to Traefik and back.
+systemctl enable --now nginx
 mkdir -p "$WEBROOT"
 
 `, c.primary(), SitePath(c), c.serverNames(), c.upstream())

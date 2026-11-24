@@ -1,0 +1,53 @@
+# Mountabo, hosted. One Postgres, the Go API on a private network, and the web
+# app as the only thing published. Put your TLS reverse proxy (Caddy, nginx,
+# a load balancer) in front of port 4321.
+#
+#   cp .env.example .env   # fill in, including MOUNTABO_MASTER_KEY + POSTGRES_PASSWORD
+#   docker compose up -d --build
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mountabo
+      POSTGRES_USER: mountabo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mountabo -d mountabo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://mountabo:${POSTGRES_PASSWORD}@postgres:5432/mountabo?sslmode=disable
+      MOUNTABO_MASTER_KEY: ${MOUNTABO_MASTER_KEY:?set MOUNTABO_MASTER_KEY in .env}
+      MOUNTABO_HTTP_ADDR: ":7778"
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      MOUNTABO_AI_MODEL: ${MOUNTABO_AI_MODEL:-}
+    # Not published: only the web app reaches it, over the compose network.
+
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      MOUNTABO_BACKEND: http://api:7778
+      # The URL people open mountabo at; OAuth redirects are built from it.
+      MOUNTABO_PUBLIC_URL: ${MOUNTABO_PUBLIC_URL:?set MOUNTABO_PUBLIC_URL in .env}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+    ports:
+      - "${MOUNTABO_WEB_PORT:-4321}:4321"
+
+volumes:
+  pgdata:

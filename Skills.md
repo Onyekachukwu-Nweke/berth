@@ -29,10 +29,10 @@ mountabo/
       usecase/           # application core; owns ports (interfaces)
       adapter/
         http/            # handlers, router, server (NOT internal/http)
-        repository/      # in-memory persistence (SQLite later)
+        repository/      # Postgres persistence + encrypted vault; migrations/
       ai/                # Anthropic helper for /terminal AI suggestions
       config/            # Load() -> *Config
-      docker/ github/ keychain/ nginx/ ssh/ workflow/
+      docker/ github/ nginx/ ssh/ workflow/
                          # concrete adapters; grow as structs first
   frontend/
     CLAUDE.md + AGENTS.md  # Next.js 16 has breaking changes vs training data
@@ -113,11 +113,11 @@ When in doubt, re-read copy aloud: it should sound like a paragraph in a manual,
 
 ### Server bootstrap
 - Add server (with SSH probe) → JSON persist → SSE-streamed bootstrap that creates the `mountabo` user and manages an ed25519 key lifecycle (generate / store / wipe / destroy).
-- Keys are stored in the OS keychain (`internal/keychain`), never on disk.
+- Keys are sealed with AES-GCM under `MOUNTABO_MASTER_KEY` in Postgres (`repository.VaultSQL`), never stored in plaintext.
 
 ### GitHub auth
 - Classic OAuth App (scopes: `repo`, `workflow`) so every repo is visible. The earlier GitHub App approach was abandoned; do not re-introduce it.
-- Tokens persisted in the keychain.
+- Tokens persisted in the encrypted vault.
 
 ### Local env loading
 - A single root `.env`. The Go process uses `godotenv` with upward search. Next picks it up via `loadEnvConfig` with `forceReload` and a matching env key. Don't add per-package `.env` files.

@@ -2,7 +2,7 @@
 
 > Mountabo is a local-first deploy tool. You run it on your laptop, connect GitHub, register a VPS, and configure a repo once. Pushes to the chosen branch then deploy through a generated GitHub Actions workflow straight to your server. Mountabo only sets up and observes deploys; it does not sit in the request path.
 
-Architecture: Go backend on `127.0.0.1:7778` (hexagonal: `usecase` core, `adapter/http` and `adapter/repository` outer layers) and a Next.js 16 + React 19 + Tailwind v4 frontend on `http://localhost:4321`. A single root `.env` feeds both. Local state lives in the OS keychain and a JSON/SQLite store. The AI helper on `/terminal` calls Anthropic directly with a bring-your-own key.
+Architecture: Go backend on `127.0.0.1:7778` (hexagonal: `usecase` core, `adapter/http` and `adapter/repository` outer layers) and a Next.js 16 + React 19 + Tailwind v4 frontend on `http://localhost:4321`. A single root `.env` feeds both. All state lives in Postgres (versioned migrations in `backend/internal/adapter/repository/migrations`); the platform's own credentials are sealed with AES-GCM under `MOUNTABO_MASTER_KEY`. The AI helper on `/terminal` calls Anthropic directly with a bring-your-own key.
 
 Hard rules: hexagonal "accept interfaces, return structs"; interfaces live where they are consumed (`usecase`), not where implemented; deploy workflow + `deploy.sh` are generated **only** in Go (`internal/workflow`), the frontend previews and never regenerates; no em/en/minus dashes in UI copy; standard full grammatical English in UI strings; never add `Co-Authored-By: Claude` to commits.
 
@@ -29,7 +29,7 @@ Hard rules: hexagonal "accept interfaces, return structs"; interfaces live where
 - [backend/internal/ai](backend/internal/ai): Anthropic helper for the terminal page
 - [backend/internal/workflow](backend/internal/workflow): authoritative generator for the GitHub Actions deploy workflow and `deploy.sh`
 - [backend/internal/nginx](backend/internal/nginx): per-server nginx + Let's Encrypt logic for custom domains
-- [backend/internal/ssh](backend/internal/ssh), [backend/internal/keychain](backend/internal/keychain), [backend/internal/github](backend/internal/github), [backend/internal/docker](backend/internal/docker), [backend/internal/config](backend/internal/config): outer adapters
+- [backend/internal/ssh](backend/internal/ssh), [backend/internal/github](backend/internal/github), [backend/internal/docker](backend/internal/docker), [backend/internal/config](backend/internal/config): outer adapters
 - [frontend/src/app](frontend/src/app): App Router pages (`configure`, `connect`, `deployments`, `terminal`) and API handlers under `api/`
 - [frontend/src/components](frontend/src/components): React components (kebab-case `.tsx`)
 - [frontend/src/lib](frontend/src/lib): client/server helpers; one file per feature area

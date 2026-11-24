@@ -237,7 +237,7 @@ type ServerStore interface {
 	Delete(id string) error
 }
 
-// SecretVault stores arbitrary secrets in the OS keychain (root passwords,
+// SecretVault stores the platform's own secrets, sealed (root passwords,
 // generated private keys), keyed by an opaque string.
 type SecretVault interface {
 	SaveSecret(key, value string) error
@@ -419,7 +419,7 @@ func (s *ServerService) Setup(ctx context.Context, id string, options []string, 
 	if err := s.vault.SaveSecret(privateKeyKey(id), privateKey); err != nil {
 		return fmt.Errorf("store mountabo key: %w", err)
 	}
-	// The root password is kept in the keychain (encrypted at rest), not
+	// The root password is kept in the vault (encrypted at rest), not
 	// discarded. mountabo does not harden sshd, so the operator keeps using it
 	// for root SSH/console access. It is destroyed only when the server is
 	// removed.
@@ -511,7 +511,7 @@ func subtract(a, b []string) []string {
 
 // Remove deletes a server and destroys its secrets, completing the key
 // lifecycle: the mountabo private key and any retained root password are wiped
-// from the keychain before the server record is dropped. Secret deletes are
+// from the vault before the server record is dropped. Secret deletes are
 // idempotent, so a partially-set-up server removes cleanly too.
 func (s *ServerService) Remove(id string) error {
 	if _, err := s.store.Get(id); err != nil {
@@ -525,7 +525,7 @@ func (s *ServerService) Remove(id string) error {
 	}
 	// The dashboard admin credential is created lazily, so a server that never had
 	// one has nothing to remove — hence best-effort. Leaving it behind would keep
-	// a credential in the keychain for a server that no longer exists.
+	// a credential in the vault for a server that no longer exists.
 	_ = s.vault.DeleteSecret(uptimeKumaAdminKey(id))
 	if err := s.store.Delete(id); err != nil {
 		return fmt.Errorf("delete server: %w", err)

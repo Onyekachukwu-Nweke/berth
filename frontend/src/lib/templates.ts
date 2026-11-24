@@ -59,6 +59,25 @@ Dockerfile
 docker-compose.yml
 `;
 
+const phpIgnore = `vendor
+node_modules
+public/build
+public/hot
+bootstrap/cache/*.php
+storage/*.key
+storage/logs/*
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+.phpunit.result.cache
+.git
+.env
+.env.*
+!.env.example
+Dockerfile
+docker-compose.yml
+`;
+
 export const TEMPLATES: Template[] = [
   {
     id: "nextjs",
@@ -202,6 +221,91 @@ CMD ["sh", "-c", "python manage.py collectstatic --noinput && exec gunicorn conf
     ],
   },
   {
+    id: "laravel",
+    name: "PHP · Laravel",
+    stack: "PHP 8.4 · FrankenPHP",
+    description: "A Laravel app: Composer and Vite build stages, served by FrankenPHP as a non-root user.",
+    port: 8080,
+    notes: [
+      "Set APP_KEY (php artisan key:generate --show) and your DB_* variables as environment variables.",
+      "Run migrations as a Mountabo deploy hook (php artisan migrate --force), not in the image.",
+      "Config, routes and views are cached at start, when the real environment is present.",
+      "No frontend? Delete the assets stage and its COPY line.",
+      "Queues or the scheduler run as extra compose services from the same image (php artisan queue:work, schedule:work).",
+    ],
+    files: [
+      {
+        path: "Dockerfile",
+        content: `# syntax=docker/dockerfile:1
+FROM composer:2 AS vendor
+WORKDIR /app
+COPY composer.json composer.lock ./
+# Extensions live in the runtime image, so skip the platform check here.
+RUN composer install --no-dev --no-scripts --no-autoloader --prefer-dist --no-interaction --ignore-platform-reqs
+COPY . .
+# Package manifests cached on a dev machine list dev-only packages; rebuild them.
+RUN rm -f bootstrap/cache/*.php && composer dump-autoload --optimize --no-dev --no-scripts
+
+FROM node:22-alpine AS assets
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM dunglas/frankenphp:1-php8.4
+RUN install-php-extensions pdo_mysql pdo_pgsql intl zip bcmath opcache pcntl
+WORKDIR /app
+RUN useradd --create-home --uid 10001 app && chown -R app:app /app /data/caddy /config/caddy
+COPY --chown=app:app --from=vendor /app ./
+COPY --chown=app:app --from=assets /app/public/build ./public/build
+ENV APP_ENV=production LOG_CHANNEL=stderr
+USER app
+RUN php artisan package:discover --ansi
+EXPOSE 8080
+CMD ["sh", "-c", "php artisan config:cache && php artisan route:cache && php artisan view:cache && exec frankenphp php-server --listen :8080 --root /app/public"]
+`,
+      },
+      { path: "docker-compose.yml", content: compose(8080) },
+      { path: ".dockerignore", content: phpIgnore },
+    ],
+  },
+  {
+    id: "php",
+    name: "PHP",
+    stack: "PHP 8.4 · FrankenPHP",
+    description: "A plain PHP app (or Symfony, Slim…) served by FrankenPHP, with Composer if the project uses it.",
+    port: 8080,
+    notes: [
+      'Serves /app; change --root to /app/public if your entry point lives there (Symfony, Slim).',
+      "Add the extensions you need to the install-php-extensions line.",
+    ],
+    files: [
+      {
+        path: "Dockerfile",
+        content: `# syntax=docker/dockerfile:1
+FROM composer:2 AS vendor
+WORKDIR /app
+COPY . .
+RUN if [ -f composer.json ]; then \
+      composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader --ignore-platform-reqs; \
+    fi
+
+FROM dunglas/frankenphp:1-php8.4
+RUN install-php-extensions pdo_mysql pdo_pgsql opcache
+WORKDIR /app
+RUN useradd --create-home --uid 10001 app && chown -R app:app /app /data/caddy /config/caddy
+COPY --chown=app:app --from=vendor /app ./
+USER app
+EXPOSE 8080
+CMD ["frankenphp", "php-server", "--listen", ":8080", "--root", "/app"]
+`,
+      },
+      { path: "docker-compose.yml", content: compose(8080) },
+      { path: ".dockerignore", content: phpIgnore },
+    ],
+  },
+  {
     id: "go",
     name: "Go",
     stack: "Go 1.26 · distroless",
@@ -307,10 +411,13 @@ export function findTemplate(id: string | null | undefined): Template | undefine
 // suggestTemplate picks the likeliest template from a repo's file list.
 export function suggestTemplate(paths: string[]): Template | undefined {
   const has = (re: RegExp) => paths.some((p) => re.test(p));
+  // Laravel ships a package.json too, so it must win before the Node checks.
+  if (has(/^artisan$/)) return findTemplate("laravel");
   if (has(/^next\.config\.(js|mjs|ts)$/)) return findTemplate("nextjs");
   if (has(/^manage\.py$/)) return findTemplate("django");
   if (has(/^go\.mod$/)) return findTemplate("go");
   if (has(/^(requirements\.txt|pyproject\.toml)$/)) return findTemplate("fastapi");
+  if (has(/^(composer\.json|index\.php)$/)) return findTemplate("php");
   if (has(/^vite\.config\.(js|mjs|ts)$/)) return findTemplate("static-spa");
   if (has(/^package\.json$/)) return findTemplate("node-api");
   return undefined;

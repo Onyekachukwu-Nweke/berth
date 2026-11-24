@@ -154,7 +154,7 @@ Each server's domains run behind **nginx** (the default: nginx sites plus certbo
 
 ## Templates
 
-**Templates** (in the sidebar) is a small library of Dockerfile and `docker-compose.yml` starting points that already follow what Mountabo's deploys expect. The library covers Next.js, a Node.js API, FastAPI, Django, Go, and a static site or SPA.
+**Templates** (in the sidebar) is a small library of Dockerfile and `docker-compose.yml` starting points that already follow what Mountabo's deploys expect. The library covers Next.js, a Node.js API, FastAPI, Django, Laravel, plain PHP, Go, and a static site or SPA.
 
 Every template uses the same conventions:
 - The app port is published as `${APP_PORT:-<port>}:<port>`.

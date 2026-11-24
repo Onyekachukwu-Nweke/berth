@@ -41,6 +41,7 @@ func NewRouter(g *Guard, au *AuthHandler, ad *AdminHandler, gh *GitHubHandler, s
 	mux.HandleFunc("GET /api/github/job-logs", g.Repo(read, gh.JobLogs))
 	mux.HandleFunc("GET /api/repos/{owner}/{repo}/branches", g.Repo(read, gh.Branches))
 	mux.HandleFunc("GET /api/repos/{owner}/{repo}/targets", g.Repo(read, au.Targets))
+	mux.HandleFunc("POST /api/repos/{owner}/{repo}/files", g.Repo(usecase.PermWrite, gh.CommitFiles))
 
 	// Servers. Developers see the servers their repos deploy to; everything
 	// that changes a server, or runs commands on it, is admin-only.

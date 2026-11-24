@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Grid, Layers, LogoMark, Logout, Plus, ServerIcon, Terminal, Users } from "@/components/icons";
+import { Docker, Grid, Layers, LogoMark, Logout, Plus, ServerIcon, Terminal, Users } from "@/components/icons";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 type NavItem = { href: string; label: string; icon: React.ComponentType<{ className?: string }> };
@@ -11,6 +11,7 @@ const MAIN: NavItem[] = [
   { href: "/", label: "Overview", icon: Grid },
   { href: "/deployments", label: "Deployments", icon: Layers },
   { href: "/servers", label: "Servers", icon: ServerIcon },
+  { href: "/templates", label: "Templates", icon: Docker },
 ];
 
 const ADMIN: NavItem[] = [

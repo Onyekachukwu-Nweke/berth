@@ -248,7 +248,7 @@ function EmptyState({ hasServers }: { hasServers: boolean }) {
         href="/new"
         className="mt-5 inline-flex items-center gap-2 rounded-md bg-cream px-3 py-2 text-[13px] font-medium text-bg hover:opacity-90"
       >
-        <Plus /> New deployment
+        <Plus />{" "}New deployment
       </Link>
     </div>
   );

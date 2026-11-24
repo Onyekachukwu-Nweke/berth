@@ -7,6 +7,7 @@ import { ServerAvatar } from "@/components/server-avatar";
 import {
   ArrowRight,
   Branch,
+  ChevronRight,
   Docker,
   GithubMark,
   Lock,
@@ -388,7 +389,7 @@ export function NewDeployment({
           <div className="flex items-center justify-between border-b border-line px-5 py-3 text-[13px]">
             <div className="flex items-center gap-2">
               <span className="flex items-center gap-2 rounded-md border border-line bg-surface-2 px-2.5 py-1.5 text-muted">
-                <GithubMark /> github
+                <GithubMark />{" "}github
               </span>
               <span className="text-faint">›</span>
               <OwnerDropdown
@@ -583,7 +584,14 @@ export function NewDeployment({
                   }`}
                 >
                   <div className="flex items-center gap-4 px-4 py-3.5">
-                    <button onClick={() => setServer(s.id)} className="flex flex-1 items-center gap-4 text-left">
+                    <button
+                      onClick={() => setServer(active ? null : s.id)}
+                      aria-expanded={active}
+                      className="flex flex-1 items-center gap-4 text-left"
+                    >
+                      <ChevronRight
+                        className={`shrink-0 text-muted transition-transform ${active ? "rotate-90" : ""}`}
+                      />
                       <ServerAvatar seed={s.name} />
                       <div className="flex-1">
                         <span className="flex items-center gap-2.5 text-[15px] font-medium text-cream">
@@ -663,7 +671,7 @@ export function NewDeployment({
                     onClick={() => setShowAddServer(true)}
                     className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-line-strong px-4 py-4 text-[13px] text-muted transition-colors hover:border-line-strong hover:text-cream"
                   >
-                    <Plus /> add a server (ip + root password)
+                    <Plus />{" "}add a server (ip + root password)
                   </button>
                 )}
               </li>
@@ -806,9 +814,9 @@ export function NewDeployment({
         subtitle={confirmSetup.ip}
         summary={
           <>
-            mountabo will connect to <span className="text-cream">{confirmSetup.ip}</span> as root once
+            mountabo will connect to <span className="text-cream">{confirmSetup.ip}</span>{" "}as root once
             and prepare it for deployments. it creates an unprivileged{" "}
-            <span className="text-cream">mountabo</span> user, generates and installs a dedicated
+            <span className="text-cream">mountabo</span>{" "}user, generates and installs a dedicated
             ed25519 deploy key, and applies the base hardening. you can add or remove hardening later.
             nothing runs until you confirm.
           </>
@@ -840,7 +848,7 @@ export function NewDeployment({
           const removed = (confirmApply.server.options ?? []).filter((id) => !desired.has(id));
           return (
             <>
-              mountabo will connect to <span className="text-cream">{confirmApply.server.name}</span> as
+              mountabo will connect to <span className="text-cream">{confirmApply.server.name}</span>{" "}as
               the mountabo user (with sudo) and change its hardening:{" "}
               {added.length > 0 && (
                 <span className="text-cream">install {added.map(optionName).join(", ")}</span>
@@ -879,10 +887,10 @@ export function NewDeployment({
         subtitle={confirmDomain.server.ip}
         summary={
           <>
-            mountabo will configure <span className="text-cream">{confirmDomain.server.name}</span> to
-            front <span className="text-cream">{confirmDomain.value.host}</span> on https, proxying to
+            mountabo will configure <span className="text-cream">{confirmDomain.server.name}</span>{" "}to
+            front <span className="text-cream">{confirmDomain.value.host}</span>{" "}on https, proxying to
             your app on port <span className="text-cream">{confirmDomain.value.upstream}</span>. it
-            {confirmDomain.server.proxy === "traefik" ? "routes it through Traefik, which obtains" : "installs nginx if needed, writes the vhost below, and obtains"} a Let&apos;s Encrypt
+            {confirmDomain.server.proxy === "traefik" ? "routes it through Traefik, which obtains" : "installs nginx if needed, writes the vhost below, and obtains"}{" "}a Let&apos;s Encrypt
             certificate over http, so the domain must already point at{" "}
             <span className="text-cream">{confirmDomain.server.ip}</span>. nothing runs until you
             confirm.
@@ -946,7 +954,7 @@ export function NewDeployment({
         destructive
         summary={
           <>
-            mountabo will remove <span className="text-cream">{confirmDelete.name}</span> from mountabo
+            mountabo will remove <span className="text-cream">{confirmDelete.name}</span>{" "}from mountabo
             and destroy its stored secrets. this revokes mountabo&apos;s access to the server. it does
             not stop or delete anything already deployed on the server itself. this cannot be undone.
           </>

@@ -311,12 +311,12 @@ export function TemplatesView({
           summary={
             <>
               Mountabo writes these files to <span className="text-cream">{repo}</span> on{" "}
-              <span className="text-cream">{effectiveBranch}</span> using the GitHub App, one commit per file.
+              <span className="text-cream">{effectiveBranch}</span>{" "}using the GitHub App, one commit per file.
               {overwrites.length > 0 && (
                 <>
                   {" "}
                   <span className="text-warn">
-                    {overwrites.join(", ")} already exist{overwrites.length === 1 ? "s" : ""} and will be replaced.
+                    {overwrites.join(", ")} already exist{overwrites.length === 1 ? "s" : ""}{" "}and will be replaced.
                   </span>
                 </>
               )}{" "}

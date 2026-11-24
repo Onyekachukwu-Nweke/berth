@@ -60,7 +60,7 @@ export function Sidebar({ login, isAdmin }: { login: string; isAdmin: boolean })
             href="/new"
             className="flex w-full items-center justify-center gap-2 rounded-md bg-cream px-3 py-2 text-[13px] font-medium text-bg transition-opacity hover:opacity-90"
           >
-            <Plus /> New deployment
+            <Plus />{" "}New deployment
           </Link>
         </div>
 
@@ -112,7 +112,7 @@ export function Sidebar({ login, isAdmin }: { login: string; isAdmin: boolean })
           </Link>
           <div className="ml-auto flex items-center gap-3 text-muted">
             <Link href="/new" className="flex items-center gap-1.5 rounded-md bg-cream px-2.5 py-1 text-[12px] font-medium text-bg">
-              <Plus /> New
+              <Plus />{" "}New
             </Link>
             <ThemeToggle />
             <form action="/api/auth/logout" method="post" className="flex">

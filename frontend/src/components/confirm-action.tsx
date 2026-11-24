@@ -119,7 +119,7 @@ export function ConfirmAction({
           {typingGate && (
             <div className="mt-5">
               <label className="label" htmlFor="confirm-typing">
-                type <span className="font-mono text-cream">{requireTyping}</span> to confirm
+                type <span className="font-mono text-cream">{requireTyping}</span>{" "}to confirm
               </label>
               <input
                 id="confirm-typing"

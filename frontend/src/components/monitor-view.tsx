@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Badge } from "@/components/badge";
+import { Badge, type Tone } from "@/components/badge";
+import { deployState, type DeployState } from "@/lib/status";
 import { ServerAvatar } from "@/components/server-avatar";
 import { StreamLog } from "@/components/stream-log";
 import { ConfirmAction } from "@/components/confirm-action";
@@ -55,8 +56,8 @@ import { type UptimeKumaAdmin, fetchUptimeKumaAdmin, resetUptimeKumaAdmin } from
 
 const runColor: Record<RunStatus, string> = {
   success: "bg-blue",
-  failed: "bg-red-400",
-  running: "bg-lime",
+  failed: "bg-err",
+  running: "bg-warn",
 };
 
 // Release status extends run status with "pending" (recorded at deploy time, no
@@ -66,14 +67,14 @@ const releaseColor: Record<ReleaseStatus, string> = {
   pending: "bg-muted",
 };
 
-const releaseTone: Record<ReleaseStatus, "blue" | "red" | "lime" | "gray"> = {
-  success: "blue",
-  failed: "red",
-  running: "lime",
-  pending: "gray",
+const releaseTone: Record<ReleaseStatus, Tone> = {
+  success: "ok",
+  failed: "err",
+  running: "warn",
+  pending: "neutral",
 };
 
-const statusTone = { live: "blue", idle: "gray", failing: "red" } as const;
+const STATE_TONE: Record<DeployState, Tone> = { ready: "ok", failing: "err", deploying: "warn", pending: "neutral", idle: "neutral" };
 
 // deploymentKey identifies a deployment card by (app, environment) — one app can
 // have several environments, so app alone is not unique. JSON.stringify gives a
@@ -330,23 +331,23 @@ export function MonitorView({
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-[1100px] flex-1 flex-col px-4 pb-16 pt-8 sm:px-6 sm:pt-10 lg:px-8">
+    <main className="mx-auto flex w-full max-w-[1200px] flex-1 flex-col px-4 pb-16 pt-6 sm:px-6 lg:px-8 lg:pt-8">
       {/* Dashboard-first header: state and actions in the first viewport, no hero.
           The summary line is operational — repositories and environments are
           distinct counts, and idle is neither live nor failing. */}
-      <div className="rise flex items-center justify-between gap-4">
+      <div className="flex items-end justify-between gap-4 border-b border-line pb-5">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-cream sm:text-3xl">deployments</h1>
-          <p className="mt-1.5 text-[13px] text-muted">
+          <h1 className="text-[22px] font-semibold tracking-tight text-cream">Deployments</h1>
+          <p className="mt-1 text-[13px] text-muted">
             <span className="font-semibold text-cream">{repoCount}</span>{" "}
             {repoCount === 1 ? "repository" : "repositories"}
             {" · "}
             <span className="font-semibold text-cream">{visibleDeployments.length}</span>{" "}
             {visibleDeployments.length === 1 ? "environment" : "environments"}
             {" · "}
-            <span className="font-semibold text-blue">{liveCount}</span> live
+            <span className="font-semibold text-ok">{liveCount}</span> live
             {" · "}
-            <span className={`font-semibold ${failingCount > 0 ? "text-red-400" : "text-muted"}`}>
+            <span className={`font-semibold ${failingCount > 0 ? "text-err" : "text-muted"}`}>
               {failingCount}
             </span>{" "}
             failing
@@ -356,18 +357,18 @@ export function MonitorView({
         <button
           onClick={refresh}
           disabled={refreshing}
-          className="flex shrink-0 items-center gap-2 rounded-md border border-line px-3 py-2 text-[12px] text-lime transition-colors hover:bg-lime/10 disabled:opacity-60"
+          className="flex shrink-0 items-center gap-2 rounded-md border border-line bg-surface px-3 py-2 text-[13px] font-medium text-cream transition-colors hover:bg-surface-hover disabled:opacity-60"
         >
-          <Refresh className={refreshing ? "animate-spin" : ""} /> {refreshing ? "refreshing…" : "refresh"}
+          <Refresh className={refreshing ? "animate-spin" : ""} /> {refreshing ? "Refreshing…" : "Refresh"}
         </button>
       </div>
 
       {portAssocError && (
-        <div className="mt-6 flex items-start justify-between gap-4 rounded-xl border border-red-400/30 bg-red-400/[0.05] px-4 py-3 text-[13px] leading-6 text-red-200">
+        <div className="mt-6 flex items-start justify-between gap-4 rounded-lg border border-err/30 bg-err/[0.05] px-4 py-3 text-[13px] leading-6 text-err">
           <span>{portAssocError}</span>
           <button
             onClick={() => setPortAssocError(null)}
-            className="shrink-0 text-red-300 transition-colors hover:text-cream"
+            className="shrink-0 text-err transition-colors hover:text-cream"
             aria-label="dismiss"
           >
             dismiss
@@ -377,17 +378,15 @@ export function MonitorView({
 
       <div className="rise mt-6 flex flex-col gap-5" style={{ animationDelay: "80ms" }}>
         {repoGroups.length === 0 && (
-          <p className="rounded-2xl border border-dashed border-line px-6 py-16 text-center text-[14px] text-muted">
-            nothing deployed yet. connect a repository to a server and your live status shows up here.
+          <p className="rounded-lg border border-dashed border-line px-6 py-16 text-center text-[14px] text-muted">
+            Nothing deployed yet. Start a new deployment and its status shows up here.
           </p>
         )}
         {repoGroups.map((group) => {
           const isOpen = open === group.repo;
-          // Headline environment (production, else first): its server avatars the
-          // card and titles it.
+          // Headline environment (production, else first).
           const headline =
             group.environments.find((e) => e.environment === "production") ?? group.environments[0];
-          const headlineServer = serverById.get(headline?.serverId ?? "");
           const anyLocked = group.environments.some((e) => e.locked);
           // Collapsed activity is repo-wide, not just production's: the deploy
           // count sums every environment, and the run strip / "last deploy" track
@@ -401,21 +400,21 @@ export function MonitorView({
             group.environments.find((e) => e.locked) ??
             headline;
           return (
-            <section key={group.repo} className="relative overflow-hidden rounded-2xl border border-line bg-surface">
+            <section key={group.repo} className="relative overflow-hidden rounded-lg border border-line bg-surface">
               <button
                 onClick={() => setOpen(isOpen ? "" : group.repo)}
-                className="flex w-full items-center gap-4 px-6 py-5 pr-16 text-left"
+                className="flex w-full items-center gap-4 px-5 py-4 pr-14 text-left transition-colors hover:bg-surface-2"
                 aria-expanded={isOpen}
               >
                 <ChevronRight className={`text-muted transition-transform ${isOpen ? "rotate-90" : ""}`} />
-                {headlineServer && <ServerAvatar seed={headlineServer.name} />}
+                <ServerAvatar seed={group.app} />
                 <div className="min-w-0 flex-1">
                   <span className="flex flex-wrap items-center gap-2.5">
-                    <span className="text-[18px] font-semibold text-cream">{group.app}</span>
+                    <span className="text-[15px] font-semibold text-cream">{group.app}</span>
                     {/* Per-environment status pills — the source of truth for which
                         environments exist and which is failing (red dot). */}
                     {group.environments.map((e) => (
-                      <Badge key={e.environment} tone={statusTone[e.status]} dot>
+                      <Badge key={e.environment} tone={STATE_TONE[deployState(e)]} dot>
                         {e.environment}
                       </Badge>
                     ))}
@@ -429,7 +428,7 @@ export function MonitorView({
                 {activityEnv && <RunStrip runs={activityEnv.runs} />}
                 {activityEnv && (
                   <div className="hidden text-right sm:block">
-                    <span className="block text-[18px] font-semibold text-cream">{totalDeploys}</span>
+                    <span className="block text-[15px] font-semibold tabular-nums text-cream">{totalDeploys}</span>
                     <span className="block text-[11px] text-muted">deploys · last {activityEnv.lastDeploy}</span>
                   </div>
                 )}
@@ -638,7 +637,7 @@ export function MonitorView({
 // backend's per-target deploy lock is held), with how long it has been held.
 function LockPill({ since }: { since?: string }) {
   return (
-    <Badge tone="lime" dot>
+    <Badge tone="warn" dot>
       deploying{since ? ` · ${since}` : ""}
     </Badge>
   );
@@ -651,39 +650,38 @@ function LockPill({ since }: { since?: string }) {
 function HealthBanner({ health }: { health: AppHealth | null | undefined }) {
   if (health === undefined) {
     return (
-      <div className="mt-6 flex items-center gap-3 rounded-xl border border-line bg-surface/40 px-5 py-4">
+      <div className="mt-6 flex items-center gap-3 rounded-lg border border-line bg-surface-2/50 px-4 py-3">
         <CircleDot className="animate-pulse text-muted" />
-        <span className="text-[14px] text-muted">checking whether the app is responding, over ssh…</span>
+        <span className="text-[13px] text-muted">Checking whether the app responds…</span>
       </div>
     );
   }
   if (health === null) {
     return (
-      <div className="mt-6 flex items-center gap-3 rounded-xl border border-line bg-surface/40 px-5 py-4">
+      <div className="mt-6 flex items-center gap-3 rounded-lg border border-line bg-surface-2/50 px-4 py-3">
         <CircleDot className="text-muted" />
-        <span className="text-[14px] text-muted">
-          app health is unknown. mountabo could not probe the app (the server may not be set up, or is
-          unreachable).
+        <span className="text-[13px] text-muted">
+          Health unknown: Mountabo couldn&apos;t probe the app. The server may not be set up, or is unreachable.
         </span>
       </div>
     );
   }
   if (health.reachable) {
     return (
-      <div className="mt-6 flex items-center gap-3 rounded-xl border border-blue/30 bg-blue/[0.06] px-5 py-4">
-        <CircleCheck className="text-blue" />
-        <span className="text-[14px] text-cream">
-          app is healthy{health.status ? ` (http ${health.status})` : ""}
+      <div className="mt-6 flex items-center gap-3 rounded-lg border border-ok/30 bg-ok/[0.06] px-4 py-3">
+        <CircleCheck className="text-ok" />
+        <span className="text-[13px] text-cream">
+          Healthy{health.status ? ` (http ${health.status})` : ""}
           {health.target && <span className="text-muted"> · {health.target}</span>}
         </span>
       </div>
     );
   }
   return (
-    <div className="mt-6 flex items-center gap-3 rounded-xl border border-red-500/30 bg-red-500/[0.06] px-5 py-4">
-      <CircleX className="text-red-400" />
-      <span className="text-[14px] text-cream">
-        app is not responding{health.status ? ` (http ${health.status})` : ""}
+    <div className="mt-6 flex items-center gap-3 rounded-lg border border-err/30 bg-err/[0.06] px-4 py-3">
+      <CircleX className="text-err" />
+      <span className="text-[13px] text-cream">
+        Not responding{health.status ? ` (http ${health.status})` : ""}
         {health.detail && <span className="text-muted"> · {health.detail}</span>}
       </span>
     </div>
@@ -729,11 +727,9 @@ function EnvironmentSwitcher({
   const envInvalid = newEnv.trim() !== "" && !/^[A-Za-z0-9._-]+$/.test(newEnv.trim());
 
   return (
-    <div className="flex flex-col gap-3 border-t border-line bg-surface/40 px-6 py-4 sm:px-8">
+    <div className="flex flex-col gap-3 border-t border-line bg-surface-2/50 px-5 py-3 sm:px-6">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="mr-1 text-[12px] font-medium uppercase tracking-wide text-muted">
-          environments
-        </span>
+        <span className="mr-1 text-[12px] font-medium text-muted">Environment</span>
         {group.environments.map((e) => {
           const active = e.environment === selectedEnv;
           return (
@@ -743,13 +739,13 @@ function EnvironmentSwitcher({
               aria-pressed={active}
               className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-[13px] font-medium transition-colors ${
                 active
-                  ? "border-lime/50 bg-lime/15 text-lime"
+                  ? "border-line-strong bg-surface-hover text-cream"
                   : "border-line text-muted hover:bg-surface-2 hover:text-cream"
               }`}
             >
               <span
                 className={`h-1.5 w-1.5 rounded-full ${
-                  e.status === "live" ? "bg-blue" : e.status === "failing" ? "bg-red-400" : "bg-muted"
+                  { ready: "bg-ok", failing: "bg-err", deploying: "bg-warn", pending: "bg-faint", idle: "bg-faint" }[deployState(e)]
                 }`}
               />
               {e.environment}
@@ -759,7 +755,7 @@ function EnvironmentSwitcher({
         <button
           onClick={() => setShowAdd((v) => !v)}
           aria-expanded={showAdd}
-          className="inline-flex items-center gap-1 rounded-md border border-dashed border-line px-3 py-1.5 text-[13px] font-medium text-muted transition-colors hover:border-lime/50 hover:text-lime"
+          className="inline-flex items-center gap-1 rounded-md border border-dashed border-line px-3 py-1.5 text-[13px] font-medium text-muted transition-colors hover:border-line-strong hover:text-cream"
         >
           + environment
         </button>
@@ -776,7 +772,7 @@ function EnvironmentSwitcher({
               `/configure?repo=${encodeURIComponent(group.repo)}&environment=${encodeURIComponent(env)}&branch=${encodeURIComponent(branch)}&server=${encodeURIComponent(defaultServer)}`,
             );
           }}
-          className="rounded-xl border border-dashed border-line bg-surface/60 p-4"
+          className="rounded-lg border border-dashed border-line bg-surface/60 p-4"
         >
           <p className="text-[13px] leading-6 text-body">
             name the environment and pick its branch. the configure page opens prefilled, where you set its
@@ -821,13 +817,13 @@ function EnvironmentSwitcher({
             <button
               type="submit"
               disabled={newEnv.trim() === "" || newBranch.trim() === "" || envInvalid}
-              className="shrink-0 rounded-md border border-lime/50 bg-lime/[0.08] px-4 py-2 text-[13px] font-medium text-lime transition-colors hover:bg-lime/[0.16] disabled:cursor-not-allowed disabled:opacity-40"
+              className="shrink-0 rounded-md border border-line-strong bg-surface-hover px-4 py-2 text-[13px] font-medium text-cream transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
             >
               configure
             </button>
           </div>
           {envInvalid && (
-            <p className="mt-2 text-[12px] text-red-400">
+            <p className="mt-2 text-[12px] text-err">
               environment names use letters, numbers, dots, dashes, and underscores.
             </p>
           )}
@@ -841,13 +837,13 @@ function EnvironmentSwitcher({
 function InfoTile({ label, value, href }: { label: string; value: string; href?: string }) {
   return (
     <div className="bg-surface px-5 py-4">
-      <p className="text-[11px] uppercase tracking-wide text-muted">{label}</p>
+      <p className="text-[12px] text-muted first-letter:uppercase">{label}</p>
       {href ? (
         <a
           href={href}
           target="_blank"
           rel="noopener noreferrer"
-          className="mt-1.5 block truncate text-[14px] font-medium text-lime hover:underline"
+          className="mt-1.5 block truncate text-[14px] font-medium text-cream hover:underline"
         >
           {value}
         </a>
@@ -911,17 +907,17 @@ function ExpandedCard({
 
   const timelineCount = d.timeline?.length ?? 0;
   const tabs: { key: TabKey; label: string }[] = [
-    { key: "overview", label: "overview" },
-    { key: "deploys", label: `deploys${d.deploys ? ` (${d.deploys})` : ""}` },
-    { key: "logs", label: "logs" },
+    { key: "overview", label: "Overview" },
+    { key: "deploys", label: `Deploys${d.deploys ? ` (${d.deploys})` : ""}` },
+    { key: "logs", label: "Logs" },
     ...(server && d.environment
-      ? [{ key: "secrets" as const, label: `secrets${secrets ? ` (${secrets.secrets.length})` : ""}` }]
+      ? [{ key: "secrets" as const, label: `Secrets${secrets ? ` (${secrets.secrets.length})` : ""}` }]
       : []),
-    ...(server ? [{ key: "domains" as const, label: `domains (${envDomains.length})` }] : []),
+    ...(server ? [{ key: "domains" as const, label: `Domains (${envDomains.length})` }] : []),
     ...(server && dashboards.length > 0
-      ? [{ key: "monitoring" as const, label: `monitoring (${dashboards.length})` }]
+      ? [{ key: "monitoring" as const, label: `Monitoring (${dashboards.length})` }]
       : []),
-    { key: "settings", label: "settings" },
+    { key: "settings", label: "Settings" },
   ];
 
   // Default to "overview" — the environment's current-state home (URL, branch,
@@ -941,16 +937,11 @@ function ExpandedCard({
   }, [tab, secrets, owner, repo, d.environment]);
 
   return (
-    <div className="border-t border-line px-6 py-8 sm:px-8">
+    <div className="border-t border-line px-5 pb-6 sm:px-6">
       <div className="space-y-5">
         {/* tab bar: only the active panel renders below, keeping the card short. */}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
-          <span className="text-[12px] font-medium uppercase tracking-wide text-muted">section</span>
-          <span
-            role="tablist"
-            aria-label="deployment sections"
-            className="inline-flex max-w-full flex-wrap items-center gap-1 rounded-lg border border-line bg-surface p-1"
-          >
+        <div className="-mx-5 overflow-x-auto border-b border-line px-5 sm:-mx-6 sm:px-6">
+          <span role="tablist" aria-label="deployment sections" className="flex items-center gap-5">
             {tabs.map((t) => {
               const active = tab === t.key;
               return (
@@ -959,8 +950,8 @@ function ExpandedCard({
                   role="tab"
                   aria-selected={active}
                   onClick={() => setTab(t.key)}
-                  className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-colors ${
-                    active ? "bg-lime/15 text-lime" : "text-muted hover:bg-surface-2 hover:text-cream"
+                  className={`-mb-px shrink-0 border-b-2 py-3 text-[13px] font-medium transition-colors ${
+                    active ? "border-cream text-cream" : "border-transparent text-muted hover:text-cream"
                   }`}
                 >
                   {t.label}
@@ -978,17 +969,17 @@ function ExpandedCard({
               <div className="flex items-center gap-4">
                 <DeployStatusBadge status={latest?.status} />
                 <div>
-                  <p className="text-[17px] font-medium text-cream">
+                  <p className="text-[15px] font-semibold text-cream">
                     {latest
                       ? latest.status === "success"
-                        ? "latest deployment succeeded"
+                        ? "Latest deployment succeeded"
                         : latest.status === "failed"
-                          ? "latest deployment failed"
-                          : "deployment is running"
-                      : "no deployment runs yet"}
+                          ? "Latest deployment failed"
+                          : "Deployment is running"
+                      : "No deployment runs yet"}
                   </p>
-                  <p className="mt-1 text-[14px] text-muted">
-                    {latest ? `${latest.message} · ${latest.when}` : "trigger a deploy to see status here"}
+                  <p className="mt-0.5 text-[13px] text-muted">
+                    {latest ? `${latest.message} · ${latest.when}` : "Runs show up here after the next push or deploy"}
                   </p>
                 </div>
               </div>
@@ -998,9 +989,9 @@ function ExpandedCard({
                     href={d.liveUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="cta-glow flex items-center gap-2 rounded-lg bg-lime-fill px-4 py-2.5 text-[14px] font-bold text-black transition-transform hover:-translate-y-0.5"
+                    className="flex items-center gap-2 rounded-md bg-cream px-3 py-2 text-[13px] font-medium text-bg transition-opacity hover:opacity-90"
                   >
-                    open {live} <ArrowRight />
+                    Visit <span className="data">{live}</span> <ArrowRight />
                   </a>
                 )}
                 {d.workflowUrl && (
@@ -1008,9 +999,9 @@ function ExpandedCard({
                     href={d.workflowUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center gap-2 rounded-lg border border-line px-4 py-2.5 text-[13.5px] text-muted transition-colors hover:border-line-strong hover:text-cream"
+                    className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-[13px] font-medium text-body transition-colors hover:border-line-strong hover:text-cream"
                   >
-                    <GithubMark /> actions workflow <ExternalLink />
+                    <GithubMark /> Workflow <ExternalLink />
                   </a>
                 )}
               </div>
@@ -1018,14 +1009,14 @@ function ExpandedCard({
 
             <HealthBanner health={health} />
 
-            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-4">
-              <BigMetric label="cpu" value={m ? fmtLoad(m) : "reading…"} />
+            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-4">
+              <BigMetric label="CPU load" value={m ? fmtLoad(m) : "reading…"} />
               <BigMetric label="memory" value={m ? fmtMem(m) : "reading…"} />
               <BigMetric label="disk" value={m ? fmtDisk(m) : "reading…"} />
               <BigMetric label="uptime" value={m ? fmtUptime(m) : "reading…"} />
             </div>
 
-            <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-4">
+            <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-4">
               <InfoTile label="branch" value={d.branch} />
               <InfoTile label="server" value={server?.name ?? d.serverId} />
               <InfoTile label="last deploy" value={d.lastDeploy} />
@@ -1048,11 +1039,11 @@ function ExpandedCard({
               latestStatus={latest?.status}
             />
             <div>
-              <p className="mb-2 text-[12px] font-medium uppercase tracking-wide text-muted">recent runs</p>
+              <p className="mb-2 text-[12px] font-medium text-muted">recent runs</p>
               {d.runs.length === 0 ? (
                 <p className="text-[14px] text-muted">no runs recorded yet.</p>
               ) : (
-                <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
+                <ul className="divide-y divide-line overflow-hidden rounded-lg border border-line">
                   {d.runs.map((r, i) => (
                     <RunRow key={`${r.runUrl || r.sha}:${i}`} run={r} />
                   ))}
@@ -1061,10 +1052,10 @@ function ExpandedCard({
             </div>
             {timelineCount > 0 && (
               <div>
-                <p className="mb-2 text-[12px] font-medium uppercase tracking-wide text-muted">
+                <p className="mb-2 text-[12px] font-medium text-muted">
                   releases ({d.deploys ?? 0})
                 </p>
-                <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
+                <ul className="divide-y divide-line overflow-hidden rounded-lg border border-line">
                   {(d.timeline ?? []).map((rel, i) => (
                     <ReleaseRow key={i} release={rel} />
                   ))}
@@ -1092,7 +1083,7 @@ function ExpandedCard({
 
         {/* custom domains, scoped to this environment by its published port */}
         {tab === "domains" && server && (
-          <div className="overflow-hidden rounded-xl border border-line bg-surface">
+          <div className="overflow-hidden rounded-lg border border-line bg-surface">
             <ServerDomains
               key={`dom:${envPort ?? "none"}:${envDomains.map((dm) => dm.host).join(",")}`}
               server={server}
@@ -1113,7 +1104,7 @@ function ExpandedCard({
         {/* settings: read-only metadata + the danger zone (lock recovery, delete) */}
         {tab === "settings" && (
           <div className="space-y-5">
-            <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-3">
+            <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-3">
               <InfoTile label="environment" value={d.environment} />
               <InfoTile label="branch" value={d.branch} />
               <InfoTile label="server" value={server?.name ?? d.serverId} />
@@ -1121,14 +1112,14 @@ function ExpandedCard({
               <InfoTile label="live url" value={live || "none"} href={d.liveUrl || undefined} />
               <InfoTile
                 label="workflow"
-                value={d.workflowUrl ? "actions workflow" : "none"}
+                value={d.workflowUrl ? "Actions workflow" : "none"}
                 href={d.workflowUrl || undefined}
               />
             </dl>
 
             {/* stuck-lock recovery: only while the deploy lock is held. */}
             {d.locked && (
-              <div className="rounded-xl border border-line bg-surface/40 p-5">
+              <div className="rounded-lg border border-line bg-surface/40 p-5">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <p className="text-[15px] font-medium text-cream">a deploy is in progress</p>
@@ -1148,7 +1139,7 @@ function ExpandedCard({
             )}
 
             {/* danger zone: deleting tears the deployment down. */}
-            <div className="rounded-xl border border-red-400/30 bg-red-400/[0.03] p-5">
+            <div className="rounded-lg border border-err/30 bg-err/[0.03] p-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-[15px] font-medium text-cream">delete this deployment</p>
@@ -1159,7 +1150,7 @@ function ExpandedCard({
                 </div>
                 <button
                   onClick={onDelete}
-                  className="flex shrink-0 items-center gap-2 rounded-md border border-red-400/50 px-4 py-2 text-[13px] font-medium text-red-300 transition-colors hover:bg-red-400/10"
+                  className="flex shrink-0 items-center gap-2 rounded-md border border-err/50 px-4 py-2 text-[13px] font-medium text-err transition-colors hover:bg-err/10"
                 >
                   <Trash /> delete deployment
                 </button>
@@ -1306,10 +1297,10 @@ function SecretsPanel({
         <div
           className={`rounded-lg border px-4 py-3 text-[13px] ${
             notice.tone === "error"
-              ? "border-red-400/40 bg-red-400/[0.06] text-red-300"
+              ? "border-err/40 bg-err/[0.06] text-err"
               : notice.tone === "warn"
                 ? "border-blue/30 bg-blue/[0.06] text-blue"
-                : "border-lime/40 bg-lime/[0.06] text-lime"
+                : "border-line-strong bg-surface-hover text-cream"
           }`}
         >
           {notice.text}
@@ -1328,7 +1319,7 @@ function SecretsPanel({
         </div>
         <button
           onClick={() => setDialog({ mode: "add", name: "" })}
-          className="shrink-0 self-start rounded-md border border-lime/50 bg-lime/[0.08] px-4 py-2 text-[13px] font-medium text-lime transition-colors hover:bg-lime/[0.16]"
+          className="shrink-0 self-start rounded-md border border-line-strong bg-surface-hover px-4 py-2 text-[13px] font-medium text-cream transition-colors hover:bg-surface-hover"
         >
           + add variable
         </button>
@@ -1336,14 +1327,14 @@ function SecretsPanel({
 
       {/* operator variables: the application's own env vars, first and foremost. */}
       {operator.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-line px-4 py-8 text-center text-[13px] text-muted">
+        <p className="rounded-lg border border-dashed border-line px-4 py-8 text-center text-[13px] text-muted">
           no application variables yet. add one, or pick a missing .env.example key below.
         </p>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-line">
+        <div className="overflow-x-auto rounded-lg border border-line">
           <table className="w-full min-w-[560px] border-collapse text-left text-[13px]">
             <thead>
-              <tr className="border-b border-line text-[11px] uppercase tracking-wide text-muted">
+              <tr className="border-b border-line text-[11px] text-muted">
                 <th className="px-4 py-2.5 font-medium">name</th>
                 <th className="px-4 py-2.5 font-medium">value</th>
                 <th className="px-4 py-2.5 font-medium">status</th>
@@ -1367,14 +1358,14 @@ function SecretsPanel({
 
       {/* .env.example variables not configured on this environment */}
       {data.missing.length > 0 && (
-        <div className="rounded-xl border border-line bg-surface px-4 py-3">
-          <p className="text-[12px] uppercase tracking-wide text-muted">missing from .env.example</p>
+        <div className="rounded-lg border border-line bg-surface px-4 py-3">
+          <p className="text-[12px] text-muted">missing from .env.example</p>
           <div className="mt-2 flex flex-wrap gap-2">
             {data.missing.map((name) => (
               <button
                 key={name}
                 onClick={() => setDialog({ mode: "add", name })}
-                className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 font-mono text-[12px] text-cream transition-colors hover:border-lime/50 hover:text-lime"
+                className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 font-mono text-[12px] text-cream transition-colors hover:border-line-strong hover:text-cream"
               >
                 {name} <span className="text-muted">+ add</span>
               </button>
@@ -1385,17 +1376,17 @@ function SecretsPanel({
 
       {/* compare: variable names the repo's other environments have but this lacks */}
       {compare.length > 0 && (
-        <div className="rounded-xl border border-line bg-surface px-4 py-3">
-          <p className="text-[12px] uppercase tracking-wide text-muted">in other environments, not here</p>
+        <div className="rounded-lg border border-line bg-surface px-4 py-3">
+          <p className="text-[12px] text-muted">in other environments, not here</p>
           <ul className="mt-2 space-y-2">
             {compare.map((row) => (
               <li key={row.env} className="flex flex-wrap items-center gap-2 text-[13px]">
-                <Badge tone="lime-solid">{row.env}</Badge>
+                <Badge tone="info">{row.env}</Badge>
                 {row.missing.map((name) => (
                   <button
                     key={name}
                     onClick={() => setDialog({ mode: "add", name })}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 font-mono text-[12px] text-cream transition-colors hover:border-lime/50 hover:text-lime"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 font-mono text-[12px] text-cream transition-colors hover:border-line-strong hover:text-cream"
                   >
                     {name} <span className="text-muted">+ add</span>
                   </button>
@@ -1410,7 +1401,7 @@ function SecretsPanel({
           deploy (server host/user/ssh key + deploy dir). These are NOT application
           variables; they are read-only here and, like all secrets, write-only. */}
       {managed.length > 0 && (
-        <details className="overflow-hidden rounded-xl border border-line">
+        <details className="overflow-hidden rounded-lg border border-line">
           <summary className="cursor-pointer list-none px-4 py-3 text-[13px] text-muted transition-colors hover:text-cream">
             <span className="font-medium">managed deployment secrets</span> ({managed.length}) — system
             connection secrets, read-only
@@ -1491,11 +1482,11 @@ function SecretTableRow({
       <td className="px-4 py-3">
         <span className="inline-flex items-center gap-2 font-mono text-[12px] text-muted">
           <span aria-hidden>............</span>
-          <span className="text-[11px] uppercase tracking-wide text-faint">write-only</span>
+          <span className="text-[11px] text-faint">write-only</span>
         </span>
       </td>
       <td className="px-4 py-3">
-        <Badge tone="gray">configured</Badge>
+        <Badge tone="neutral">configured</Badge>
       </td>
       <td className="hidden px-4 py-3 text-muted md:table-cell">{updated}</td>
       <td className="px-4 py-3">
@@ -1523,7 +1514,7 @@ function SecretAction({
       onClick={onClick}
       className={`rounded-md border px-2.5 py-1 text-[12px] transition-colors ${
         danger
-          ? "border-red-400/40 text-red-300 hover:bg-red-400/10"
+          ? "border-err/40 text-err hover:bg-err/10"
           : "border-line text-muted hover:text-cream"
       }`}
     >
@@ -1580,7 +1571,7 @@ function SecretDialog({
           if (!name.trim() || !value || nameInvalid || valueInvalid) return;
           await onSubmit(name.trim(), value);
         }}
-        className="w-full max-w-md overflow-hidden rounded-xl border border-line bg-surface"
+        className="w-full max-w-md overflow-hidden rounded-lg border border-line bg-surface"
       >
         <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3">
           <span className="text-[13px] text-cream">
@@ -1597,7 +1588,7 @@ function SecretDialog({
         </div>
         <div className="space-y-3 p-5">
           <div>
-            <label className="text-[12px] uppercase tracking-wide text-muted">name</label>
+            <label className="text-[12px] text-muted">name</label>
             {mode === "edit" ? (
               <p className="mt-1 font-mono text-[13px] text-cream">{initialName}</p>
             ) : (
@@ -1613,13 +1604,13 @@ function SecretDialog({
               />
             )}
             {nameInvalid && (
-              <p className="mt-1 text-[12px] text-red-400">
+              <p className="mt-1 text-[12px] text-err">
                 names use letters, digits, and underscores, and can&apos;t start with a digit.
               </p>
             )}
           </div>
           <div>
-            <label className="text-[12px] uppercase tracking-wide text-muted">
+            <label className="text-[12px] text-muted">
               {mode === "edit" ? "new value" : "value"}
             </label>
             <input
@@ -1633,7 +1624,7 @@ function SecretDialog({
               className={`mt-1 w-full ${secretInputCls}`}
             />
             {valueInvalid && (
-              <p className="mt-1 text-[12px] text-red-400">
+              <p className="mt-1 text-[12px] text-err">
                 values can&apos;t contain line breaks (multiline values aren&apos;t supported).
               </p>
             )}
@@ -1655,7 +1646,7 @@ function SecretDialog({
           <button
             type="submit"
             disabled={busy || name.trim() === "" || value === "" || nameInvalid || valueInvalid}
-            className="rounded-md border border-lime/50 bg-lime/[0.08] px-4 py-2 text-[13px] font-medium text-lime transition-colors hover:bg-lime/[0.16] disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-md border border-line-strong bg-surface-hover px-4 py-2 text-[13px] font-medium text-cream transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
           >
             {busy ? "saving..." : "save secret"}
           </button>
@@ -1761,10 +1752,10 @@ function DashboardCard({
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-line bg-surface">
+    <div className="overflow-hidden rounded-lg border border-line bg-surface">
       <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3.5">
         <span className="flex items-center gap-2.5">
-          <span className="h-2 w-2 rounded-full bg-lime" />
+          <span className="h-2 w-2 rounded-full bg-ok" />
           <span className="text-[15px] font-medium text-cream">{tool.label}</span>
         </span>
       </div>
@@ -1815,7 +1806,7 @@ function DashboardCard({
               <button
                 onClick={() => void setUpAdmin()}
                 disabled={resetting}
-                className="shrink-0 rounded-md border border-lime/50 bg-lime/[0.08] px-4 py-2 text-[12.5px] font-medium text-lime transition-colors hover:bg-lime/[0.16] disabled:opacity-50"
+                className="shrink-0 rounded-md border border-line-strong bg-surface-hover px-4 py-2 text-[12.5px] font-medium text-cream transition-colors hover:bg-surface-hover disabled:opacity-50"
               >
                 {resetting ? "setting up…" : "set up admin"}
               </button>
@@ -1854,7 +1845,7 @@ function DashboardCard({
           </p>
           <button
             onClick={retry}
-            className="flex items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-[13px] text-lime transition-colors hover:bg-lime/10"
+            className="flex items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-[13px] text-cream transition-colors hover:bg-surface-hover"
           >
             <Refresh /> try again
           </button>
@@ -1916,7 +1907,7 @@ function RunWalkthrough({
   }
   if (!steps || (!steps.runUrl && steps.jobs.length === 0)) {
     return (
-      <p className="mt-4 rounded-xl border border-dashed border-line px-5 py-8 text-center text-[13px] text-muted">
+      <p className="mt-4 rounded-lg border border-dashed border-line px-5 py-8 text-center text-[13px] text-muted">
         no workflow run found for {branch} yet. push to {branch} or trigger the deploy workflow and the
         steps show up here.
       </p>
@@ -1927,8 +1918,8 @@ function RunWalkthrough({
   return (
     <div className="mt-4 space-y-4">
       <div className="flex items-center gap-3 text-[12.5px]">
-        <span className={`flex items-center gap-2 ${active ? "text-lime" : "text-muted"}`}>
-          <span className={`h-1.5 w-1.5 rounded-full ${active ? "animate-pulse bg-lime" : "bg-muted"}`} />
+        <span className={`flex items-center gap-2 ${active ? "text-cream" : "text-muted"}`}>
+          <span className={`h-1.5 w-1.5 rounded-full ${active ? "animate-pulse bg-warn" : "bg-muted"}`} />
           {active ? "run in progress, refreshing every few seconds" : "run finished"}
         </span>
         {steps.runUrl && (
@@ -1977,7 +1968,7 @@ function JobPanel({ owner, repo, job }: { owner: string; repo: string; job: RunJ
   }, [open, log, owner, repo, job.jobId]);
 
   return (
-    <div className="overflow-hidden rounded-xl border border-line bg-surface">
+    <div className="overflow-hidden rounded-lg border border-line bg-surface">
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-3 border-b border-line px-5 py-3.5 text-left"
@@ -2022,7 +2013,7 @@ function JobPanel({ owner, repo, job }: { owner: string; repo: string; job: RunJ
             </span>
             <button
               onClick={() => setLog(null)}
-              className="flex items-center gap-1.5 text-[12px] text-lime transition-colors hover:text-cream"
+              className="flex items-center gap-1.5 text-[12px] text-cream transition-colors hover:text-cream"
             >
               <Refresh /> refresh
             </button>
@@ -2050,11 +2041,11 @@ function JobLogLines({ lines }: { lines: string[] | null }) {
         if (kind === "group" && clean === "") return null; // drop endgroup markers
         const tone =
           kind === "error"
-            ? "text-red-400"
+            ? "text-err"
             : kind === "warning"
-              ? "text-amber-300"
+              ? "text-warn"
               : kind === "group"
-                ? "text-muted font-semibold uppercase tracking-wide text-[11px]"
+                ? "text-muted font-semibold text-[11px]"
                 : kind === "command"
                   ? "text-blue"
                   : "text-body";
@@ -2135,7 +2126,7 @@ function LogsViewer({ serverId, ready, active }: { serverId: string; ready: bool
   }
 
   return (
-    <div className="mt-4 overflow-hidden rounded-xl border border-line bg-black/40">
+    <div className="mt-4 overflow-hidden rounded-lg border border-line bg-black/40">
       <div className="flex items-center justify-between border-b border-line px-5 py-3">
         <span className="flex items-center gap-2 text-[12.5px] text-muted">
           <Terminal className="text-faint" /> {pickedService === "" ? "running containers" : pickedService} · last 200 lines
@@ -2143,7 +2134,7 @@ function LogsViewer({ serverId, ready, active }: { serverId: string; ready: bool
         <button
           onClick={() => void refresh()}
           disabled={refreshing || !ready}
-          className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12px] text-lime transition-colors hover:bg-lime/10 disabled:opacity-50"
+          className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12px] text-cream transition-colors hover:bg-surface-hover disabled:opacity-50"
         >
           <Refresh className={refreshing ? "animate-spin" : ""} /> {refreshing ? "reading…" : "refresh"}
         </button>
@@ -2153,13 +2144,13 @@ function LogsViewer({ serverId, ready, active }: { serverId: string; ready: bool
           the full container stack to one service's lines and back. */}
       {containers.length > 1 && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-5 py-3">
-          <span className="text-[11px] font-medium uppercase tracking-wide text-muted">log</span>
+          <span className="text-[11px] font-medium text-muted">log</span>
           <span className="inline-flex flex-wrap items-center gap-1 rounded-lg border border-line bg-surface p-1">
             <button
               onClick={() => setPickedService("")}
               className={`rounded-md px-3 py-1 text-[12px] font-medium transition-colors ${
                 pickedService === ""
-                  ? "bg-lime/15 text-lime"
+                  ? "bg-surface-hover text-cream"
                   : "text-muted hover:bg-surface-2 hover:text-cream"
               }`}
             >
@@ -2171,7 +2162,7 @@ function LogsViewer({ serverId, ready, active }: { serverId: string; ready: bool
                 onClick={() => setPickedService(name)}
                 className={`rounded-md px-3 py-1 text-[12px] font-medium transition-colors ${
                   pickedService === name
-                    ? "bg-lime/15 text-lime"
+                    ? "bg-surface-hover text-cream"
                     : "text-muted hover:bg-surface-2 hover:text-cream"
                 }`}
               >
@@ -2201,7 +2192,7 @@ function LogsViewer({ serverId, ready, active }: { serverId: string; ready: bool
               // suppressed and only the lines below it render.
               if (pickedService !== "") return null;
               return (
-                <p key={i} className="mt-3 first:mt-0 text-[11px] font-semibold uppercase tracking-wide text-lime">
+                <p key={i} className="mt-3 first:mt-0 text-[11px] font-semibold text-cream">
                   {logHeaderName(line)}
                 </p>
               );
@@ -2263,7 +2254,7 @@ function RunStrip({ runs }: { runs: DeployRun[] }) {
 function BigMetric({ label, value }: { label: string; value: string }) {
   return (
     <div className="bg-surface px-5 py-4">
-      <p className="text-[11px] uppercase tracking-wide text-muted">{label}</p>
+      <p className="text-[12px] text-muted first-letter:uppercase">{label}</p>
       <p className="mt-1.5 text-[18px] font-semibold text-cream">{value}</p>
     </div>
   );
@@ -2279,27 +2270,27 @@ function DeployStatusBadge({ status }: { status?: RunStatus }) {
   }
   if (status === "success") {
     return (
-      <span className="flex h-11 w-11 items-center justify-center rounded-full border border-blue/40 text-blue">
+      <span className="flex h-11 w-11 items-center justify-center rounded-full border border-ok/40 text-ok">
         <CircleCheck />
       </span>
     );
   }
   if (status === "failed") {
     return (
-      <span className="flex h-11 w-11 items-center justify-center rounded-full border border-red-500/40 text-red-400">
+      <span className="flex h-11 w-11 items-center justify-center rounded-full border border-err/40 text-err">
         <CircleX />
       </span>
     );
   }
   return (
-    <span className="flex h-11 w-11 items-center justify-center rounded-full border border-lime/40 text-lime">
+    <span className="flex h-11 w-11 items-center justify-center rounded-full border border-line-strong text-cream">
       <CircleDot className="animate-pulse" />
     </span>
   );
 }
 
 function RunRow({ run }: { run: DeployRun }) {
-  const tone = run.status === "success" ? "blue" : run.status === "failed" ? "red" : "lime";
+  const tone = run.status === "success" ? "ok" : run.status === "failed" ? "err" : "warn";
   return (
     <li className="flex items-center gap-3 px-5 py-3 text-[13px]">
       <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${runColor[run.status]}`} />
@@ -2308,7 +2299,7 @@ function RunRow({ run }: { run: DeployRun }) {
           href={run.commitUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="shrink-0 font-mono text-cream transition-colors hover:text-lime hover:underline"
+          className="shrink-0 font-mono text-cream transition-colors hover:text-cream hover:underline"
         >
           {run.sha}
         </a>
@@ -2377,14 +2368,14 @@ function ReleaseRow({ release }: { release: Release }) {
 function StepIcon({ status, conclusion }: { status: GithubStatus; conclusion: GithubConclusion }) {
   if (status === "completed") {
     if (conclusion === "success")
-      return <CircleCheck className="shrink-0 text-blue" />;
+      return <CircleCheck className="shrink-0 text-ok" />;
     if (conclusion === "failure" || conclusion === "timed_out")
-      return <CircleX className="shrink-0 text-red-400" />;
+      return <CircleX className="shrink-0 text-err" />;
     // cancelled / skipped / other
     return <CircleDot className="shrink-0 text-muted" />;
   }
   if (status === "in_progress")
-    return <CircleDot className="shrink-0 animate-pulse text-lime" />;
+    return <CircleDot className="shrink-0 animate-pulse text-warn" />;
   // queued / unknown
   return <CircleDot className="shrink-0 text-faint" />;
 }
@@ -2396,10 +2387,10 @@ function StepStatusLabel({ status, conclusion }: { status: GithubStatus; conclus
   if (status === "completed") {
     if (conclusion === "success") {
       label = "done";
-      cls = "text-blue";
+      cls = "text-ok";
     } else if (conclusion === "failure" || conclusion === "timed_out") {
       label = "failed";
-      cls = "text-red-400";
+      cls = "text-err";
     } else if (conclusion === "skipped") {
       label = "skipped";
       cls = "text-muted";
@@ -2412,7 +2403,7 @@ function StepStatusLabel({ status, conclusion }: { status: GithubStatus; conclus
     }
   } else if (status === "in_progress") {
     label = "running";
-    cls = "text-lime";
+    cls = "text-warn";
   } else if (status === "queued") {
     label = "queued";
     cls = "text-faint";

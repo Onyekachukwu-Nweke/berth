@@ -16,6 +16,7 @@ const isProd = process.env.NODE_ENV === "production";
 const nextConfig: NextConfig = {
   // A self-contained server bundle for the container image (see Dockerfile).
   output: "standalone",
+  devIndicators: false,
   // In dev, loading the root .env above only populates the config process — it does not
   // by itself reach the request runtime — so forward the values the server-side
   // OAuth route handlers need. Only the non-secret client id and backend URL are

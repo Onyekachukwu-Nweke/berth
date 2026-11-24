@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { MonitorView } from "@/components/monitor-view";
 import { getDeployments } from "@/lib/deployments";
 import { getServers } from "@/lib/servers";
+import { getCurrentUser } from "@/lib/session";
 
 export const metadata = { title: "Deployments" };
 
@@ -18,9 +19,10 @@ export default function MonitorPage() {
 async function MonitorData() {
   // Deployments + servers feed the expanded card. ServerView drives the domain
   // panel and the monitoring-dashboards tunnel.
-  const [deployments, servers] = await Promise.all([
+  const [deployments, servers, user] = await Promise.all([
     getDeployments(),
     getServers(),
+    getCurrentUser(),
   ]);
 
   const now = new Date();
@@ -32,7 +34,7 @@ async function MonitorData() {
   });
 
   return (
-    <MonitorView deployments={deployments} servers={servers} stamp={`${stamp} GMT`} />
+    <MonitorView deployments={deployments} servers={servers} stamp={`${stamp} GMT`} isAdmin={Boolean(user?.isAdmin)} />
   );
 }
 

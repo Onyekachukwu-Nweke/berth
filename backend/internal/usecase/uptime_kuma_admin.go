@@ -4,10 +4,15 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 )
+
+// ErrToolNotInstalled is returned when Uptime Kuma isn't among the server's
+// applied options.
+var ErrToolNotInstalled = errors.New("monitoring tool not installed on this server")
 
 // UptimeKumaAdmin is the operator-facing credential pair for an Uptime Kuma
 // instance mountabo manages. The password is shown to the operator exactly

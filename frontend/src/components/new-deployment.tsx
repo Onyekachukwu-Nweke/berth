@@ -478,6 +478,17 @@ export function NewDeployment({
                           {s.loc}
                         </>
                       )}
+                      {!s.hasDocker && (
+                        <>
+                          <span className="text-faint">·</span>
+                          <Link
+                            href={`/templates?repo=${encodeURIComponent(full)}&branch=${encodeURIComponent(s.branch)}`}
+                            className="text-blue hover:underline"
+                          >
+                            Add Docker setup
+                          </Link>
+                        </>
+                      )}
                     </span>
                   </div>
                   <button

@@ -22,14 +22,45 @@ type GitHubHandler struct {
 	envExample *usecase.EnvExampleService
 	runSteps   *usecase.RunStepsService
 	branches   *usecase.BranchesService
+	files      *usecase.RepoFileService
 	log        *slog.Logger
 }
 
 // NewGitHubHandler wires the handler to the connector, the repo-tree service,
 // the env-example service, the run-steps service, the branches service, and a
 // logger.
-func NewGitHubHandler(connector *usecase.GitHubConnector, tree *usecase.TreeService, envExample *usecase.EnvExampleService, runSteps *usecase.RunStepsService, branches *usecase.BranchesService, log *slog.Logger) *GitHubHandler {
-	return &GitHubHandler{connector: connector, tree: tree, envExample: envExample, runSteps: runSteps, branches: branches, log: log}
+func NewGitHubHandler(connector *usecase.GitHubConnector, tree *usecase.TreeService, envExample *usecase.EnvExampleService, runSteps *usecase.RunStepsService, branches *usecase.BranchesService, files *usecase.RepoFileService, log *slog.Logger) *GitHubHandler {
+	return &GitHubHandler{connector: connector, tree: tree, envExample: envExample, runSteps: runSteps, branches: branches, files: files, log: log}
+}
+
+// CommitFiles writes a few files (a Docker setup from a template) onto a
+// branch: POST /api/repos/{owner}/{repo}/files {branch, message, files:[{path, content}]}.
+// Push access is enforced by the route's guard.
+func (h *GitHubHandler) CommitFiles(w nethttp.ResponseWriter, r *nethttp.Request) {
+	var req struct {
+		Branch  string             `json:"branch"`
+		Message string             `json:"message"`
+		Files   []usecase.RepoFile `json:"files"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		h.writeError(w, nethttp.StatusBadRequest, "invalid request body")
+		return
+	}
+	err := h.files.Commit(r.Context(), usecase.CommitFilesInput{
+		Owner: r.PathValue("owner"), Repo: r.PathValue("repo"),
+		Branch: req.Branch, Message: req.Message, Files: req.Files,
+	})
+	switch {
+	case err == nil:
+		h.writeJSON(w, nethttp.StatusOK, map[string]int{"committed": len(req.Files)})
+	case errors.Is(err, usecase.ErrInvalidFiles):
+		h.writeError(w, nethttp.StatusBadRequest, err.Error())
+	case errors.Is(err, usecase.ErrNotConnected):
+		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
+	default:
+		h.log.Error("commit files failed", "err", err)
+		h.writeError(w, nethttp.StatusBadGateway, "GitHub refused the commit; check that the branch exists and isn't protected")
+	}
 }
 
 // Branches lists every branch on owner/repo so the new-environment picker can

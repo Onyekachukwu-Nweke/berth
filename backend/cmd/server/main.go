@@ -80,7 +80,7 @@ func run() error {
 	envExampleSvc := usecase.NewEnvExampleService(app, ghClient)
 	runStepsSvc := usecase.NewRunStepsService(app, ghClient)
 	branchesSvc := usecase.NewBranchesService(app, ghClient)
-	githubHandler := httpadapter.NewGitHubHandler(connector, treeSvc, envExampleSvc, runStepsSvc, branchesSvc, logger)
+	githubHandler := httpadapter.NewGitHubHandler(connector, treeSvc, envExampleSvc, runStepsSvc, branchesSvc, usecase.NewRepoFileService(app, ghClient), logger)
 
 	// Compose the server flow: SSH probe + bootstrap + key generation (all ssh),
 	// JSON-file persistence, and vault secrets. One ssh.Client serves probe,

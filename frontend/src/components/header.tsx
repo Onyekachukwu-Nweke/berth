@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Book, GithubMark, LogoMark, Logout } from "@/components/icons";
 import { RepoStar } from "@/components/repo-star";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -41,6 +41,23 @@ export function Header({
 
   const showControls = back || crumbs.length > 0;
 
+  // Admin-only navigation (servers' terminal, access settings) appears once the
+  // API confirms the role; the API enforces it either way.
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    if (!account) return;
+    let live = true;
+    fetch("/api/auth/me", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((u: { isAdmin?: boolean } | null) => {
+        if (live) setIsAdmin(Boolean(u?.isAdmin));
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [account]);
+
   return (
     <header className="shrink-0 border-b border-line">
       {/* firm top bar, identical across all views. The content is centered at the
@@ -70,14 +87,26 @@ export function Header({
                 >
                   deployments
                 </Link>
-                <Link
-                  href="/terminal"
-                  className={
-                    pathname?.startsWith("/terminal") ? "text-cream" : "transition-colors hover:text-cream"
-                  }
-                >
-                  terminal
-                </Link>
+                {isAdmin && (
+                  <>
+                    <Link
+                      href="/terminal"
+                      className={
+                        pathname?.startsWith("/terminal") ? "text-cream" : "transition-colors hover:text-cream"
+                      }
+                    >
+                      terminal
+                    </Link>
+                    <Link
+                      href="/admin"
+                      className={
+                        pathname?.startsWith("/admin") ? "text-cream" : "transition-colors hover:text-cream"
+                      }
+                    >
+                      access
+                    </Link>
+                  </>
+                )}
               </nav>
               <span className="hidden h-4 w-px bg-line sm:block" />
               <span className="flex min-w-0 items-center gap-2 text-cream">
@@ -87,13 +116,11 @@ export function Header({
               <button className="transition-colors hover:text-cream" aria-label="docs">
                 <Book />
               </button>
-              <a
-                href="/api/github/disconnect"
-                className="transition-colors hover:text-cream"
-                aria-label="disconnect"
-              >
-                <Logout />
-              </a>
+              <form action="/api/auth/logout" method="post" className="flex">
+                <button type="submit" className="transition-colors hover:text-cream" aria-label="sign out">
+                  <Logout />
+                </button>
+              </form>
             </>
           )}
           <RepoStar />
@@ -108,10 +135,6 @@ export function Header({
       {showControls && (
         <div className="border-t border-line">
         <div className="mx-auto flex h-11 w-full max-w-[1100px] items-center gap-3 px-4 text-[13px] text-muted sm:gap-4 sm:px-6 lg:px-8">
-          <span className="hidden items-center gap-2 rounded-md border border-line bg-surface px-2.5 py-1 md:flex">
-            <span className="h-1.5 w-1.5 rounded-full bg-blue" />
-            localhost:7777
-          </span>
 
           {crumbs.length > 0 && (
             <nav className="flex items-center gap-2">

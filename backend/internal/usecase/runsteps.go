@@ -52,12 +52,12 @@ type WorkflowJobLister interface {
 // connected user's behalf, so the UI can show each Actions step's live status.
 // It reads with the stored OAuth token; nothing else is needed.
 type RunStepsService struct {
-	tokens TokenStore
+	tokens RepoTokens
 	jobs   WorkflowJobLister
 }
 
 // NewRunStepsService wires the service to the token store and a job lister.
-func NewRunStepsService(tokens TokenStore, jobs WorkflowJobLister) *RunStepsService {
+func NewRunStepsService(tokens RepoTokens, jobs WorkflowJobLister) *RunStepsService {
 	return &RunStepsService{tokens: tokens, jobs: jobs}
 }
 
@@ -71,7 +71,7 @@ func (s *RunStepsService) Steps(ctx context.Context, owner, repo, ref, environme
 	if owner == "" || repo == "" {
 		return RunSteps{}, fmt.Errorf("owner and repo are required")
 	}
-	token, err := s.tokens.Load()
+	token, err := s.tokens.TokenFor(ctx, owner)
 	if err != nil {
 		return RunSteps{}, fmt.Errorf("load token: %w", err)
 	}
@@ -94,7 +94,7 @@ func (s *RunStepsService) JobLog(ctx context.Context, owner, repo string, jobID 
 	if owner == "" || repo == "" || jobID == 0 {
 		return nil, fmt.Errorf("owner, repo and jobId are required")
 	}
-	token, err := s.tokens.Load()
+	token, err := s.tokens.TokenFor(ctx, owner)
 	if err != nil {
 		return nil, fmt.Errorf("load token: %w", err)
 	}

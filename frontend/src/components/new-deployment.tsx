@@ -530,9 +530,9 @@ export function NewDeployment({
               <li className="px-5 py-8 text-center text-[13px] text-muted">
                 {!account ? (
                   <>
-                    connect github to list your repositories.{" "}
-                    <Link href="/connect" className="text-lime hover:text-cream">
-                      connect →
+                    sign in to list your repositories.{" "}
+                    <Link href="/login" className="text-lime hover:text-cream">
+                      sign in →
                     </Link>
                   </>
                 ) : !reposReady ? (
@@ -540,7 +540,10 @@ export function NewDeployment({
                 ) : q ? (
                   <>no sources match “{query}”.</>
                 ) : (
-                  <>no repositories found.</>
+                  <>
+                    no repositories yet. you see the repos you can reach on GitHub that mountabo is installed on;
+                    ask an admin if one is missing.
+                  </>
                 )}
               </li>
             )}

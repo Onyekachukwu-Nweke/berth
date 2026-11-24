@@ -1,4 +1,5 @@
 import type { Source } from "@/lib/data";
+import { backendFetch, backendURL } from "@/lib/backend";
 
 type RepoResponse = {
   owner: string;
@@ -38,10 +39,10 @@ function relativeTime(iso: string): string {
 // backoff and bound each attempt with a timeout. A 401 means "not connected",
 // which is a real empty state, so we return immediately without retrying.
 export async function getRepos(): Promise<Source[]> {
-  const backend = process.env.MOUNTABO_BACKEND ?? "http://localhost:7778";
+  const backend = backendURL();
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const resp = await fetch(`${backend}/api/github/repos`, {
+      const resp = await backendFetch(`${backend}/api/github/repos`, {
         cache: "no-store",
         signal: AbortSignal.timeout(15_000),
       });

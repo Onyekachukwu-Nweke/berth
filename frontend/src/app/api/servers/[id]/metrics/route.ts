@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { backendURL } from "@/lib/servers";
+import { backendFetch, backendURL } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
 
@@ -9,7 +9,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   const { id } = await params;
   let resp: Response;
   try {
-    resp = await fetch(`${backendURL()}/api/servers/${id}/metrics`, {
+    resp = await backendFetch(`${backendURL()}/api/servers/${id}/metrics`, {
       cache: "no-store",
       signal: AbortSignal.timeout(25_000),
     });

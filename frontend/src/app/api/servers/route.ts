@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { backendURL } from "@/lib/servers";
+import { backendFetch, backendURL } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
 
@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   let resp: Response;
   try {
-    resp = await fetch(`${backendURL()}/api/servers`, {
+    resp = await backendFetch(`${backendURL()}/api/servers`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: await request.text(),

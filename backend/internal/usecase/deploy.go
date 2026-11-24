@@ -168,7 +168,7 @@ type WorkflowDispatcher interface {
 type DeployService struct {
 	servers    ServerStore
 	vault      SecretVault
-	tokens     TokenStore
+	tokens     RepoTokens
 	repo       RepoWriter
 	envs       EnvManager
 	secrets    EnvSecretSetter
@@ -177,20 +177,19 @@ type DeployService struct {
 	deployKeys RepoDeployKeyManager
 	installer  DeployKeyInstaller
 	refs       RefResolver
-	accounts   AccountFetcher
 	dispatcher WorkflowDispatcher
 	locker     *DeployLocker
 }
 
 var _ DeployReapplier = (*DeployService)(nil)
 
-// NewDeployService wires the service to its ports. refs and accounts enrich the
-// recorded release with the deployed commit and the triggering GitHub login;
-// both are read best-effort and never block a deploy. dispatcher redeploys via
+// NewDeployService wires the service to its ports. refs enriches the recorded
+// release with the deployed commit (the actor is the signed-in user, taken from
+// the request context); it is read best-effort and never block a deploy. dispatcher redeploys via
 // workflow_dispatch when a secret change is re-applied. locker serializes deploys
 // per target so two concurrent deploys never race on the same repo files.
-func NewDeployService(servers ServerStore, vault SecretVault, tokens TokenStore, repo RepoWriter, envs EnvManager, secrets EnvSecretSetter, history DeploymentStore, keys KeyMaker, deployKeys RepoDeployKeyManager, installer DeployKeyInstaller, refs RefResolver, accounts AccountFetcher, dispatcher WorkflowDispatcher, locker *DeployLocker) *DeployService {
-	return &DeployService{servers: servers, vault: vault, tokens: tokens, repo: repo, envs: envs, secrets: secrets, history: history, keys: keys, deployKeys: deployKeys, installer: installer, refs: refs, accounts: accounts, dispatcher: dispatcher, locker: locker}
+func NewDeployService(servers ServerStore, vault SecretVault, tokens RepoTokens, repo RepoWriter, envs EnvManager, secrets EnvSecretSetter, history DeploymentStore, keys KeyMaker, deployKeys RepoDeployKeyManager, installer DeployKeyInstaller, refs RefResolver, dispatcher WorkflowDispatcher, locker *DeployLocker) *DeployService {
+	return &DeployService{servers: servers, vault: vault, tokens: tokens, repo: repo, envs: envs, secrets: secrets, history: history, keys: keys, deployKeys: deployKeys, installer: installer, refs: refs, dispatcher: dispatcher, locker: locker}
 }
 
 // Preview generates the deploy artifacts from the config alone, no server, no
@@ -249,7 +248,7 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 	}
 	defer s.locker.Release(lockKey(in.Owner, in.Repo, env))
 
-	token, err := s.tokens.Load()
+	token, err := s.tokens.TokenFor(ctx, in.Owner)
 	if err != nil {
 		return fmt.Errorf("load github token: %w", err)
 	}
@@ -341,11 +340,10 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 	if err != nil {
 		progress(out, "note: could not resolve commit for %s (release will omit it): %v", in.Branch, err)
 	}
+	// The actor is the signed-in person who asked for the deploy.
 	var actor string
-	if account, aerr := s.accounts.Account(ctx, token); aerr != nil {
-		progress(out, "note: could not resolve deploy actor (release will omit it): %v", aerr)
-	} else {
-		actor = account.Login
+	if u, ok := UserFrom(ctx); ok {
+		actor = u.Login
 	}
 
 	// Record the deployment so the monitor can show its history. A failure here

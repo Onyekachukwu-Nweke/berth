@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { backendURL } from "@/lib/servers";
+import { backendFetch, backendURL } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +12,7 @@ export async function DELETE(
 ) {
   const { owner, repo, environment } = await params;
   try {
-    const resp = await fetch(
+    const resp = await backendFetch(
       `${backendURL()}/api/deployments/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(environment)}/lock`,
       { method: "DELETE" },
     );

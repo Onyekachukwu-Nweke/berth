@@ -21,12 +21,12 @@ type RepoTreeLister interface {
 // offer a real directory/file picker instead of a free-text path. It reads with
 // the stored OAuth token; nothing else is needed.
 type TreeService struct {
-	tokens TokenStore
+	tokens RepoTokens
 	lister RepoTreeLister
 }
 
 // NewTreeService wires the service to the token store and a tree lister.
-func NewTreeService(tokens TokenStore, lister RepoTreeLister) *TreeService {
+func NewTreeService(tokens RepoTokens, lister RepoTreeLister) *TreeService {
 	return &TreeService{tokens: tokens, lister: lister}
 }
 
@@ -36,7 +36,7 @@ func (s *TreeService) Tree(ctx context.Context, owner, repo, ref string) ([]Tree
 	if owner == "" || repo == "" || ref == "" {
 		return nil, fmt.Errorf("owner, repo and ref are required")
 	}
-	token, err := s.tokens.Load()
+	token, err := s.tokens.TokenFor(ctx, owner)
 	if err != nil {
 		return nil, fmt.Errorf("load token: %w", err)
 	}

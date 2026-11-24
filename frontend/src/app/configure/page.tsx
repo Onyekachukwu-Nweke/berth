@@ -47,6 +47,7 @@ export default async function ConfigurePage({
         branch={branch}
         account={account}
         environment={environment}
+        isAdmin={conn.connected && conn.isAdmin}
       />
     </div>
   );

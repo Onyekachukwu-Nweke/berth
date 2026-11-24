@@ -16,22 +16,30 @@ import (
 type MonitorHandler struct {
 	svc    *usecase.MonitorService
 	health *usecase.AppHealthService
+	access *usecase.AccessService
 	log    *slog.Logger
 }
 
 // NewMonitorHandler wires the handler to the monitor service, the app-health
 // probe service, and a logger.
-func NewMonitorHandler(svc *usecase.MonitorService, health *usecase.AppHealthService, log *slog.Logger) *MonitorHandler {
-	return &MonitorHandler{svc: svc, health: health, log: log}
+func NewMonitorHandler(svc *usecase.MonitorService, health *usecase.AppHealthService, access *usecase.AccessService, log *slog.Logger) *MonitorHandler {
+	return &MonitorHandler{svc: svc, health: health, access: access, log: log}
 }
 
 // Deployments returns each configured deployment enriched with its recent runs.
 // Not-connected is reported as 401; an empty list is a normal "nothing deployed
 // yet" answer.
 func (h *MonitorHandler) Deployments(w nethttp.ResponseWriter, r *nethttp.Request) {
-	history, err := h.svc.History(r.Context())
+	u, _ := usecase.UserFrom(r.Context())
+	keep, err := h.access.RepoFilter(u)
+	if err != nil {
+		h.log.Error("read repo access failed", "err", err)
+		h.writeError(w, nethttp.StatusInternalServerError, "could not list deployments")
+		return
+	}
+	history, err := h.svc.History(r.Context(), keep)
 	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeError(w, nethttp.StatusUnauthorized, "github not connected")
+		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
 		return
 	}
 	if err != nil {

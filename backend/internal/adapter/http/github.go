@@ -43,7 +43,7 @@ func (h *GitHubHandler) Branches(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 	names, err := h.branches.List(r.Context(), owner, repo)
 	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeError(w, nethttp.StatusUnauthorized, "github not connected")
+		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
 		return
 	}
 	if err != nil {
@@ -52,20 +52,6 @@ func (h *GitHubHandler) Branches(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 	h.writeJSON(w, nethttp.StatusOK, map[string][]string{"branches": names})
-}
-
-type exchangeRequest struct {
-	Code        string `json:"code"`
-	RedirectURI string `json:"redirectUri"`
-}
-
-type accountResponse struct {
-	Login string `json:"login"`
-}
-
-type statusResponse struct {
-	Connected bool   `json:"connected"`
-	Login     string `json:"login,omitempty"`
 }
 
 type repoResponse struct {
@@ -77,55 +63,17 @@ type repoResponse struct {
 	Language      string `json:"language"`
 	PushedAt      string `json:"pushedAt"`
 	HasDocker     bool   `json:"hasDocker"`
-	Kind          string `json:"kind"` // "compose" | "docker" | "none"
+	Kind          string `json:"kind"`       // "compose" | "docker" | "none"
+	Permission    string `json:"permission"` // "read" | "write" | "admin"
 }
 
-// Exchange completes the OAuth web flow: it takes the authorization code the
-// browser received and asks the connector to turn it into a stored token,
-// returning the connected login. The code and token never appear in responses
-// or logs.
-func (h *GitHubHandler) Exchange(w nethttp.ResponseWriter, r *nethttp.Request) {
-	var req exchangeRequest
-	if err := decodeJSON(w, r, &req); err != nil {
-		h.writeError(w, nethttp.StatusBadRequest, "invalid request body")
-		return
-	}
-	if req.Code == "" {
-		h.writeError(w, nethttp.StatusBadRequest, "missing authorization code")
-		return
-	}
-
-	account, err := h.connector.Connect(r.Context(), req.Code, req.RedirectURI)
-	if err != nil {
-		h.log.Error("github connect failed", "err", err)
-		h.writeError(w, nethttp.StatusBadGateway, "could not complete github exchange")
-		return
-	}
-	h.writeJSON(w, nethttp.StatusOK, accountResponse{Login: account.Login})
-}
-
-// Status reports whether a token is stored and, if so, which account it belongs
-// to. A missing token is a normal "not connected" answer, not an error.
-func (h *GitHubHandler) Status(w nethttp.ResponseWriter, r *nethttp.Request) {
-	account, err := h.connector.Status(r.Context())
-	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeJSON(w, nethttp.StatusOK, statusResponse{Connected: false})
-		return
-	}
-	if err != nil {
-		h.log.Error("github status failed", "err", err)
-		h.writeError(w, nethttp.StatusBadGateway, "could not read github status")
-		return
-	}
-	h.writeJSON(w, nethttp.StatusOK, statusResponse{Connected: true, Login: account.Login})
-}
-
-// Repos lists the connected account's repositories (public and private) so the
-// UI can show them. Not-connected is reported as 401 rather than an error.
+// Repos lists the repos the signed-in person can reach through the App, with
+// their permission on each, so the UI shows exactly what GitHub allows them.
 func (h *GitHubHandler) Repos(w nethttp.ResponseWriter, r *nethttp.Request) {
-	repos, err := h.connector.Repositories(r.Context())
+	u, _ := usecase.UserFrom(r.Context())
+	repos, err := h.connector.Repositories(r.Context(), u)
 	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeError(w, nethttp.StatusUnauthorized, "github not connected")
+		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
 		return
 	}
 	if err != nil {
@@ -150,6 +98,7 @@ func (h *GitHubHandler) Repos(w nethttp.ResponseWriter, r *nethttp.Request) {
 			PushedAt:      pushed,
 			HasDocker:     rp.HasDocker,
 			Kind:          rp.Kind,
+			Permission:    rp.Permission.String(),
 		})
 	}
 	h.writeJSON(w, nethttp.StatusOK, out)
@@ -184,7 +133,7 @@ func (h *GitHubHandler) Ports(w nethttp.ResponseWriter, r *nethttp.Request) {
 	ref := usecase.RepoRef{Owner: owner, Name: repo, Ref: q.Get("ref"), Dir: q.Get("dir")}
 	ports, strategy, err := h.connector.DetectPorts(r.Context(), ref)
 	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeError(w, nethttp.StatusUnauthorized, "github not connected")
+		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
 		return
 	}
 	if err != nil {
@@ -219,7 +168,7 @@ func (h *GitHubHandler) Tree(w nethttp.ResponseWriter, r *nethttp.Request) {
 
 	entries, err := h.tree.Tree(r.Context(), owner, repo, ref)
 	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeError(w, nethttp.StatusUnauthorized, "github not connected")
+		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
 		return
 	}
 	if err != nil {
@@ -246,7 +195,7 @@ func (h *GitHubHandler) EnvExample(w nethttp.ResponseWriter, r *nethttp.Request)
 	ref := usecase.RepoRef{Owner: owner, Name: repo, Ref: q.Get("ref"), Dir: q.Get("dir")}
 	keys, err := h.envExample.Keys(r.Context(), ref)
 	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeError(w, nethttp.StatusUnauthorized, "github not connected")
+		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
 		return
 	}
 	if err != nil {
@@ -279,7 +228,7 @@ func (h *GitHubHandler) RunSteps(w nethttp.ResponseWriter, r *nethttp.Request) {
 
 	steps, err := h.runSteps.Steps(r.Context(), owner, repo, ref, q.Get("environment"))
 	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeError(w, nethttp.StatusUnauthorized, "github not connected")
+		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
 		return
 	}
 	if err != nil {
@@ -307,7 +256,7 @@ func (h *GitHubHandler) JobLogs(w nethttp.ResponseWriter, r *nethttp.Request) {
 
 	lines, err := h.runSteps.JobLog(r.Context(), owner, repo, jobID)
 	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeError(w, nethttp.StatusUnauthorized, "github not connected")
+		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
 		return
 	}
 	if err != nil {
@@ -319,16 +268,6 @@ func (h *GitHubHandler) JobLogs(w nethttp.ResponseWriter, r *nethttp.Request) {
 	out := make([]string, 0, len(lines))
 	out = append(out, lines...)
 	h.writeJSON(w, nethttp.StatusOK, map[string][]string{"lines": out})
-}
-
-// Disconnect removes the stored token from the vault.
-func (h *GitHubHandler) Disconnect(w nethttp.ResponseWriter, _ *nethttp.Request) {
-	if err := h.connector.Disconnect(); err != nil {
-		h.log.Error("github disconnect failed", "err", err)
-		h.writeError(w, nethttp.StatusInternalServerError, "could not disconnect github")
-		return
-	}
-	w.WriteHeader(nethttp.StatusNoContent)
 }
 
 // decodeJSON reads a single JSON object from the request body, bounding its size

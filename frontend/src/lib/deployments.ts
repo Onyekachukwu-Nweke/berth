@@ -1,5 +1,5 @@
-import { backendURL } from "@/lib/servers";
 import type { Deployment, ReleaseStatus, RunStatus } from "@/lib/data";
+import { backendFetch, backendURL } from "@/lib/backend";
 
 type RunResponse = {
   sha: string;
@@ -48,7 +48,7 @@ type DeploymentResponse = {
 // honest empty state. Called server-side from the monitor page.
 export async function getDeployments(): Promise<Deployment[]> {
   try {
-    const resp = await fetch(`${backendURL()}/api/deployments`, { cache: "no-store" });
+    const resp = await backendFetch(`${backendURL()}/api/deployments`, { cache: "no-store" });
     if (!resp.ok) return [];
     const data = (await resp.json()) as DeploymentResponse[];
     return data.map((d) => ({

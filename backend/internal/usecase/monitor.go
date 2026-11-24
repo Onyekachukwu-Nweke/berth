@@ -272,7 +272,7 @@ type MonitorService struct {
 	deployments DeploymentStore
 	releases    ReleaseReader
 	deleter     DeploymentDeleter
-	tokens      TokenStore
+	tokens      RepoTokens
 	runs        WorkflowRunLister
 	servers     ServerStore
 	vault       SecretVault
@@ -295,7 +295,7 @@ type MonitorService struct {
 // Together they undo everything the deploy created on GitHub. The deleter then
 // forgets mountabo's tracking. locker is the shared deploy lock, read to surface
 // lock state and cleared by the recovery action.
-func NewMonitorService(deployments DeploymentStore, releases ReleaseReader, deleter DeploymentDeleter, tokens TokenStore, runs WorkflowRunLister, servers ServerStore, vault SecretVault, purger AppPurger, repoFiles RepoFileDeleter, repoEnvs RepoEnvironmentDeleter, repoKeys RepoKeyDeleter, ports DeploymentPortSetter, locker *DeployLocker, log *slog.Logger) *MonitorService {
+func NewMonitorService(deployments DeploymentStore, releases ReleaseReader, deleter DeploymentDeleter, tokens RepoTokens, runs WorkflowRunLister, servers ServerStore, vault SecretVault, purger AppPurger, repoFiles RepoFileDeleter, repoEnvs RepoEnvironmentDeleter, repoKeys RepoKeyDeleter, ports DeploymentPortSetter, locker *DeployLocker, log *slog.Logger) *MonitorService {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -484,7 +484,7 @@ func (s *MonitorService) removeEnvironment(ctx context.Context, dep Deployment) 
 	if dep.Environment == "" {
 		return
 	}
-	token, err := s.tokens.Load()
+	token, err := s.tokens.TokenFor(ctx, dep.Owner)
 	if err != nil {
 		s.log.Warn("teardown: skip environment removal, github token unavailable", "app", dep.App, "err", err)
 		return
@@ -499,7 +499,7 @@ func (s *MonitorService) removeEnvironment(ctx context.Context, dep Deployment) 
 // stored secret does not outlive the GitHub side. Skipped (with a log) when no
 // token is stored. Vault clearing is best-effort: a missing entry is fine.
 func (s *MonitorService) removeDeployKey(ctx context.Context, dep Deployment) {
-	token, err := s.tokens.Load()
+	token, err := s.tokens.TokenFor(ctx, dep.Owner)
 	if err != nil {
 		s.log.Warn("teardown: skip deploy key removal, github token unavailable", "app", dep.App, "err", err)
 		return
@@ -517,7 +517,7 @@ func (s *MonitorService) removeDeployKey(ctx context.Context, dep Deployment) {
 // skipped (with a log) when no GitHub token is stored; each file is deleted
 // independently so one missing file does not stop the other.
 func (s *MonitorService) removeWorkflowFiles(ctx context.Context, dep Deployment) {
-	token, err := s.tokens.Load()
+	token, err := s.tokens.TokenFor(ctx, dep.Owner)
 	if err != nil {
 		s.log.Warn("teardown: skip workflow removal, github token unavailable", "app", dep.App, "err", err)
 		return
@@ -541,18 +541,22 @@ func (s *MonitorService) removeWorkflowFiles(ctx context.Context, dep Deployment
 // History lists every configured deployment with its recent runs. It returns
 // ErrNotConnected when no token is stored. A deployment whose runs can't be read
 // (repo deleted, permissions, no runs yet) still appears, just with no runs.
-func (s *MonitorService) History(ctx context.Context) ([]DeploymentStatus, error) {
-	deployments, err := s.deployments.List()
+//
+// keep filters the deployments to the ones the caller may see (by repo); it is
+// applied before any GitHub call, so hidden repos cost nothing.
+func (s *MonitorService) History(ctx context.Context, keep func(owner, repo string) bool) ([]DeploymentStatus, error) {
+	all, err := s.deployments.List()
 	if err != nil {
 		return nil, fmt.Errorf("list deployments: %w", err)
 	}
+	deployments := all[:0:0]
+	for _, d := range all {
+		if keep == nil || keep(d.Owner, d.Repo) {
+			deployments = append(deployments, d)
+		}
+	}
 	if len(deployments) == 0 {
 		return []DeploymentStatus{}, nil
-	}
-
-	token, err := s.tokens.Load()
-	if err != nil {
-		return nil, fmt.Errorf("load token: %w", err)
 	}
 
 	// Index the servers by id so each deployment can derive its live app URL
@@ -576,7 +580,12 @@ func (s *MonitorService) History(ctx context.Context) ([]DeploymentStatus, error
 		g.Go(func() error {
 			// Best-effort per deployment: a repo that's deleted, lacks
 			// permission, or has no runs yet still appears, just without runs.
-			runs, _ := s.runs.ListWorkflowRuns(gctx, token, d.Owner, d.Repo, d.WorkflowFile, d.Branch, monitorRunLimit)
+			// Each owner is its own App installation, so each deployment reads its
+			// runs with its owner's token.
+			var runs []WorkflowRun
+			if token, terr := s.tokens.TokenFor(gctx, d.Owner); terr == nil {
+				runs, _ = s.runs.ListWorkflowRuns(gctx, token, d.Owner, d.Repo, d.WorkflowFile, d.Branch, monitorRunLimit)
+			}
 			releases, total, _ := s.releases.Releases(d.Owner, d.Repo, d.Environment, monitorEventLimit)
 			status := buildStatus(d, serversByID[d.ServerID], runs, releases, total)
 			// Overlay the live deploy-lock state (keyed by app + environment) so the

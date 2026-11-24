@@ -24,12 +24,13 @@ type ServersHandler struct {
 	logs      *usecase.ServerLogsService
 	dashboard *usecase.ServerDashboardService
 	ukAdmin   *usecase.UptimeKumaAdminService
+	access    *usecase.AccessService
 	log       *slog.Logger
 }
 
 // NewServersHandler wires the handler to the server service, the port-check,
 // metrics, logs, dashboard-proxy, and uptime kuma admin services, and a logger.
-func NewServersHandler(svc *usecase.ServerService, ports *usecase.ServerPortService, metrics *usecase.ServerMetricsService, logs *usecase.ServerLogsService, dashboard *usecase.ServerDashboardService, ukAdmin *usecase.UptimeKumaAdminService, log *slog.Logger) *ServersHandler {
+func NewServersHandler(svc *usecase.ServerService, ports *usecase.ServerPortService, metrics *usecase.ServerMetricsService, logs *usecase.ServerLogsService, dashboard *usecase.ServerDashboardService, ukAdmin *usecase.UptimeKumaAdminService, access *usecase.AccessService, log *slog.Logger) *ServersHandler {
 	return &ServersHandler{
 		svc:       svc,
 		ports:     ports,
@@ -37,6 +38,7 @@ func NewServersHandler(svc *usecase.ServerService, ports *usecase.ServerPortServ
 		logs:      logs,
 		dashboard: dashboard,
 		ukAdmin:   ukAdmin,
+		access:    access,
 		log:       log,
 	}
 }
@@ -226,8 +228,12 @@ func (h *ServersHandler) Options(w nethttp.ResponseWriter, _ *nethttp.Request) {
 }
 
 // List returns all added servers (without secrets).
-func (h *ServersHandler) List(w nethttp.ResponseWriter, _ *nethttp.Request) {
+func (h *ServersHandler) List(w nethttp.ResponseWriter, r *nethttp.Request) {
 	servers, err := h.svc.List()
+	if err == nil {
+		u, _ := usecase.UserFrom(r.Context())
+		servers, err = h.access.VisibleServers(u, servers)
+	}
 	if err != nil {
 		h.log.Error("list servers failed", "err", err)
 		h.writeError(w, nethttp.StatusInternalServerError, "could not list servers")
@@ -361,7 +367,7 @@ func streamSSE(w nethttp.ResponseWriter, log *slog.Logger, successMsg string, ru
 	case errors.Is(err, usecase.ErrServerNotFound):
 		sw.event("error", "server not found")
 	case errors.Is(err, usecase.ErrNotConnected):
-		sw.event("error", "github not connected")
+		sw.event("error", "the mountabo GitHub App is not installed on this repository's account")
 	case errors.Is(err, usecase.ErrSetupInProgress):
 		sw.event("error", "another setup/apply is already running for this server")
 	case errors.Is(err, usecase.ErrDeployInProgress):

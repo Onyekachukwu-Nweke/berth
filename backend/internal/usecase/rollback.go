@@ -85,7 +85,7 @@ type RollbackService struct {
 	deployments DeploymentStore
 	servers     ServerStore
 	vault       SecretVault
-	tokens      TokenStore
+	tokens      RepoTokens
 	runs        WorkflowRunLister
 	state       ReleaseStateReader
 	scripts     DeployScriptRunner
@@ -94,7 +94,7 @@ type RollbackService struct {
 }
 
 // NewRollbackService wires the service to its ports.
-func NewRollbackService(deployments DeploymentStore, servers ServerStore, vault SecretVault, tokens TokenStore,
+func NewRollbackService(deployments DeploymentStore, servers ServerStore, vault SecretVault, tokens RepoTokens,
 	runs WorkflowRunLister, state ReleaseStateReader, scripts DeployScriptRunner, locker *DeployLocker, log *slog.Logger) *RollbackService {
 	return &RollbackService{
 		deployments: deployments, servers: servers, vault: vault, tokens: tokens,
@@ -201,7 +201,7 @@ func resolveArtifact(in RollbackInput, kind string, state ReleaseState) (string,
 
 // assertNoRunInFlight fails fast when GitHub reports a queued or running deploy.
 func (s *RollbackService) assertNoRunInFlight(ctx context.Context, dep Deployment) error {
-	token, err := s.tokens.Load()
+	token, err := s.tokens.TokenFor(ctx, dep.Owner)
 	if err != nil {
 		// Without a token this check simply cannot run. The server lock still
 		// serializes, so this is not a reason to refuse the rollback.

@@ -1,5 +1,5 @@
-import { backendURL } from "@/lib/servers";
 
+import { backendFetch, backendURL } from "@/lib/backend";
 export const dynamic = "force-dynamic";
 
 // Proxies the live bootstrap stream from the Go backend. The browser opens an
@@ -10,7 +10,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   // Forward the ?options=… selection through to the backend.
   const search = new URL(request.url).search;
 
-  const upstream = await fetch(`${backendURL()}/api/servers/${id}/setup${search}`, {
+  const upstream = await backendFetch(`${backendURL()}/api/servers/${id}/setup${search}`, {
     headers: { accept: "text/event-stream" },
   });
 

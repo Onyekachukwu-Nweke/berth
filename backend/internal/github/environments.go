@@ -52,15 +52,30 @@ func (c *Client) DeleteEnvironment(ctx context.Context, t usecase.Token, owner, 
 	return nil
 }
 
-// EnsureEnvironment creates the named deployment environment on owner/repo, or
-// leaves it as-is if it already exists (the API is upsert). No protection rules
-// are set, mountabo only needs the environment to scope its secrets.
-func (c *Client) EnsureEnvironment(ctx context.Context, t usecase.Token, owner, repo, name string) error {
+// EnsureEnvironment creates or updates the named deployment environment on
+// owner/repo. With reviewers (GitHub logins), every job that uses it waits
+// until one of them approves, and repo admins can't bypass that. Without, the
+// protection is cleared: mountabo owns the environment's rules.
+func (c *Client) EnsureEnvironment(ctx context.Context, t usecase.Token, owner, repo, name string, reviewers []string) error {
 	api, err := gogithub.NewClient(gogithub.WithAuthToken(t.AccessToken))
 	if err != nil {
 		return fmt.Errorf("build github client: %w", err)
 	}
-	if _, _, err := api.Repositories.CreateUpdateEnvironment(ctx, owner, repo, name, &gogithub.CreateUpdateEnvironment{}); err != nil {
+	env := &gogithub.CreateUpdateEnvironment{}
+	if len(reviewers) > 0 {
+		for _, login := range reviewers {
+			u, _, err := api.Users.Get(ctx, login)
+			if err != nil {
+				return fmt.Errorf("look up approver %q: %w", login, err)
+			}
+			env.Reviewers = append(env.Reviewers, &gogithub.EnvReviewers{Type: gogithub.Ptr("User"), ID: u.ID})
+		}
+		env.CanAdminsBypass = gogithub.Ptr(false)
+	}
+	if _, _, err := api.Repositories.CreateUpdateEnvironment(ctx, owner, repo, name, env); err != nil {
+		if len(reviewers) > 0 {
+			return fmt.Errorf("require approval on environment %q of %s/%s (private repos need GitHub Team or Enterprise for required reviewers, and every approver needs access to the repo): %w", name, owner, repo, err)
+		}
 		return fmt.Errorf("create environment %q on %s/%s: %w", name, owner, repo, err)
 	}
 	return nil

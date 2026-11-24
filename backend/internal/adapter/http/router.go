@@ -17,9 +17,10 @@ import (
 //	g.Repo(write)   can push to the repo on GitHub
 //	g.Server        the server targets or runs one of the person's repos
 //	g.Deploy        write access + client isolation + the environment's rule
+//	g.Change        write access; admin-only on environments that require approval
 //	g.Admin         admins (MOUNTABO_ADMINS)
 func NewRouter(g *Guard, au *AuthHandler, ad *AdminHandler, gh *GitHubHandler, sv *ServersHandler, dep *DeployHandler, mon *MonitorHandler, sec *SecretsHandler, rel *ReleaseHandler, term *TerminalHandler) *nethttp.ServeMux {
-	read, write := usecase.PermRead, usecase.PermWrite
+	read := usecase.PermRead
 	mux := nethttp.NewServeMux()
 
 	// Public.
@@ -68,24 +69,25 @@ func NewRouter(g *Guard, au *AuthHandler, ad *AdminHandler, gh *GitHubHandler, s
 	mux.HandleFunc("POST /api/servers/{id}/deploy", g.Deploy(dep.Deploy))
 
 	// Deployments: the list is filtered to the person's repos; reading one
-	// needs read access, changing one needs write access.
+	// needs read access, changing one needs write access (and an admin where the
+	// environment requires approval: these reach the server without a GitHub run).
 	mux.HandleFunc("GET /api/deployments", g.User(mon.Deployments))
 	mux.HandleFunc("GET /api/deployments/{owner}/{repo}/{environment}/health", g.Repo(read, mon.Health))
 	mux.HandleFunc("GET /api/deployments/{owner}/{repo}/{environment}/release", g.Repo(read, rel.State))
 	mux.HandleFunc("GET /api/deployments/{owner}/{repo}/{environment}/secrets", g.Repo(read, sec.List))
-	mux.HandleFunc("PUT /api/deployments/{owner}/{repo}/{environment}/secrets", g.Repo(write, sec.Set))
-	mux.HandleFunc("DELETE /api/deployments/{owner}/{repo}/{environment}/secrets/{name}", g.Repo(write, sec.Delete))
-	mux.HandleFunc("PUT /api/deployments/{owner}/{repo}/{environment}/port", g.Repo(write, mon.SetPort))
-	mux.HandleFunc("DELETE /api/deployments/{owner}/{repo}/{environment}/lock", g.Repo(write, mon.ClearLock))
+	mux.HandleFunc("PUT /api/deployments/{owner}/{repo}/{environment}/secrets", g.Change(sec.Set))
+	mux.HandleFunc("DELETE /api/deployments/{owner}/{repo}/{environment}/secrets/{name}", g.Change(sec.Delete))
+	mux.HandleFunc("PUT /api/deployments/{owner}/{repo}/{environment}/port", g.Change(mon.SetPort))
+	mux.HandleFunc("DELETE /api/deployments/{owner}/{repo}/{environment}/lock", g.Change(mon.ClearLock))
 	// Release operations. The mutation is a POST that returns an operation id; the
 	// log is a separate GET stream. Driving the mutation from the stream itself
 	// would let an EventSource reconnect — which browsers do automatically on any
 	// dropped connection — silently re-run the rollback.
-	mux.HandleFunc("POST /api/deployments/{owner}/{repo}/{environment}/rollback", g.Repo(write, rel.Rollback))
-	mux.HandleFunc("POST /api/deployments/{owner}/{repo}/{environment}/redeploy", g.Repo(write, rel.Redeploy))
-	mux.HandleFunc("POST /api/deployments/{owner}/{repo}/{environment}/approve", g.Repo(write, rel.Approve))
+	mux.HandleFunc("POST /api/deployments/{owner}/{repo}/{environment}/rollback", g.Change(rel.Rollback))
+	mux.HandleFunc("POST /api/deployments/{owner}/{repo}/{environment}/redeploy", g.Change(rel.Redeploy))
+	mux.HandleFunc("POST /api/deployments/{owner}/{repo}/{environment}/approve", g.Change(rel.Approve))
 	mux.HandleFunc("GET /api/operations/{id}/logs", g.User(rel.Logs))
-	mux.HandleFunc("DELETE /api/deployments/{owner}/{repo}/{environment}", g.Repo(write, mon.Delete))
+	mux.HandleFunc("DELETE /api/deployments/{owner}/{repo}/{environment}", g.Change(mon.Delete))
 
 	// Admin: placement policy, people, and where the App is installed.
 	mux.HandleFunc("GET /api/admin/policy", g.Admin(ad.Policy))

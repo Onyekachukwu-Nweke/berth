@@ -292,11 +292,13 @@ type AccessService struct {
 	servers     ServerStore
 	repos       RepoAccessReader
 	deployments DeploymentStore
+	admins      []string
 }
 
-// NewAccessService wires the access policy to its stores.
-func NewAccessService(policy PolicyStore, servers ServerStore, repos RepoAccessReader, deployments DeploymentStore) *AccessService {
-	return &AccessService{policy: policy, servers: servers, repos: repos, deployments: deployments}
+// NewAccessService wires the access policy to its stores. admins (GitHub
+// logins) are who approve deploys to environments that require approval.
+func NewAccessService(policy PolicyStore, servers ServerStore, repos RepoAccessReader, deployments DeploymentStore, admins []string) *AccessService {
+	return &AccessService{policy: policy, servers: servers, repos: repos, deployments: deployments, admins: admins}
 }
 
 // Permission is u's permission on owner/repo. Admins hold every permission.
@@ -361,6 +363,50 @@ func (a *AccessService) CheckDeploy(u User, owner, repo, environment, serverID s
 		return forbidden("%s/%s %q deploys to a different server", owner, repo, environment)
 	}
 	return nil
+}
+
+// requiresApproval reports whether owner/repo's environment is gated on an admin.
+func (a *AccessService) requiresApproval(owner, repo, environment string) (bool, error) {
+	policy, err := a.policy.Policy()
+	if err != nil {
+		return false, fmt.Errorf("read policy: %w", err)
+	}
+	t, ok := policy.TargetFor(owner, repo, environment)
+	return ok && t.RequireApproval, nil
+}
+
+// RequireChange decides whether u may change a live environment directly:
+// rollback, redeploy, secrets, port, teardown. Those reach the server without
+// a GitHub run, so on an environment that requires approval they would skip
+// it; there they are admin-only.
+func (a *AccessService) RequireChange(u User, owner, repo, environment string) error {
+	if err := a.RequireRepo(u, owner, repo, PermWrite); err != nil {
+		return err
+	}
+	if u.IsAdmin {
+		return nil
+	}
+	gated, err := a.requiresApproval(owner, repo, environment)
+	if err != nil {
+		return err
+	}
+	if gated {
+		return forbidden("%s/%s %q requires an admin's approval; ask an admin to make this change", owner, repo, environment)
+	}
+	return nil
+}
+
+// Approvers is who must approve deploy runs of owner/repo's environment: the
+// admins when it requires approval, nobody otherwise.
+func (a *AccessService) Approvers(owner, repo, environment string) ([]string, error) {
+	gated, err := a.requiresApproval(owner, repo, environment)
+	if err != nil || !gated {
+		return nil, err
+	}
+	if len(a.admins) == 0 {
+		return nil, fmt.Errorf("%s/%s %q requires approval but no admins are configured", owner, repo, environment)
+	}
+	return a.admins, nil
 }
 
 // TargetsView is what the deploy form needs for one repo: who owns it and where

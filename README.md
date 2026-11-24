@@ -86,6 +86,7 @@ Everyone signs in with GitHub. There are no Mountabo passwords and no user list 
 - **Where code runs is Mountabo's.** Admins (`MOUNTABO_ADMINS`) create **clients**, mark each server as shared (the agency's, e.g. a dev box) or owned by one client, link repos to clients (a whole client org with `*`, or single repos), and set each client's **environments** (e.g. Acme `development` → the shared dev box, Acme `production` → Acme's own server).
 - A developer picks an environment; the server follows from the rule. A client's server only ever runs that client's repos, for admins too.
 - Server management, the terminal and server logs are admin-only.
+- **Approval.** Mark an environment "needs approval" (e.g. every client's `production`) and its deploy runs wait on GitHub until an admin approves them, including runs started by a plain `git push`. Mountabo sets the admins as the GitHub environment's required reviewers (admins can't bypass it) on the next deploy from Mountabo. On those environments, developers also can't roll back, redeploy, change secrets or the port, or tear down from Mountabo, because those actions reach the server without a GitHub run. Required reviewers on private repos need GitHub Team or Enterprise on the account that owns the repo, and each admin needs access to the repo.
 
 Set this up under **access** in the header (admins only).
 

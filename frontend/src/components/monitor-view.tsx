@@ -2413,6 +2413,10 @@ function StepStatusLabel({ status, conclusion }: { status: GithubStatus; conclus
   } else if (status === "in_progress") {
     label = "running";
     cls = "text-lime";
+  } else if (status === "waiting") {
+    // GitHub holds the job until a required reviewer (an admin) approves it.
+    label = "needs approval";
+    cls = "text-amber-300";
   } else if (status === "queued") {
     label = "queued";
     cls = "text-faint";

@@ -4,7 +4,7 @@
 // operator through every step GitHub runs and polls it while a run is going.
 
 // GitHub's raw run/step lifecycle states.
-export type GithubStatus = "queued" | "in_progress" | "completed" | "";
+export type GithubStatus = "queued" | "waiting" | "in_progress" | "completed" | "";
 export type GithubConclusion = "success" | "failure" | "cancelled" | "skipped" | "timed_out" | "";
 
 export type RunStep = {

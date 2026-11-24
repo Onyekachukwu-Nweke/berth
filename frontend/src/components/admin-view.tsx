@@ -233,7 +233,7 @@ export function AdminView({ initial }: { initial: AdminData }) {
           </select>
           <label className="flex items-center gap-1.5 text-[13px] text-muted">
             <input type="checkbox" checked={newRule.requireApproval} onChange={(e) => setNewRule({ ...newRule, requireApproval: e.target.checked })} />
-            needs approval
+            <span title="Deploy runs wait on GitHub until an admin approves, and developers can't roll back, redeploy, or change secrets there. Applies from the next deploy.">needs approval</span>
           </label>
           <button className={primary} disabled={busy || !newRule.clientId || !newRule.environment || !newRule.serverId}>save</button>
         </form>

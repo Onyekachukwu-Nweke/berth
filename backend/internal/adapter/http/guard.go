@@ -112,6 +112,19 @@ func (g *Guard) Repo(want usecase.Permission, h nethttp.HandlerFunc) nethttp.Han
 	})
 }
 
+// Change guards direct changes to a live environment ({owner}/{repo}/{environment}):
+// write access, and admin-only where the environment requires approval.
+func (g *Guard) Change(h nethttp.HandlerFunc) nethttp.HandlerFunc {
+	return g.User(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		u, _ := usecase.UserFrom(r.Context())
+		if err := g.access.RequireChange(u, r.PathValue("owner"), r.PathValue("repo"), r.PathValue("environment")); err != nil {
+			g.deny(w, err)
+			return
+		}
+		h(w, r)
+	})
+}
+
 // Server requires that the route's server ({id}) is one the user has a reason
 // to see: a target of one of their repos, or running one.
 func (g *Guard) Server(h nethttp.HandlerFunc) nethttp.HandlerFunc {

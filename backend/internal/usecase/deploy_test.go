@@ -21,14 +21,19 @@ func (f *fakeRepoWriter) PutFile(_ context.Context, _ Token, _, _, branch, path,
 }
 
 type fakeEnvManager struct {
-	env string
-	err error
+	env       string
+	reviewers []string
+	err       error
 }
 
-func (f *fakeEnvManager) EnsureEnvironment(_ context.Context, _ Token, _, _, name string) error {
-	f.env = name
+func (f *fakeEnvManager) EnsureEnvironment(_ context.Context, _ Token, _, _, name string, reviewers []string) error {
+	f.env, f.reviewers = name, reviewers
 	return f.err
 }
+
+type fakeApprovals struct{ reviewers []string }
+
+func (f fakeApprovals) Approvers(_, _, _ string) ([]string, error) { return f.reviewers, nil }
 
 type fakeSecretSetter struct {
 	env     string
@@ -139,7 +144,7 @@ func readyDeployFixture(t *testing.T) (*memServerStore, *fakeVault, *fakeRepoWri
 	_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady})
 	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
 	repo, envs, secrets := &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}
-	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, repo, envs, secrets, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker())
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, repo, envs, secrets, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker(), fakeApprovals{})
 	return store, vault, repo, envs, secrets, svc
 }
 
@@ -247,7 +252,7 @@ func TestDeploy_RecordsReleaseCommitAndActor(t *testing.T) {
 	_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady})
 	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
 	history := &fakeDeploymentStore{}
-	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, history, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker())
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, history, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker(), fakeApprovals{})
 
 	if err := svc.Deploy(WithUser(context.Background(), User{Login: "octocat"}), deployInput(), new(strings.Builder)); err != nil {
 		t.Fatalf("Deploy: %v", err)
@@ -268,7 +273,7 @@ func TestDeploy_ReleaseMetadataFailureIsNonFatal(t *testing.T) {
 	// Both the commit resolve and the actor lookup fail; the deploy must still
 	// succeed and record a release, just with the fields left empty.
 	metaErr := errors.New("github unavailable")
-	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, history, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{err: metaErr}, &fakeWorkflowDispatcher{}, NewDeployLocker())
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, history, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{err: metaErr}, &fakeWorkflowDispatcher{}, NewDeployLocker(), fakeApprovals{})
 
 	if err := svc.Deploy(context.Background(), deployInput(), new(strings.Builder)); err != nil {
 		t.Fatalf("Deploy should not fail on release-metadata errors: %v", err)
@@ -286,7 +291,7 @@ func TestDeploy_LockRejectsConcurrentAndReleasesAfter(t *testing.T) {
 	_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady})
 	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
 	locker := NewDeployLocker()
-	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, locker)
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, locker, fakeApprovals{})
 	in := deployInput()
 
 	// A deploy to the same app is in flight (lock held): the second is rejected.
@@ -310,7 +315,7 @@ func TestDeploy_LockRejectsConcurrentAndReleasesAfter(t *testing.T) {
 func TestDeploy_RequiresReadyServer(t *testing.T) {
 	store, vault := newMemServerStore(), newFakeVault()
 	_ = store.Save(Server{ID: "s1", Status: StatusProbed})
-	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker())
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker(), fakeApprovals{})
 
 	if err := svc.Deploy(context.Background(), deployInput(), new(strings.Builder)); err == nil {
 		t.Fatal("expected an error deploying to a server that is not ready")
@@ -334,7 +339,7 @@ func TestDeploy_NotConnected(t *testing.T) {
 	store, vault := newMemServerStore(), newFakeVault()
 	_ = store.Save(Server{ID: "s1", Status: StatusReady})
 	_ = vault.SaveSecret(privateKeyKey("s1"), "KEY")
-	svc := NewDeployService(store, vault, fakeTokenStore{err: ErrNotConnected}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker())
+	svc := NewDeployService(store, vault, fakeTokenStore{err: ErrNotConnected}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker(), fakeApprovals{})
 
 	err := svc.Deploy(context.Background(), deployInput(), new(strings.Builder))
 	if err == nil {
@@ -387,7 +392,7 @@ func TestDeploy_RegistersAndInstallsDeployKey(t *testing.T) {
 	_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady, Fingerprint: "fp"})
 	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
 	mgr, inst := &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}
-	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, mgr, inst, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker())
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, mgr, inst, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker(), fakeApprovals{})
 
 	if err := svc.Deploy(context.Background(), deployInput(), new(strings.Builder)); err != nil {
 		t.Fatalf("Deploy: %v", err)
@@ -414,7 +419,7 @@ func TestDeploy_DockerStrategySkipsDeployKey(t *testing.T) {
 	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
 	mgr, inst := &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}
 	history := &fakeDeploymentStore{}
-	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, history, fakeKeyMaker{}, mgr, inst, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker())
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, history, fakeKeyMaker{}, mgr, inst, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker(), fakeApprovals{})
 
 	in := deployInput()
 	in.Strategy = "docker"
@@ -447,7 +452,7 @@ func TestDeploy_ReusesStoredDeployKey(t *testing.T) {
 	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
 	_ = vault.SaveSecret(deployKeyVaultKey("acme", "shop"), "EXISTING-DEPLOY-KEY")
 	mgr, inst := &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}
-	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, mgr, inst, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker())
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, mgr, inst, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker(), fakeApprovals{})
 
 	if err := svc.Deploy(context.Background(), deployInput(), new(strings.Builder)); err != nil {
 		t.Fatalf("Deploy: %v", err)
@@ -467,7 +472,7 @@ func reapplyService(dep Deployment) (*fakeRepoWriter, *fakeWorkflowDispatcher, *
 	repo := &fakeRepoWriter{}
 	disp := &fakeWorkflowDispatcher{}
 	store := &fakeDeploymentStore{saved: []Deployment{dep}}
-	svc := NewDeployService(newMemServerStore(), newFakeVault(), fakeTokenStore{token: Token{AccessToken: "tok"}}, repo, &fakeEnvManager{}, &fakeSecretSetter{}, store, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{}, disp, NewDeployLocker())
+	svc := NewDeployService(newMemServerStore(), newFakeVault(), fakeTokenStore{token: Token{AccessToken: "tok"}}, repo, &fakeEnvManager{}, &fakeSecretSetter{}, store, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{}, disp, NewDeployLocker(), fakeApprovals{})
 	return repo, disp, svc
 }
 
@@ -515,5 +520,37 @@ func TestReapplyWorkflow_RegeneratesBothAndDispatches(t *testing.T) {
 	want := "acme/shop:mountabo-deploy-production.yml@main"
 	if len(disp.dispatched) != 1 || disp.dispatched[0] != want {
 		t.Errorf("dispatch = %v, want [%s]", disp.dispatched, want)
+	}
+}
+
+type orderedEnvManager struct {
+	repo         *fakeRepoWriter
+	writesBefore int
+	reviewers    []string
+}
+
+func (o *orderedEnvManager) EnsureEnvironment(_ context.Context, _ Token, _, _, _ string, reviewers []string) error {
+	o.writesBefore, o.reviewers = len(o.repo.calls), reviewers
+	return nil
+}
+
+// An approval environment is protected before the workflow commit, because
+// that commit itself starts a run, and the run must already wait for an admin.
+func TestDeploy_ProtectsEnvironmentBeforeCommitting(t *testing.T) {
+	store, vault := newMemServerStore(), newFakeVault()
+	_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady})
+	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
+	repo := &fakeRepoWriter{}
+	envs := &orderedEnvManager{repo: repo}
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, repo, envs, &fakeSecretSetter{}, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker(), fakeApprovals{reviewers: []string{"boss"}})
+
+	if err := svc.Deploy(context.Background(), deployInput(), io.Discard); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if envs.writesBefore != 0 {
+		t.Fatalf("environment protected after %d file writes, want before any", envs.writesBefore)
+	}
+	if len(envs.reviewers) != 1 || envs.reviewers[0] != "boss" {
+		t.Fatalf("reviewers = %v, want [boss]", envs.reviewers)
 	}
 }

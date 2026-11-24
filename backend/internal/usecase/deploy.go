@@ -123,9 +123,17 @@ type RepoWriter interface {
 	PutFile(ctx context.Context, t Token, owner, repo, branch, path, content, message string) error
 }
 
-// EnvManager creates (or leaves in place) a deployment environment on a repo.
+// EnvManager creates or updates a deployment environment on a repo. Non-empty
+// reviewers (GitHub logins) make every run in it wait for one of them to
+// approve; empty clears that protection.
 type EnvManager interface {
-	EnsureEnvironment(ctx context.Context, t Token, owner, repo, name string) error
+	EnsureEnvironment(ctx context.Context, t Token, owner, repo, name string, reviewers []string) error
+}
+
+// ApprovalPolicy says who must approve deploy runs of a repo's environment;
+// nil means nobody, the run goes straight through.
+type ApprovalPolicy interface {
+	Approvers(owner, repo, environment string) ([]string, error)
 }
 
 // EnvSecretSetter stores Actions secrets on a repo's deployment environment,
@@ -179,6 +187,7 @@ type DeployService struct {
 	refs       RefResolver
 	dispatcher WorkflowDispatcher
 	locker     *DeployLocker
+	approvals  ApprovalPolicy
 }
 
 var _ DeployReapplier = (*DeployService)(nil)
@@ -188,8 +197,9 @@ var _ DeployReapplier = (*DeployService)(nil)
 // the request context); it is read best-effort and never block a deploy. dispatcher redeploys via
 // workflow_dispatch when a secret change is re-applied. locker serializes deploys
 // per target so two concurrent deploys never race on the same repo files.
-func NewDeployService(servers ServerStore, vault SecretVault, tokens RepoTokens, repo RepoWriter, envs EnvManager, secrets EnvSecretSetter, history DeploymentStore, keys KeyMaker, deployKeys RepoDeployKeyManager, installer DeployKeyInstaller, refs RefResolver, dispatcher WorkflowDispatcher, locker *DeployLocker) *DeployService {
-	return &DeployService{servers: servers, vault: vault, tokens: tokens, repo: repo, envs: envs, secrets: secrets, history: history, keys: keys, deployKeys: deployKeys, installer: installer, refs: refs, dispatcher: dispatcher, locker: locker}
+// approvals decides which environments make their runs wait for an admin.
+func NewDeployService(servers ServerStore, vault SecretVault, tokens RepoTokens, repo RepoWriter, envs EnvManager, secrets EnvSecretSetter, history DeploymentStore, keys KeyMaker, deployKeys RepoDeployKeyManager, installer DeployKeyInstaller, refs RefResolver, dispatcher WorkflowDispatcher, locker *DeployLocker, approvals ApprovalPolicy) *DeployService {
+	return &DeployService{servers: servers, vault: vault, tokens: tokens, repo: repo, envs: envs, secrets: secrets, history: history, keys: keys, deployKeys: deployKeys, installer: installer, refs: refs, dispatcher: dispatcher, locker: locker, approvals: approvals}
 }
 
 // Preview generates the deploy artifacts from the config alone, no server, no
@@ -281,6 +291,22 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 		cfg.DeployKeyFile = deployKeyFileName(in.Owner, in.Repo)
 	}
 
+	// Protect the environment before committing anything: the workflow commit
+	// itself triggers a run, and that run must already wait for approval. The
+	// gate lives on GitHub so it also holds for runs started by a plain push.
+	reviewers, err := s.approvals.Approvers(in.Owner, in.Repo, env)
+	if err != nil {
+		return fmt.Errorf("resolve approvers: %w", err)
+	}
+	if len(reviewers) > 0 {
+		progress(out, "creating environment %s (runs wait for approval from %s)", env, strings.Join(reviewers, ", "))
+	} else {
+		progress(out, "creating environment %s", env)
+	}
+	if err := s.envs.EnsureEnvironment(ctx, token, in.Owner, in.Repo, env, reviewers); err != nil {
+		return fmt.Errorf("create environment: %w", err)
+	}
+
 	scriptPath := workflow.ScriptPath(cfg)
 	progress(out, "writing %s", scriptPath)
 	if err := s.repo.PutFile(ctx, token, in.Owner, in.Repo, in.Branch, scriptPath, workflow.DeployScript(cfg), "mountabo: add deploy script"); err != nil {
@@ -320,11 +346,6 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 		if ierr := s.installer.InstallDeployKey(ctx, target, cfg.DeployKeyFile, deployKey, out); ierr != nil {
 			return fmt.Errorf("install deploy key: %w", ierr)
 		}
-	}
-
-	progress(out, "creating environment %s", env)
-	if err := s.envs.EnsureEnvironment(ctx, token, in.Owner, in.Repo, env); err != nil {
-		return fmt.Errorf("create environment: %w", err)
 	}
 
 	secrets := deploySecrets(server, key, in)

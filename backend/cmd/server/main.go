@@ -68,7 +68,7 @@ func run() error {
 	// Who may do what: sessions resolve to users; access combines their GitHub
 	// repo permissions with the placement policy (clients, servers, rules).
 	authSvc := usecase.NewAuthService(oauth, ghClient, accessStore, accessStore, accessStore, keyStore, cfg.GitHub.Admins, logger)
-	accessSvc := usecase.NewAccessService(accessStore, serverStore, accessStore, deploymentStore)
+	accessSvc := usecase.NewAccessService(accessStore, serverStore, accessStore, deploymentStore, cfg.GitHub.Admins)
 	guard := httpadapter.NewGuard(authSvc, accessSvc, logger)
 	authHandler := httpadapter.NewAuthHandler(authSvc, accessSvc, cfg.GitHub.ClientID, cfg.GitHub.AppSlug, logger)
 	adminHandler := httpadapter.NewAdminHandler(accessSvc, authSvc, app, logger)
@@ -117,7 +117,7 @@ func run() error {
 	// the public half on the repo. ghClient also dispatches workflow_dispatch so a
 	// secrets change can redeploy. Constructed before the secrets service, which
 	// re-applies deployments through it (as a DeployReapplier) on secret changes.
-	deploySvc := usecase.NewDeployService(serverStore, keyStore, app, ghClient, ghClient, ghClient, deploymentStore, sshClient, ghClient, sshClient, ghClient, ghClient, deployLocker)
+	deploySvc := usecase.NewDeployService(serverStore, keyStore, app, ghClient, ghClient, ghClient, deploymentStore, sshClient, ghClient, sshClient, ghClient, ghClient, deployLocker, accessSvc)
 	deployHandler := httpadapter.NewDeployHandler(deploySvc, logger)
 
 	// The secrets service manages an environment's GitHub Actions secrets: GitHub

@@ -52,7 +52,7 @@ func agencyFixture(t *testing.T) (*AccessService, *memServerStore, *fakeDeployme
 		1: {{Owner: "agency", Repo: "acme-site", Permission: PermWrite}, {Owner: "acme-org", Repo: "shop", Permission: PermRead}},
 	}
 	deps := &fakeDeploymentStore{}
-	return NewAccessService(policy, servers, access, deps), servers, deps
+	return NewAccessService(policy, servers, access, deps, []string{"boss"}), servers, deps
 }
 
 var dev = User{ID: 1, Login: "dev"}
@@ -195,5 +195,34 @@ func TestRepoFilter(t *testing.T) {
 	}
 	if !keep("Agency", "Acme-Site") || !keep("acme-org", "shop") || keep("agency", "globex-api") {
 		t.Error("filter should keep exactly the repos the dev can read")
+	}
+}
+
+// Direct changes skip GitHub's approval gate, so on an approval environment
+// only admins may make them; elsewhere write access is enough.
+func TestRequireChange_ApprovalEnvironmentsAreAdminOnly(t *testing.T) {
+	svc, _, _ := agencyFixture(t)
+	if err := svc.RequireChange(dev, "agency", "acme-site", "production"); !IsForbidden(err) {
+		t.Fatalf("developer changing production = %v, want forbidden", err)
+	}
+	if err := svc.RequireChange(dev, "agency", "acme-site", "development"); err != nil {
+		t.Fatalf("developer changing development = %v, want allowed", err)
+	}
+	if err := svc.RequireChange(dev, "acme-org", "shop", "development"); !IsForbidden(err) {
+		t.Fatalf("read-only developer = %v, want forbidden", err)
+	}
+	if err := svc.RequireChange(admin, "agency", "acme-site", "production"); err != nil {
+		t.Fatalf("admin changing production = %v, want allowed", err)
+	}
+}
+
+func TestApprovers(t *testing.T) {
+	svc, _, _ := agencyFixture(t)
+	got, err := svc.Approvers("agency", "acme-site", "production")
+	if err != nil || len(got) != 1 || got[0] != "boss" {
+		t.Fatalf("production approvers = %v, %v; want [boss]", got, err)
+	}
+	if got, _ := svc.Approvers("agency", "acme-site", "development"); got != nil {
+		t.Fatalf("development approvers = %v, want none", got)
 	}
 }

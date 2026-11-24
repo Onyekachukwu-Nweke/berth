@@ -422,7 +422,7 @@ export function ConfigureView({
                         <span className="truncate" title={label}>{label}</span>
                         {occupied && (
                           <span className="text-err" title={`${value} is already in use on ${server.name}`}>
-                            {"\u{1F6AB}"} in use on the server
+                            {"\u{1F6AB}"}{" "}in use on the server
                           </span>
                         )}
                       </span>
@@ -591,7 +591,7 @@ export function ConfigureView({
               onClick={() => setEnvVars((rows) => [...rows, { key: "", value: "" }])}
               className="flex items-center gap-1.5 text-[12px] text-cream transition-colors hover:text-cream"
             >
-              <Plus /> add variable
+              <Plus />{" "}add variable
             </button>
           </div>
         </Section>
@@ -601,7 +601,7 @@ export function ConfigureView({
             after the deploy stream finishes; nothing runs until then. */}
         <Section label="custom domain (optional)" hint="nginx + free https on this server">
           <p className="mb-3 text-[12px] leading-5 text-muted">
-            point your domain&apos;s A record at <span className="text-cream">{server.ip}</span> first.
+            point your domain&apos;s A record at <span className="text-cream">{server.ip}</span>{" "}first.
             after the deploy stream finishes, mountabo fronts your app on https with a Let&apos;s Encrypt
             certificate.
           </p>
@@ -649,7 +649,7 @@ export function ConfigureView({
           )}
           {domainSkipped && (
             <p className="mt-3 rounded-md border border-err/30 bg-err/[0.04] px-3 py-2 text-[12px] leading-5 text-err">
-              the deploy failed, so <span className="text-cream">{domainHost.trim()}</span> was not set up.
+              the deploy failed, so <span className="text-cream">{domainHost.trim()}</span>{" "}was not set up.
               fix the deploy and run it again — the domain is applied only after a successful deploy.
             </p>
           )}
@@ -687,7 +687,7 @@ export function ConfigureView({
           </button>
           <p className="mt-2 text-center text-[12px] text-muted first-letter:uppercase">
             commits these files and sets your {userSecrets.length} environment variables as encrypted secrets on{" "}
-            {source.owner}/{source.name}. push to {branch} afterwards to ship.
+            {source.owner}/{source.name}. push to {branch}{" "}afterwards to ship.
           </p>
           {previewError && <p className="mt-2 text-center text-[11px] text-err">{previewError}</p>}
         </div>
@@ -704,7 +704,7 @@ export function ConfigureView({
                 {source.owner}/{source.name}
               </span>{" "}
               on the <span className="text-cream">{branch}</span> branch and set your{" "}
-              {userSecrets.length} environment variables as encrypted Actions secrets. the server
+              {userSecrets.length}{" "}environment variables as encrypted Actions secrets. the server
               connection is set automatically. when the workflow runs it connects to{" "}
               <span className="text-cream">{server.name}</span> over SSH and runs the deploy script in{" "}
               <span className="text-cream">{deployDir}</span>. nothing runs until you confirm.

@@ -348,7 +348,7 @@ export function MonitorView({
             <span className="font-semibold text-cream">{visibleDeployments.length}</span>{" "}
             {visibleDeployments.length === 1 ? "environment" : "environments"}
             {" · "}
-            <span className="font-semibold text-ok">{liveCount}</span> live
+            <span className="font-semibold text-ok">{liveCount}</span>{" "}live
             {" · "}
             <span className={`font-semibold ${failingCount > 0 ? "text-err" : "text-muted"}`}>
               {failingCount}
@@ -520,10 +520,10 @@ export function MonitorView({
           subtitle={confirmDomain.server.ip}
           summary={
             <>
-              mountabo will configure <span className="text-cream">{confirmDomain.server.name}</span> to
-              front <span className="text-cream">{confirmDomain.value.host}</span> on https, proxying to
+              mountabo will configure <span className="text-cream">{confirmDomain.server.name}</span>{" "}to
+              front <span className="text-cream">{confirmDomain.value.host}</span>{" "}on https, proxying to
               your app on port <span className="text-cream">{confirmDomain.value.upstream}</span>. it
-              {confirmDomain.server.proxy === "traefik" ? "routes it through Traefik, which obtains" : "installs nginx if needed, writes the vhost below, and obtains"} a Let&apos;s Encrypt
+              {confirmDomain.server.proxy === "traefik" ? "routes it through Traefik, which obtains" : "installs nginx if needed, writes the vhost below, and obtains"}{" "}a Let&apos;s Encrypt
               certificate over http, so the domain must already point at{" "}
               <span className="text-cream">{confirmDomain.server.ip}</span>. nothing runs until you
               confirm.
@@ -594,7 +594,7 @@ export function MonitorView({
               removes its running container on{" "}
               <span className="text-cream">{serverById.get(confirmDelete.serverId)?.name ?? confirmDelete.serverId}</span>,
               deletes the deploy workflow from{" "}
-              <span className="text-cream">{confirmDelete.repo}</span> so a future push no longer deploys it,
+              <span className="text-cream">{confirmDelete.repo}</span>{" "}so a future push no longer deploys it,
               and forgets the deployment record and its history. this cannot be undone. type the app name to
               confirm.
             </>
@@ -1130,7 +1130,7 @@ function ExpandedCard({
                   <div>
                     <p className="text-[15px] font-medium text-cream">a deploy is in progress</p>
                     <p className="mt-1 max-w-xl text-[13px] leading-6 text-muted">
-                      {d.app} is locked{d.lockedSince ? ` (since ${d.lockedSince})` : ""} while a deploy runs.
+                      {d.app} is locked{d.lockedSince ? ` (since ${d.lockedSince})` : ""}{" "}while a deploy runs.
                       if a deploy wedged and left it stuck, clear the lock to allow a new deploy.
                     </p>
                   </div>
@@ -1158,7 +1158,7 @@ function ExpandedCard({
                   onClick={onDelete}
                   className="flex shrink-0 items-center gap-2 rounded-md border border-err/50 px-4 py-2 text-[13px] font-medium text-err transition-colors hover:bg-err/10"
                 >
-                  <Trash /> delete deployment
+                  <Trash />{" "}delete deployment
                 </button>
               </div>
             </div>
@@ -1454,7 +1454,7 @@ function SecretsPanel({
           summary={
             <>
               this deletes <span className="text-cream">{confirmRemove}</span> from the github{" "}
-              <span className="text-cream">{environment}</span> environment. deployments that read it will
+              <span className="text-cream">{environment}</span>{" "}environment. deployments that read it will
               lose it on their next run.
             </>
           }
@@ -1637,7 +1637,7 @@ function SecretDialog({
           </div>
           <p className="text-[12px] leading-6 text-muted">
             {mode === "edit" ? "overwrites" : "sets"} the value on the github{" "}
-            <span className="text-cream">{environment}</span> environment and triggers a redeploy. values
+            <span className="text-cream">{environment}</span>{" "}environment and triggers a redeploy. values
             are write-only and can&apos;t be read back.
           </p>
         </div>
@@ -1837,7 +1837,7 @@ function DashboardCard({
               disabled={!hostOk}
               className="rounded-md bg-cream px-4 py-2 text-[13px] font-medium text-bg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:bg-surface-2 disabled:text-muted"
             >
-              Put {tool.label} on this domain
+              Put {tool.label}{" "}on this domain
             </button>
           </div>
         </form>
@@ -1895,7 +1895,7 @@ function RunWalkthrough({
   if (!steps || (!steps.runUrl && steps.jobs.length === 0)) {
     return (
       <p className="mt-4 rounded-lg border border-dashed border-line px-5 py-8 text-center text-[13px] text-muted">
-        no workflow run found for {branch} yet. push to {branch} or trigger the deploy workflow and the
+        no workflow run found for {branch} yet. push to {branch}{" "}or trigger the deploy workflow and the
         steps show up here.
       </p>
     );
@@ -1996,13 +1996,13 @@ function JobPanel({ owner, repo, job }: { owner: string; repo: string; job: RunJ
         <div className="border-t border-line">
           <div className="flex items-center justify-between px-5 py-2.5">
             <span className="flex items-center gap-2 text-[12px] text-muted">
-              <Terminal className="text-faint" /> job log
+              <Terminal className="text-faint" />{" "}job log
             </span>
             <button
               onClick={() => setLog(null)}
               className="flex items-center gap-1.5 text-[12px] text-cream transition-colors hover:text-cream"
             >
-              <Refresh /> refresh
+              <Refresh />{" "}refresh
             </button>
           </div>
           <div className="max-h-80 overflow-y-auto overscroll-contain bg-black/40 px-5 py-4 font-mono text-[12px] leading-6">
@@ -2116,7 +2116,7 @@ function LogsViewer({ serverId, ready, active }: { serverId: string; ready: bool
     <div className="mt-4 overflow-hidden rounded-lg border border-line bg-black/40">
       <div className="flex items-center justify-between border-b border-line px-5 py-3">
         <span className="flex items-center gap-2 text-[12.5px] text-muted">
-          <Terminal className="text-faint" /> {pickedService === "" ? "running containers" : pickedService} · last 200 lines
+          <Terminal className="text-faint" /> {pickedService === "" ? "running containers" : pickedService}{" "}· last 200 lines
         </span>
         <button
           onClick={() => void refresh()}

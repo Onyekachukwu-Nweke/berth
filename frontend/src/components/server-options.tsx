@@ -106,7 +106,7 @@ export function ServerOptions({
                 </span>
                 {onCount > 0 && (
                   <span className="rounded bg-surface-hover px-2 py-0.5 text-[12px] font-medium text-cream">
-                    {onCount} on
+                    {onCount}{" "}on
                   </span>
                 )}
               </button>
@@ -175,7 +175,7 @@ export function ServerOptions({
           onClick={() => onApply([], {})}
           className="mt-2 w-full rounded-lg border border-line px-4 py-2 text-[12px] text-muted transition-colors hover:border-err/50 hover:text-err"
         >
-          revert all hardening ({server.options?.length} applied)
+          revert all hardening ({server.options?.length}{" "}applied)
         </button>
       )}
 

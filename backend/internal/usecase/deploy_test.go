@@ -517,3 +517,62 @@ func TestReapplyWorkflow_RegeneratesBothAndDispatches(t *testing.T) {
 		t.Errorf("dispatch = %v, want [%s]", disp.dispatched, want)
 	}
 }
+
+// orderLog records the deploy's side effects in the order they happen.
+type orderLog struct{ events []string }
+
+type orderedRepo struct{ log *orderLog }
+
+func (o orderedRepo) PutFile(_ context.Context, _ Token, _, _, _, path, _, _ string) error {
+	o.log.events = append(o.log.events, "commit "+path)
+	return nil
+}
+
+type orderedEnvs struct{ log *orderLog }
+
+func (o orderedEnvs) EnsureEnvironment(_ context.Context, _ Token, _, _, _ string) error {
+	o.log.events = append(o.log.events, "environment")
+	return nil
+}
+
+type orderedSecrets struct{ log *orderLog }
+
+func (o orderedSecrets) SetEnvSecrets(_ context.Context, _ Token, _, _, _ string, _ []NamedSecret) error {
+	o.log.events = append(o.log.events, "secrets")
+	return nil
+}
+
+// The workflow commit starts a run immediately and GitHub hands a job its
+// secrets when it starts, so the environment and its secrets must exist before
+// anything is committed, and the workflow must be the last commit.
+func TestDeploy_SecretsExistBeforeTheWorkflowIsCommitted(t *testing.T) {
+	store, vault := newMemServerStore(), newFakeVault()
+	_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady})
+	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
+	log := &orderLog{}
+	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, orderedRepo{log}, orderedEnvs{log}, orderedSecrets{log}, &fakeDeploymentStore{}, fakeKeyMaker{}, &fakeDeployKeyManager{}, &fakeDeployKeyInstaller{}, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker())
+
+	if err := svc.Deploy(context.Background(), deployInput(), io.Discard); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	pos := map[string]int{}
+	for i, e := range log.events {
+		if _, seen := pos[e]; !seen {
+			pos[e] = i
+		}
+	}
+	firstCommit := len(log.events)
+	for i, e := range log.events {
+		if strings.HasPrefix(e, "commit ") {
+			firstCommit = i
+			break
+		}
+	}
+	if pos["environment"] > firstCommit || pos["secrets"] > firstCommit {
+		t.Fatalf("environment/secrets must come before any commit, got %v", log.events)
+	}
+	last := log.events[len(log.events)-1]
+	if !strings.HasPrefix(last, "commit .github/workflows/") {
+		t.Fatalf("the workflow must be the last commit, got %v", log.events)
+	}
+}

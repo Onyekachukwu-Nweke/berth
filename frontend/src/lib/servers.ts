@@ -27,6 +27,8 @@ export type ServerView = {
   options: string[] | null;
   history?: ChangeEvent[] | null;
   domains?: Domain[] | null;
+  // The client that owns this server; absent means the agency's shared pool.
+  clientId?: string;
 };
 
 // A custom domain fronted by nginx + HTTPS on a server, proxying to a local app

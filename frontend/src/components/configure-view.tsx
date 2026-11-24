@@ -337,7 +337,17 @@ export function ConfigureView({
               <button
                 key={name}
                 type="button"
-                onClick={() => setEnvironment(name)}
+                onClick={() => {
+                  setEnvironment(name);
+                  // An environment brings its server with it: follow the rule
+                  // instead of leaving the deploy pointed somewhere it can't go.
+                  const t = targets?.targets.find((x) => x.environment === name);
+                  if (t && t.serverId !== server.id) {
+                    router.replace(
+                      `/configure?repo=${encodeURIComponent(`${source.owner}/${source.name}`)}&branch=${encodeURIComponent(branch)}&server=${encodeURIComponent(t.serverId)}&environment=${encodeURIComponent(name)}`,
+                    );
+                  }
+                }}
                 className={`rounded-md border px-2.5 py-1 text-[12px] transition-colors ${
                   environment === name
                     ? "border-line-strong bg-surface-hover text-cream"

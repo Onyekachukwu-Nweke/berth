@@ -41,7 +41,7 @@ import {
 import { isLogHeader, logHeaderName, splitLogTimestamp, formatLogTimestamp, fetchServerLogs } from "@/lib/server-logs";
 import { classifyJobLogLine, fetchJobLogs } from "@/lib/job-logs";
 import { type DomainPreview, fetchDomainPreview, formatDomainPreview } from "@/lib/domain-preview";
-import { type DashboardTool, installedDashboards, openDashboard } from "@/lib/dashboards";
+import { type DashboardTool, installedDashboards } from "@/lib/dashboards";
 import { type AppHealth, clearDeployLock, deleteDeployment, fetchAppHealth, setDeploymentPort } from "@/lib/app-health";
 import { getRepoBranches } from "@/lib/branches";
 import {
@@ -131,10 +131,13 @@ export function MonitorView({
   deployments,
   servers,
   stamp,
+  isAdmin = false,
 }: {
   deployments: Deployment[];
   servers: ServerView[];
   stamp: string;
+  // Admins also see each server's monitoring tools (their logins are admin-only).
+  isAdmin?: boolean;
 }) {
   const router = useRouter();
   // After a successful deploy the configure page sends the operator here with
@@ -456,6 +459,7 @@ export function MonitorView({
                     siblings={group.environments.filter(
                       (e) => e.environment !== openDeployment.environment,
                     )}
+                    isAdmin={isAdmin}
                     onAddDomain={(server, value) =>
                       setConfirmDomain({ server, mode: "add", value, deployment: openDeployment })
                     }
@@ -867,6 +871,7 @@ function ExpandedCard({
   metrics: m,
   health,
   siblings,
+  isAdmin,
   onAddDomain,
   onRemoveDomain,
   onDelete,
@@ -878,6 +883,7 @@ function ExpandedCard({
   health: AppHealth | null | undefined;
   // The repo's other environments, for the secrets-compare row.
   siblings: Deployment[];
+  isAdmin: boolean;
   onAddDomain: (server: ServerView, value: DomainFormValue) => void;
   onRemoveDomain: (server: ServerView, host: string) => void;
   onDelete: () => void;
@@ -886,7 +892,7 @@ function ExpandedCard({
   const latest = d.runs[0];
   const [owner, repo] = splitRepo(d.repo);
   const live = d.liveUrl ? d.liveUrl.replace(/^https?:\/\//, "") : "";
-  const dashboards = installedDashboards(server?.options);
+  const dashboards = isAdmin ? installedDashboards(server?.options) : [];
 
   // Custom domains are scoped to this environment by its published port: only
   // domains whose nginx upstream is this deployment's port are shown, so one
@@ -1098,7 +1104,7 @@ function ExpandedCard({
 
         {/* monitoring dashboards reached through the ssh tunnel */}
         {tab === "monitoring" && server && dashboards.length > 0 && (
-          <DashboardsPanel serverId={server.id} dashboards={dashboards} active />
+          <DashboardsPanel server={server} dashboards={dashboards} active onAddDomain={onAddDomain} />
         )}
 
         {/* settings: read-only metadata + the danger zone (lock recovery, delete) */}
@@ -1656,61 +1662,59 @@ function SecretDialog({
   );
 }
 
-// DashboardsPanel shows each installed monitoring tool's dashboard, reached
-// through an SSH local port-forward tunnel the backend opens on demand (the tool
-// binds to the server's loopback, so it is never exposed publicly). When the
-// section is open it asks the backend to open the tunnel, gets back a local
-// http://127.0.0.1:<port>/ URL, and loads it straight in an iframe: because the
-// tunnel carries raw TCP, the tool is served at root and its websockets connect
-// directly. It also offers an "open in a tab" link to that same local URL.
+// DashboardsPanel shows each installed monitoring tool. A tool is opened on
+// its own domain on the server (the reverse proxy forwards HTTPS and websockets
+// to its loopback port), so it works wherever Mountabo is hosted.
 function DashboardsPanel({
-  serverId,
+  server,
   dashboards,
   active,
+  onAddDomain,
 }: {
-  serverId: string;
+  server: ServerView;
   dashboards: DashboardTool[];
   active: boolean;
+  onAddDomain: (server: ServerView, value: DomainFormValue) => void;
 }) {
   return (
     <div className="space-y-5">
       {dashboards.map((tool) => (
-        <DashboardCard key={tool.id} serverId={serverId} tool={tool} active={active} />
+        <DashboardCard key={tool.id} server={server} tool={tool} active={active} onAddDomain={onAddDomain} />
       ))}
     </div>
   );
 }
 
-// DashboardCard opens (and reuses) one tool's tunnel when its section is active,
-// then loads the returned local URL in an iframe. It surfaces an honest opening
-// state and an error state rather than a silently broken frame.
+const hostRe = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+
+// DashboardCard links to the tool's domain when it has one, and otherwise
+// offers to create it (through the same confirm-and-stream flow as an app
+// domain). For Uptime Kuma it also shows the admin login Mountabo seeded.
 function DashboardCard({
-  serverId,
+  server,
   tool,
   active,
+  onAddDomain,
 }: {
-  serverId: string;
+  server: ServerView;
   tool: DashboardTool;
   active: boolean;
+  onAddDomain: (server: ServerView, value: DomainFormValue) => void;
 }) {
-  // url is the local tunnel address once open; errored is set when it could not
-  // be opened. "opening" is derived (active, no url, not errored), so the effect
-  // never sets state synchronously. nonce re-triggers the open on retry.
-  const [url, setUrl] = useState<string | null>(null);
-  const [errored, setErrored] = useState(false);
-  const [nonce, setNonce] = useState(0);
+  const serverId = server.id;
+  const domain = (server.domains ?? []).find((d) => d.upstream === String(tool.port));
+  const [host, setHost] = useState("");
+  const cleanHost = host.trim().toLowerCase();
+  const hostOk = hostRe.test(cleanHost);
+
   // Uptime Kuma has no public HTTP setup endpoint, so the operator can never
-  // guess the admin password. mountabo offers to generate one and seed it into
-  // UK's SQLite from inside the container; the result is shown above the
-  // iframe so the operator can copy it into the login form below. null = not
-  // loaded; { hasAdmin:false } = none stored; { hasAdmin:true, ... } = stored.
+  // guess the admin password. Mountabo offers to generate one and seed it into
+  // its SQLite from inside the container, and shows it here.
   const isKuma = tool.id === "uptime-kuma";
   const [admin, setAdmin] = useState<UptimeKumaAdmin | null>(null);
   const [resetting, setResetting] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
-  // Read the stored credentials the first time the section becomes active. The
-  // setState only runs once the fetch resolves, never synchronously here.
   useEffect(() => {
     if (!isKuma || !active || admin !== null) return;
     const ctrl = new AbortController();
@@ -1731,43 +1735,37 @@ function DashboardCard({
     setResetting(false);
   }
 
-  // Open the tunnel the first time the section becomes active. The backend
-  // reuses an existing tunnel for the same (server, tool) pair, so re-opening is
-  // cheap. setState only runs once the fetch resolves, never synchronously.
-  useEffect(() => {
-    if (!active || url !== null || errored) return;
-    const ctrl = new AbortController();
-    openDashboard(serverId, tool.id, ctrl.signal).then((res) => {
-      if (ctrl.signal.aborted) return;
-      if (res) setUrl(res.url);
-      else setErrored(true);
-    });
-    return () => ctrl.abort();
-  }, [active, serverId, tool.id, url, errored, nonce]);
-
-  function retry() {
-    setUrl(null);
-    setErrored(false);
-    setNonce((n) => n + 1);
-  }
-
   return (
     <div className="overflow-hidden rounded-lg border border-line bg-surface">
-      <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3.5">
-        <span className="flex items-center gap-2.5">
-          <span className="h-2 w-2 rounded-full bg-ok" />
-          <span className="text-[15px] font-medium text-cream">{tool.label}</span>
-        </span>
+      <div className="flex flex-col gap-3 border-b border-line px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <span className="flex items-center gap-2.5">
+            <span className="h-2 w-2 rounded-full bg-ok" />
+            <span className="text-[15px] font-medium text-cream">{tool.label}</span>
+            <span className="text-[12px] text-muted">on {server.name}</span>
+          </span>
+          <p className="mt-1 text-[12.5px] text-muted">{tool.note}</p>
+        </div>
+        {domain && (
+          <a
+            href={`https://${domain.host}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex shrink-0 items-center gap-2 rounded-md bg-cream px-3 py-2 text-[13px] font-medium text-bg transition-opacity hover:opacity-90"
+          >
+            Open {domain.host} <ExternalLink />
+          </a>
+        )}
       </div>
       {isKuma && (
         <div className="border-b border-line bg-surface/60 px-5 py-3.5">
           {admin === null ? (
-            <p className="text-[12.5px] text-muted">reading admin credentials…</p>
+            <p className="text-[12.5px] text-muted">Reading the admin login…</p>
           ) : admin.hasAdmin ? (
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0 text-[12.5px] leading-6 text-body">
                 <p className="text-muted">
-                  log in with these credentials. mountabo generated them and seeded them into uptime kuma.
+                  Log in with these. Mountabo generated them and seeded them into Uptime Kuma.
                 </p>
                 <p className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[13px]">
                   <span>
@@ -1793,67 +1791,56 @@ function DashboardCard({
                 disabled={resetting}
                 className="shrink-0 rounded-md border border-line px-3 py-1.5 text-[12px] text-muted transition-colors hover:border-line-strong hover:text-cream disabled:opacity-50"
               >
-                {resetting ? "regenerating…" : "regenerate"}
+                {resetting ? "Regenerating…" : "Regenerate"}
               </button>
             </div>
           ) : (
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-[12.5px] leading-6 text-body">
-                uptime kuma is asking for an admin to log in, but it has no public setup api. click set up
-                admin and mountabo will generate a password, seed it directly into the container, and show
-                it once.
+                Uptime Kuma has no admin yet, and no API to create one. Mountabo can generate a login, seed it
+                into the container, and show it here.
               </p>
               <button
                 onClick={() => void setUpAdmin()}
                 disabled={resetting}
                 className="shrink-0 rounded-md border border-line-strong bg-surface-hover px-4 py-2 text-[12.5px] font-medium text-cream transition-colors hover:bg-surface-hover disabled:opacity-50"
               >
-                {resetting ? "setting up…" : "set up admin"}
+                {resetting ? "Setting up…" : "Set up admin"}
               </button>
             </div>
           )}
         </div>
       )}
-      {url ? (
-        <div className="relative">
-          {/* The backend's reverse proxy strips X-Frame-Options and CSP from the
-              dashboard's responses, so the iframe loads even though it is a
-              different origin from the app. A "pop out" link is kept beside it
-              for full-screen use. */}
-          <iframe
-            src={url}
-            title={tool.label}
-            className="block h-[640px] w-full border-0 bg-black"
-            // Allow same-origin so the dashboard's cookies/auth keep working,
-            // and allow scripts + forms so its UI is interactive.
-            sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals"
-          />
-          <a
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="absolute right-3 top-3 flex items-center gap-1.5 rounded-md border border-line bg-surface/95 px-2.5 py-1.5 text-[12px] text-muted backdrop-blur transition-colors hover:border-line-strong hover:text-cream"
-          >
-            open in a tab <ExternalLink />
-          </a>
-        </div>
-      ) : errored ? (
-        <div className="flex h-[200px] flex-col items-center justify-center gap-3 bg-black/40 px-5 text-center">
-          <p className="text-[14px] leading-7 text-body">
-            could not open the {tool.label} tunnel over ssh. the server may be unreachable, or the tool may
-            not be running.
+      {!domain && (
+        <form
+          className="space-y-3 px-5 py-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (hostOk) onAddDomain(server, { host: cleanHost, aliases: [], upstream: String(tool.port), email: "", staging: false });
+          }}
+        >
+          <p className="text-[13px] leading-6 text-body">
+            {`${tool.label} only listens inside the server. `}Give it a domain and the server&apos;s proxy serves it over
+            HTTPS. First add a DNS <span className="text-cream">A record</span> for the domain pointing at{" "}
+            <span className="data text-cream">{server.ip}</span>.
           </p>
-          <button
-            onClick={retry}
-            className="flex items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-[13px] text-cream transition-colors hover:bg-surface-hover"
-          >
-            <Refresh /> try again
-          </button>
-        </div>
-      ) : (
-        <div className="flex h-[200px] items-center justify-center bg-black/40">
-          <p className="text-[13px] text-muted">opening the dashboard through the ssh tunnel…</p>
-        </div>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+              placeholder="status.example.com"
+              aria-label={`Domain for ${tool.label}`}
+              className="flex-1 rounded-md border border-line bg-surface-2 px-3 py-2 text-[13px] text-cream placeholder:text-faint focus:border-line-strong focus:outline-none"
+            />
+            <button
+              type="submit"
+              disabled={!hostOk}
+              className="rounded-md bg-cream px-4 py-2 text-[13px] font-medium text-bg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:bg-surface-2 disabled:text-muted"
+            >
+              Put {tool.label} on this domain
+            </button>
+          </div>
+        </form>
       )}
     </div>
   );

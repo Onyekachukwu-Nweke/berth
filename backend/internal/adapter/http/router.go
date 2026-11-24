@@ -54,7 +54,6 @@ func NewRouter(g *Guard, au *AuthHandler, ad *AdminHandler, gh *GitHubHandler, s
 	mux.HandleFunc("GET /api/servers/{id}/options", g.Admin(sv.ApplyOptions))
 	// A shared server's logs mix several clients' apps, so they stay admin-only.
 	mux.HandleFunc("GET /api/servers/{id}/logs", g.Admin(sv.Logs))
-	mux.HandleFunc("POST /api/servers/{id}/dashboard/{tool}/open", g.Admin(sv.OpenDashboard))
 	mux.HandleFunc("GET /api/servers/{id}/dashboard/uptime-kuma/admin", g.Admin(sv.UptimeKumaAdmin))
 	mux.HandleFunc("POST /api/servers/{id}/dashboard/uptime-kuma/admin/reset", g.Admin(sv.ResetUptimeKumaAdmin))
 	mux.HandleFunc("GET /api/servers/domains/preview", g.Admin(sv.DomainsPreview))

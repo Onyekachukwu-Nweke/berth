@@ -18,28 +18,26 @@ import (
 // ServersHandler serves the add-server, list, live-setup, port-check,
 // host-metrics, app-logs, and monitoring-dashboard endpoints.
 type ServersHandler struct {
-	svc       *usecase.ServerService
-	ports     *usecase.ServerPortService
-	metrics   *usecase.ServerMetricsService
-	logs      *usecase.ServerLogsService
-	dashboard *usecase.ServerDashboardService
-	ukAdmin   *usecase.UptimeKumaAdminService
-	access    *usecase.AccessService
-	log       *slog.Logger
+	svc     *usecase.ServerService
+	ports   *usecase.ServerPortService
+	metrics *usecase.ServerMetricsService
+	logs    *usecase.ServerLogsService
+	ukAdmin *usecase.UptimeKumaAdminService
+	access  *usecase.AccessService
+	log     *slog.Logger
 }
 
 // NewServersHandler wires the handler to the server service, the port-check,
 // metrics, logs, dashboard-proxy, and uptime kuma admin services, and a logger.
-func NewServersHandler(svc *usecase.ServerService, ports *usecase.ServerPortService, metrics *usecase.ServerMetricsService, logs *usecase.ServerLogsService, dashboard *usecase.ServerDashboardService, ukAdmin *usecase.UptimeKumaAdminService, access *usecase.AccessService, log *slog.Logger) *ServersHandler {
+func NewServersHandler(svc *usecase.ServerService, ports *usecase.ServerPortService, metrics *usecase.ServerMetricsService, logs *usecase.ServerLogsService, ukAdmin *usecase.UptimeKumaAdminService, access *usecase.AccessService, log *slog.Logger) *ServersHandler {
 	return &ServersHandler{
-		svc:       svc,
-		ports:     ports,
-		metrics:   metrics,
-		logs:      logs,
-		dashboard: dashboard,
-		ukAdmin:   ukAdmin,
-		access:    access,
-		log:       log,
+		svc:     svc,
+		ports:   ports,
+		metrics: metrics,
+		logs:    logs,
+		ukAdmin: ukAdmin,
+		access:  access,
+		log:     log,
 	}
 }
 
@@ -131,38 +129,6 @@ func (h *ServersHandler) Logs(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 	h.writeJSON(w, nethttp.StatusOK, map[string][]string{"lines": lines})
-}
-
-// OpenDashboard opens an SSH local port-forward tunnel to a server's loopback
-// monitoring dashboard (Uptime Kuma) and returns the local URL the operator's
-// browser loads directly: {"url":"http://127.0.0.1:<port>/"}. The tunnel binds
-// to this machine's loopback only and forwards raw TCP over the server's SSH
-// connection, so the dashboard's HTTP and websockets work and it is served at
-// the root of the local port. Only the known tools are allowed, and only when
-// that tool is in the server's applied options; everything else is 404. A failed
-// SSH tunnel is 502. It is read access only; the tunnel just forwards to the
-// existing tool.
-func (h *ServersHandler) OpenDashboard(w nethttp.ResponseWriter, r *nethttp.Request) {
-	id := r.PathValue("id")
-	tool := r.PathValue("tool")
-
-	url, err := h.dashboard.Open(r.Context(), id, tool)
-	switch {
-	case errors.Is(err, usecase.ErrServerNotFound):
-		h.writeError(w, nethttp.StatusNotFound, "server not found")
-		return
-	case errors.Is(err, usecase.ErrUnknownTool):
-		h.writeError(w, nethttp.StatusNotFound, "unknown monitoring tool")
-		return
-	case errors.Is(err, usecase.ErrToolNotInstalled):
-		h.writeError(w, nethttp.StatusNotFound, "that monitoring tool is not installed on this server")
-		return
-	case err != nil:
-		h.log.Error("open dashboard tunnel failed", "id", id, "tool", tool, "err", err)
-		h.writeError(w, nethttp.StatusBadGateway, "could not open the dashboard tunnel over ssh")
-		return
-	}
-	h.writeJSON(w, nethttp.StatusOK, map[string]string{"url": url})
 }
 
 // Ports reports the ports already listening on a server so the configure UI can

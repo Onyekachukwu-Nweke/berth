@@ -177,7 +177,7 @@ var SetupOptions = []SetupOption{
 	{ID: "fail2ban", Category: "SSH", Name: "fail2ban", Description: "Temporarily ban IPs after repeated failed SSH logins, to blunt brute-force. Can briefly lock you out if you mistype your own login several times."},
 	{ID: "crowdsec", Category: "SSH", Name: "CrowdSec", Description: "Modern fail2ban with community-shared blocklists that block IPs flagged across the network. Better signal, heavier; the shared list occasionally bans something unexpected."},
 
-	{ID: "uptime-kuma", Category: "Monitoring", Name: "Uptime Kuma", Description: "Self-hosted uptime monitor with notifications, on 127.0.0.1:3001. Runs on the box it monitors, so host critical alerts elsewhere too."},
+	{ID: "uptime-kuma", Category: "Monitoring", Name: "Uptime Kuma", Description: "Self-hosted uptime monitor with alerts and status pages, on 127.0.0.1:3001. Give it a domain from a deployment's Monitoring tab to open it. It runs on the box it monitors, so watch critical apps from somewhere else too."},
 
 	{ID: "auto-updates", Category: "System", Name: "Automatic security updates", Description: "Install unattended-upgrades so security patches apply on their own. Keeps the box patched; may occasionally trigger a reboot."},
 	{ID: "sysctl", Category: "System", Name: "sysctl hardening", Description: "Kernel knobs: SYN cookies, restricted dmesg, reverse-path filtering, no ICMP redirects. Free defense-in-depth."},

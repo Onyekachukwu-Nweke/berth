@@ -97,8 +97,10 @@ func TestDockerScript_OffloadShape(t *testing.T) {
 		`trap 'rm -f "$TARBALL"' EXIT`,
 		"curl -sS -k",           // health check probe
 		"http://127.0.0.1:3000", // primary port
-		"docker rmi -f",         // untag older images
-		`--filter=reference="mountabo/` + testID + `:*"`, // scoped to this deployment
+		// Retention is driven by the release pointers, not by "keep only the tag
+		// just loaded" — that untagged the previous release's image and left
+		// rollback with nothing to point at.
+		"mountabo_prune_releases",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("docker offload script missing %q:\n%s", want, s)
@@ -122,8 +124,7 @@ func TestComposeScript_OffloadShape(t *testing.T) {
 		"docker load",
 		"docker compose $COMPOSE_ARGS up -d --no-build",
 		"mountabo.image.override.yml",
-		"docker rmi -f",
-		`--filter=reference="mountabo/` + testID + `-*:*"`,
+		"mountabo_prune_releases",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("compose offload script missing %q:\n%s", want, s)
@@ -181,12 +182,12 @@ func TestWorkflow_DockerBuildsAndShips(t *testing.T) {
 	c.Strategy = Docker
 	w := Workflow(c)
 	for _, want := range []string{
-		"docker build -t mountabo/" + testID + ":${{ github.sha }}",
-		"docker save mountabo/" + testID + ":${{ github.sha }} | zstd",
+		"docker build -t mountabo/" + testID + ":" + ArtifactIDExpr,
+		"docker save mountabo/" + testID + ":" + ArtifactIDExpr + " | zstd",
 		"rsync -a --partial",
 		`srcs=".mountabo/deploy-` + testID + `.sh"`,
 		"for f in image.tar.zst; do",
-		"MOUNTABO_IMAGE: mountabo/" + testID + ":${{ github.sha }}",
+		"MOUNTABO_IMAGE: mountabo/" + testID + ":" + ArtifactIDExpr,
 		",MOUNTABO_IMAGE", // forwarded over SSH
 	} {
 		if !strings.Contains(w, want) {
@@ -209,7 +210,7 @@ func TestWorkflow_ComposeBuildsImagesAndShipsOverride(t *testing.T) {
 	for _, want := range []string{
 		`docker compose -f "$compose" config --no-interpolate --format json`,
 		"mountabo.image.override.yml",
-		`tag="mountabo/` + testID + `-$svc:${{ github.sha }}"`,
+		`tag="mountabo/` + testID + `-$svc:` + ArtifactIDExpr + `"`,
 		"docker save $tags | zstd",
 		"apps/web/image.tar.zst", // rsync source carries the app-root prefix
 		"apps/web/mountabo.image.override.yml",

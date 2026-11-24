@@ -1,3 +1,7 @@
+// Package repository holds mountabo's concrete persistence: Postgres-backed
+// stores for servers, deployments and their release log, and the encrypted vault
+// for the platform's own credentials. Each type satisfies a port declared in
+// usecase.
 package repository
 
 import (

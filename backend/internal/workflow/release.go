@@ -188,7 +188,7 @@ mountabo_state_write '.lifecycle = "deploying" | .candidate = $a | .incarnation 
 // Promotion is where the retention pointers move, and the rule that matters is
 // that active and previous must never converge — collapsing them would make the
 // release just replaced eligible for pruning and destroy the rollback target.
-func verifyAndPromoteBlock(c Config) string {
+func verifyAndPromoteBlock(_ Config) string {
 	return `
 # --- mountabo: verify what is actually serving, then commit the release -------
 mountabo_running_artifacts() {

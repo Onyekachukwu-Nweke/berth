@@ -205,11 +205,11 @@ func (s *RollbackService) assertNoRunInFlight(ctx context.Context, dep Deploymen
 	if err != nil {
 		// Without a token this check simply cannot run. The server lock still
 		// serializes, so this is not a reason to refuse the rollback.
-		return nil
+		return nil //nolint:nilerr // best-effort pre-check; the server lock is the real guard
 	}
 	runs, err := s.runs.ListWorkflowRuns(ctx, token, dep.Owner, dep.Repo, dep.WorkflowFile, dep.Branch, 1)
 	if err != nil || len(runs) == 0 {
-		return nil
+		return nil //nolint:nilerr // GitHub unreachable must not block recovery; the server lock still serializes
 	}
 	if st := strings.ToLower(runs[0].Status); st != "" && st != "completed" {
 		return fmt.Errorf("%w (status %s)", ErrRunInProgress, runs[0].Status)

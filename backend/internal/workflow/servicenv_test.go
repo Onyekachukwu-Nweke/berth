@@ -71,7 +71,10 @@ func runServiceEnv(t *testing.T, compose string, committed map[string]string) fu
 		}
 		got := map[string]string{}
 		_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() || !strings.HasSuffix(p, ".env") {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() || !strings.HasSuffix(p, ".env") {
 				return nil
 			}
 			b, rerr := os.ReadFile(p)

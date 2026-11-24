@@ -34,6 +34,12 @@ linters:
       - path: _test\.go
         linters:
           - unparam
+      # Tests write temp files and run the generated shell scripts they assert
+      # on; the file-mode and subprocess rules target production code.
+      - path: _test\.go
+        linters:
+          - gosec
+        text: "G122|G204|G301|G304|G306"
 
 formatters:
   enable:

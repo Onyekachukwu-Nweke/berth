@@ -196,9 +196,9 @@ func TestPurgePaths_TreatsAnAbsentTargetAsDone(t *testing.T) {
 
 func TestPurgePaths_RefusesRootAndEmpty(t *testing.T) {
 	journal := runPurgePaths(t,
-		func(dir string) {},
-		func(dir string) string { return "/" },
-		func(dir string) string { return "/" },
+		func(_ string) {},
+		func(_ string) string { return "/" },
+		func(_ string) string { return "/" },
 	)
 	if !strings.Contains(journal, "INCOMPLETE") {
 		t.Errorf("removing / must be refused outright:\n%s", journal)

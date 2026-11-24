@@ -1,10 +1,6 @@
 package repository
 
 import (
-	"database/sql"
-	"errors"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -12,11 +8,7 @@ import (
 )
 
 func TestDeploymentSQL_UpsertsStateAndTracksEvents(t *testing.T) {
-	db, err := OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("OpenSQLite: %v", err)
-	}
-	defer func() { _ = db.Close() }()
+	db := testDB(t)
 	store := NewDeploymentSQL(db)
 
 	if list, err := store.List(); err != nil || len(list) != 0 {
@@ -97,11 +89,7 @@ func TestDeploymentSQL_UpsertsStateAndTracksEvents(t *testing.T) {
 // (and even the same app name) are independent rows, keyed by environment: each
 // upserts and deletes on its own without touching the other.
 func TestDeploymentSQL_EnvironmentsCoexist(t *testing.T) {
-	db, err := OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("OpenSQLite: %v", err)
-	}
-	defer func() { _ = db.Close() }()
+	db := testDB(t)
 	store := NewDeploymentSQL(db)
 
 	prod := usecase.Deployment{
@@ -140,11 +128,7 @@ func TestDeploymentSQL_EnvironmentsCoexist(t *testing.T) {
 }
 
 func TestDeploymentSQL_RecordsReleasesAndLinksPrevious(t *testing.T) {
-	db, err := OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("OpenSQLite: %v", err)
-	}
-	defer func() { _ = db.Close() }()
+	db := testDB(t)
 	store := NewDeploymentSQL(db)
 
 	base := usecase.Deployment{
@@ -191,11 +175,7 @@ func TestDeploymentSQL_RecordsReleasesAndLinksPrevious(t *testing.T) {
 // round-trips through the deployments row, and that a record saved without it
 // reads back as legacy (Config nil).
 func TestDeploymentSQL_PersistsDeployConfig(t *testing.T) {
-	db, err := OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("OpenSQLite: %v", err)
-	}
-	defer func() { _ = db.Close() }()
+	db := testDB(t)
 	store := NewDeploymentSQL(db)
 
 	withCfg := usecase.Deployment{
@@ -239,87 +219,12 @@ func TestDeploymentSQL_PersistsDeployConfig(t *testing.T) {
 	}
 }
 
-// TestOpenSQLite_RefusesAnOlderDatabase pins the deliberate absence of
-// migrations. mountabo's database is entirely derived state — configured servers
-// and deployments, plus a deploy log — all recreated by reconnecting and
-// redeploying. Migration code for that could only ever run on a developer's own
-// machine, would be exercised by nothing real, and a rebuild that silently drops
-// a column is far worse than being told to start clean. So an older database is
-// refused, by version, with an actionable message.
-func TestOpenSQLite_RefusesAnOlderDatabase(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "old.db")
-
-	// A database from before versioning: tables present, user_version still 0.
-	old, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	if _, err := old.Exec(`CREATE TABLE deployments (owner TEXT, repo TEXT, branch TEXT, id TEXT, app TEXT,
-		environment TEXT, server_id TEXT, workflow_file TEXT, created_at TEXT, PRIMARY KEY (owner, repo, branch))`); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	_ = old.Close()
-
-	db, err := OpenSQLite(path)
-	if err == nil {
-		_ = db.Close()
-		t.Fatal("an older database was opened instead of refused")
-	}
-	var tooOld *ErrSchemaTooOld
-	if !errors.As(err, &tooOld) {
-		t.Fatalf("want ErrSchemaTooOld, got %T: %v", err, err)
-	}
-	// The message has to tell the operator exactly what to do, naming the file —
-	// a bare SQL error would leave them stuck.
-	if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "rm ") {
-		t.Errorf("error is not actionable:\n%s", err)
-	}
-}
-
-func TestOpenSQLite_CreatesAndReopensAFreshDatabase(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "fresh.db")
-
-	db, err := OpenSQLite(path)
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	var version int
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
-		t.Fatalf("read version: %v", err)
-	}
-	if version != schemaVersion {
-		t.Errorf("user_version = %d, want %d", version, schemaVersion)
-	}
-	if err := NewDeploymentSQL(db).Save(usecase.Deployment{
-		ID: "d1", App: "shop", Owner: "acme", Repo: "shop", Branch: "main",
-		Environment: "production", ServerID: "s1", WorkflowFile: "w.yml",
-	}); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	_ = db.Close()
-
-	// Reopening a current database must be a no-op, not a refusal.
-	again, err := OpenSQLite(path)
-	if err != nil {
-		t.Fatalf("reopen a current database: %v", err)
-	}
-	defer func() { _ = again.Close() }()
-	list, err := NewDeploymentSQL(again).List()
-	if err != nil || len(list) != 1 {
-		t.Fatalf("List after reopen: %v err=%v", list, err)
-	}
-}
-
 // TestDeploymentSQL_PersistsDeploymentIDOnceAndNeverMovesIt pins the "written
 // once" rule. The stored id names the containers, images, volumes and paths that
 // already exist on the server, so a later deploy that renames the app or moves
 // the branch must not be able to re-home them.
 func TestDeploymentSQL_PersistsDeploymentIDOnceAndNeverMovesIt(t *testing.T) {
-	db, err := OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("OpenSQLite: %v", err)
-	}
-	defer func() { _ = db.Close() }()
+	db := testDB(t)
 	store := NewDeploymentSQL(db)
 
 	d := usecase.Deployment{
@@ -357,11 +262,7 @@ func TestDeploymentSQL_PersistsDeploymentIDOnceAndNeverMovesIt(t *testing.T) {
 // "<app>-<branch>" for their compose project, containers and image namespace;
 // their identities must now differ at the point they are recorded.
 func TestDeploymentSQL_EnvironmentsGetDistinctIdentities(t *testing.T) {
-	db, err := OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("OpenSQLite: %v", err)
-	}
-	defer func() { _ = db.Close() }()
+	db := testDB(t)
 	store := NewDeploymentSQL(db)
 
 	// Same repo, same branch, two environments — the exact collision case.

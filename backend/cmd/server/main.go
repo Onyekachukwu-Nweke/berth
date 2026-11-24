@@ -10,7 +10,6 @@ import (
 	nethttp "net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
 	httpadapter "github.com/goodylili/mountabo/internal/adapter/http"
@@ -18,7 +17,6 @@ import (
 	"github.com/goodylili/mountabo/internal/ai"
 	"github.com/goodylili/mountabo/internal/config"
 	"github.com/goodylili/mountabo/internal/github"
-	"github.com/goodylili/mountabo/internal/keychain"
 	"github.com/goodylili/mountabo/internal/ssh"
 	"github.com/goodylili/mountabo/internal/usecase"
 )
@@ -32,17 +30,31 @@ func main() {
 
 func run() error {
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 	logger := slog.Default()
 
-	keyStore := keychain.NewStore()
+	// All state lives in Postgres: servers, deployments and their release log,
+	// and the vault that seals the platform's own credentials (server SSH keys,
+	// deploy keys, the GitHub token) under MOUNTABO_MASTER_KEY.
+	db, err := repository.OpenPostgres(context.Background(), cfg.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+	keyStore, err := repository.NewVaultSQL(db, cfg.MasterKey)
+	if err != nil {
+		return fmt.Errorf("open vault: %w", err)
+	}
 
 	// Compose the GitHub connection flow: OAuth exchange + account lookup + repo
-	// listing + port detection (all github) + token persistence (keychain),
+	// listing + port detection (all github) + token persistence (vault),
 	// driven by the connector. One github.Client serves account, repo, and
 	// container-config reads.
 	ghClient := github.NewClient()
 	// The OAuth adapter exchanges authorization codes for the access token; the
-	// keychain store persists it, and every later GitHub request reads it back:
+	// vault store persists it, and every later GitHub request reads it back:
 	// repos, deploy keys, secrets, and workflows.
 	oauth := github.NewOAuth(cfg.GitHub.ClientID, cfg.GitHub.ClientSecret)
 	connector := usecase.NewGitHubConnector(
@@ -53,13 +65,13 @@ func run() error {
 		keyStore,
 	)
 	// Repo tree listing (directory/file picker) reads on the user's behalf with
-	// the same keychain token.
+	// the same vault token.
 	treeSvc := usecase.NewTreeService(keyStore, ghClient)
 	// .env.example discovery: read the repo's example env file so the configure
 	// form can pre-fill the env var rows for the operator to fill in.
 	envExampleSvc := usecase.NewEnvExampleService(keyStore, ghClient)
 	// Run-step progress: read the latest deploy run's jobs + steps so the UI can
-	// show each GitHub Actions step's live status, with the same keychain token.
+	// show each GitHub Actions step's live status, with the same vault token.
 	runStepsSvc := usecase.NewRunStepsService(keyStore, ghClient)
 	// Branches lister: the new-environment picker on the deployment card reads
 	// this so the operator chooses from the repo's real branches instead of
@@ -68,10 +80,10 @@ func run() error {
 	githubHandler := httpadapter.NewGitHubHandler(connector, treeSvc, envExampleSvc, runStepsSvc, branchesSvc, logger)
 
 	// Compose the server flow: SSH probe + bootstrap + key generation (all ssh),
-	// JSON-file persistence, and keychain secrets. One ssh.Client serves probe,
+	// JSON-file persistence, and vault secrets. One ssh.Client serves probe,
 	// bootstrap, keygen, and port inspection.
 	sshClient := ssh.NewClient()
-	serverStore := repository.NewServerFile(filepath.Join(cfg.DataDir, "servers.json"))
+	serverStore := repository.NewServerSQL(db)
 	serverSvc := usecase.NewServerService(serverStore, sshClient, sshClient, sshClient, sshClient, sshClient, sshClient, keyStore)
 	serverPortSvc := usecase.NewServerPortService(serverStore, keyStore, sshClient)
 	serverMetricsSvc := usecase.NewServerMetricsService(serverStore, keyStore, sshClient)
@@ -83,7 +95,7 @@ func run() error {
 	serverDashboardSvc := usecase.NewServerDashboardService(serverStore, keyStore, sshClient)
 	// Uptime Kuma has no public HTTP setup endpoint, so mountabo generates a
 	// fresh admin credential pair, seeds it into UK's SQLite from inside the
-	// container, and persists it in the keychain so the dashboard panel can
+	// container, and persists it in the vault so the dashboard panel can
 	// surface it the next time the page loads.
 	uptimeKumaAdminSvc := usecase.NewUptimeKumaAdminService(serverStore, keyStore, sshClient)
 	defer func() { _ = serverDashboardSvc.Close() }()
@@ -91,16 +103,10 @@ func run() error {
 
 	// Compose the deploy flow: commit the workflow + deploy.sh and provision the
 	// environment/secrets (all github), reading the server record (JSON store)
-	// and mountabo's stored key (keychain). One github.Client and keychain.Store
+	// and mountabo's stored key (vault). One github.Client and vault.Store
 	// already in hand serve these too.
 	//
-	// Deployments persist in SQLite (not JSON) so each deploy is tracked in an
-	// append-only event log queryable over time, not just upserted away.
-	db, err := repository.OpenSQLite(filepath.Join(cfg.DataDir, "mountabo.db"))
-	if err != nil {
-		return fmt.Errorf("open database: %w", err)
-	}
-	defer func() { _ = db.Close() }()
+	// Each deploy is tracked in an append-only event log, not just upserted away.
 	deploymentStore := repository.NewDeploymentSQL(db)
 	// Shared in-process deploy lock: the deploy path acquires it to serialize
 	// deploys per target; the monitor reads it to surface lock state and clears it
@@ -123,11 +129,11 @@ func run() error {
 	secretsHandler := httpadapter.NewSecretsHandler(secretsSvc, logger)
 
 	// Compose the monitor: configured deployments (SQLite store) enriched with
-	// their GitHub Actions runs (github), read with the keychain token, and the
+	// their GitHub Actions runs (github), read with the vault token, and the
 	// server store so each deployment can surface its live app URL. Deleting a
 	// deployment is a real teardown: ssh stops and removes the app's container(s)
-	// on its server (keychain key), github removes the committed deploy workflow +
-	// deploy.sh from the repo (keychain token), and the SQLite store then forgets
+	// on its server (vault key), github removes the committed deploy workflow +
+	// deploy.sh from the repo (vault token), and the SQLite store then forgets
 	// its tracking. Teardown is best-effort and logged.
 	monitorSvc := usecase.NewMonitorService(deploymentStore, deploymentStore, deploymentStore, keyStore, ghClient, serverStore, keyStore, sshClient, ghClient, ghClient, ghClient, deploymentStore, deployLocker, logger)
 	// Rollback and redeploy run SSH-direct rather than through Actions: recovery
@@ -135,14 +141,14 @@ func run() error {
 	// is exactly when you least want another moving part.
 	rollbackSvc := usecase.NewRollbackService(deploymentStore, serverStore, keyStore, keyStore, ghClient, sshClient, sshClient, deployLocker, logger)
 	// App health: probe whether a deployed app is responding by curling it from
-	// its own server over SSH (the same ssh.Client + server store + keychain key
+	// its own server over SSH (the same ssh.Client + server store + vault key
 	// the metrics/logs services use), so the card shows real up/down status.
 	appHealthSvc := usecase.NewAppHealthService(deploymentStore, serverStore, keyStore, sshClient)
 	monitorHandler := httpadapter.NewMonitorHandler(monitorSvc, appHealthSvc, logger)
 	releaseHandler := httpadapter.NewReleaseHandler(rollbackSvc, logger)
 
 	// Compose the terminal page: run a single operator command on a set-up server
-	// over SSH (the same ssh.Client + server store + keychain key the read-only
+	// over SSH (the same ssh.Client + server store + vault key the read-only
 	// metrics/logs services use), and an AI command helper backed by Anthropic.
 	// The AI client reads ANTHROPIC_API_KEY from config; an empty key makes the
 	// helper return a structured "not configured" result instead of failing. The

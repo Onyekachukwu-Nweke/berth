@@ -321,7 +321,7 @@ func (h *GitHubHandler) JobLogs(w nethttp.ResponseWriter, r *nethttp.Request) {
 	h.writeJSON(w, nethttp.StatusOK, map[string][]string{"lines": out})
 }
 
-// Disconnect removes the stored token from the keychain.
+// Disconnect removes the stored token from the vault.
 func (h *GitHubHandler) Disconnect(w nethttp.ResponseWriter, _ *nethttp.Request) {
 	if err := h.connector.Disconnect(); err != nil {
 		h.log.Error("github disconnect failed", "err", err)

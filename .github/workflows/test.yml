@@ -18,7 +18,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ["1.25", "stable"]
+        go: ["1.26", "stable"]
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: mountabo
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      MOUNTABO_TEST_DATABASE_URL: postgres://postgres:test@localhost:5432/mountabo?sslmode=disable
     steps:
       - uses: actions/checkout@v6
 

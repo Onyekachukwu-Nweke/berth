@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { publicOrigin } from "@/lib/public-url";
 import { GH_COOKIE } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -7,7 +8,7 @@ export const dynamic = "force-dynamic";
 // the token from the OS keychain, so "disconnect" actually revokes mountabo's
 // stored access rather than just hiding it in the UI.
 export async function GET(request: Request) {
-  const origin = new URL(request.url).origin;
+  const origin = publicOrigin(request);
   const backend = process.env.MOUNTABO_BACKEND ?? "http://localhost:7778";
 
   try {

@@ -4,9 +4,12 @@
 package config
 
 import (
+	"encoding/base64"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -14,15 +17,30 @@ import (
 
 // Config is mountabo's resolved runtime configuration.
 type Config struct {
-	// HTTPAddr is the local address the API listens on. It binds to loopback by
-	// default: mountabo is a local-first tool and must not be reachable off-box.
+	// HTTPAddr is the address the API listens on. It defaults to loopback; a
+	// hosted install sets it (e.g. ":7778") and puts the API behind its proxy.
 	HTTPAddr        string
 	ShutdownTimeout time.Duration
 	GitHub          GitHubConfig
 	AI              AIConfig
-	// DataDir is where mountabo keeps local state (e.g. servers.json). Defaults
-	// to ~/.mountabo.
-	DataDir string
+	// DatabaseURL is the Postgres connection string (DATABASE_URL).
+	DatabaseURL string
+	// MasterKey seals the platform's own credentials (server SSH keys, deploy
+	// keys) in the database. 32 bytes, from base64 MOUNTABO_MASTER_KEY. Losing
+	// it makes every sealed credential unreadable; rotate it deliberately.
+	MasterKey []byte
+}
+
+// Validate reports the first required setting that is missing or malformed, so
+// the server refuses to start rather than failing on its first request.
+func (c *Config) Validate() error {
+	if c.DatabaseURL == "" {
+		return errors.New("DATABASE_URL is required (e.g. postgres://mountabo:pass@localhost:5432/mountabo)")
+	}
+	if len(c.MasterKey) != 32 {
+		return errors.New("MOUNTABO_MASTER_KEY must be 32 random bytes, base64-encoded; generate one with: openssl rand -base64 32")
+	}
+	return nil
 }
 
 // AIConfig holds the Anthropic credentials for the AI command helper. APIKey is
@@ -40,7 +58,8 @@ type GitHubConfig struct {
 	ClientSecret string
 }
 
-// Load reads configuration from the environment, applying local-first defaults.
+// Load reads configuration from the environment, applying defaults. Call
+// Validate before using it.
 // It first loads the repository-root .env (shared with the frontend) if present.
 func Load() *Config {
 	loadDotenv()
@@ -55,18 +74,22 @@ func Load() *Config {
 			APIKey: os.Getenv("ANTHROPIC_API_KEY"),
 			Model:  os.Getenv("MOUNTABO_AI_MODEL"),
 		},
-		DataDir: env("MOUNTABO_DATA_DIR", defaultDataDir()),
+		DatabaseURL: os.Getenv("DATABASE_URL"),
+		MasterKey:   decodeKey(os.Getenv("MOUNTABO_MASTER_KEY")),
 	}
 }
 
-// defaultDataDir is ~/.mountabo, falling back to ./.mountabo if the home dir
-// can't be resolved.
-func defaultDataDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".mountabo"
+// decodeKey decodes a base64 master key, returning nil when it is unset or not
+// valid base64 (Validate then reports it).
+func decodeKey(v string) []byte {
+	if v == "" {
+		return nil
 	}
-	return filepath.Join(home, ".mountabo")
+	b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(v))
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // loadDotenv loads the repository-root .env if one exists, searching upward from

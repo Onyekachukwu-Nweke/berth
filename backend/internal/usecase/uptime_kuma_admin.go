@@ -11,7 +11,7 @@ import (
 
 // UptimeKumaAdmin is the operator-facing credential pair for an Uptime Kuma
 // instance mountabo manages. The password is shown to the operator exactly
-// once (regenerate to get a new one); both are persisted in the OS keychain
+// once (regenerate to get a new one); both are persisted in the vault
 // so a reload of the deployments page still has them.
 type UptimeKumaAdmin struct {
 	Username string `json:"username"`
@@ -22,7 +22,7 @@ type UptimeKumaAdmin struct {
 // running on one of the operator's servers: it generates a credential pair,
 // writes it straight into Uptime Kuma's SQLite database from inside the
 // container (bcrypt hashed via UK's own bundled bcryptjs), and stores the
-// pair in the keychain so the dashboard panel can show it. UK has no public
+// pair in the vault so the dashboard panel can show it. UK has no public
 // HTTP setup endpoint, hence the in-container seeding.
 type UptimeKumaAdminService struct {
 	servers ServerStore
@@ -53,7 +53,7 @@ func (s *UptimeKumaAdminService) Get(id string) (UptimeKumaAdmin, bool, error) {
 
 // Reset generates fresh credentials, seeds them into Uptime Kuma's SQLite from
 // inside the container (the only reliable path: UK has no setup HTTP route),
-// and persists them in the keychain. Returns the new credentials so the UI can
+// and persists them in the vault. Returns the new credentials so the UI can
 // show them once. The server must be set up and Uptime Kuma must be running.
 func (s *UptimeKumaAdminService) Reset(ctx context.Context, id string) (UptimeKumaAdmin, error) {
 	server, err := s.servers.Get(id)
@@ -118,10 +118,10 @@ docker restart uptime-kuma >/dev/null
 		return UptimeKumaAdmin{}, fmt.Errorf("seed uptime kuma admin: %w", err)
 	}
 
-	// G117 flags this for marshaling a Password field, but the keychain is
+	// G117 flags this for marshaling a Password field, but the vault is
 	// exactly where this secret belongs and the encoded blob is written
 	// straight into SaveSecret on the next line.
-	enc, err := json.Marshal(admin) //nolint:gosec // stored in the OS keychain by design
+	enc, err := json.Marshal(admin) //nolint:gosec // stored in the vault by design
 	if err != nil {
 		return UptimeKumaAdmin{}, fmt.Errorf("encode admin: %w", err)
 	}
@@ -131,7 +131,7 @@ docker restart uptime-kuma >/dev/null
 	return admin, nil
 }
 
-// uptimeKumaAdminKey is the keychain entry holding the JSON-encoded admin
+// uptimeKumaAdminKey is the vault entry holding the JSON-encoded admin
 // credentials for a server's Uptime Kuma instance.
 func uptimeKumaAdminKey(serverID string) string {
 	return "mountabo/uptime-kuma/admin/" + serverID

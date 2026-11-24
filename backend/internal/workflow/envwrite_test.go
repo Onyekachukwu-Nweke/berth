@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,7 +35,8 @@ func runEnvWrite(t *testing.T, c Config, includePorts bool, keys string, exports
 	cmd.Env = append(os.Environ(), exports...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
 			code = ee.ExitCode()
 		} else {
 			t.Fatalf("run: %v\n%s", err, out)

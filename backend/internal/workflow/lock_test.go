@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -60,11 +61,7 @@ func runPreamble(t *testing.T, c Config, state string, env ...string) (string, i
 }
 
 func asExitError(err error, target **exec.ExitError) bool {
-	if ee, ok := err.(*exec.ExitError); ok {
-		*target = ee
-		return true
-	}
-	return false
+	return errors.As(err, target)
 }
 
 func writeState(t *testing.T, state, id, doc string) {

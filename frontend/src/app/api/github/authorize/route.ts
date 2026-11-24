@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { publicOrigin } from "@/lib/public-url";
 import { buildAuthorizeUrl } from "@/lib/github";
 import { GH_STATE_COOKIE } from "@/lib/session";
 
@@ -10,7 +11,7 @@ export const dynamic = "force-dynamic";
 // to do, so we send the user back with a config error rather than faking a
 // connection.
 export async function GET(request: Request) {
-  const origin = new URL(request.url).origin;
+  const origin = publicOrigin(request);
   const clientId = process.env.GITHUB_CLIENT_ID;
   if (!clientId) {
     return NextResponse.redirect(`${origin}/connect?error=config`);

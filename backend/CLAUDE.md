@@ -43,7 +43,8 @@ below are how it lands in each layer.
 - `internal/usecase` — application logic. Owns the **ports** (interfaces) it needs.
   Constructors take those interfaces, return `*Service` structs. No HTTP, SQL, SSH, or
   GitHub types leak in here.
-- `internal/adapter/repository` — concrete persistence (in-memory now, SQLite later).
+- `internal/adapter/repository` — concrete persistence in Postgres. Schema changes go in a
+  new `migrations/NNNN_*.sql` file; never edit one that has shipped.
   Exports structs (`*UserMemory`), satisfies usecase ports.
 - `internal/adapter/http` — handlers, router, server. Construct from usecase structs;
   return `*Handler`, `*Server`.
@@ -54,4 +55,5 @@ together. Dependency direction always points inward, toward `usecase`.
 
 ## Build / test
 
-`make build`, `make test`, `make fmt`, `make lint` (run from `backend/`).
+`make build`, `make test`, `make fmt`, `make lint` (run from `backend/`). Store tests need
+`MOUNTABO_TEST_DATABASE_URL` pointing at a Postgres (they skip without it).

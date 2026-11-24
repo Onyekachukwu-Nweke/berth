@@ -64,7 +64,7 @@ func (h *ServersHandler) UptimeKumaAdmin(w nethttp.ResponseWriter, r *nethttp.Re
 }
 
 // ResetUptimeKumaAdmin generates a fresh admin user, seeds it into Uptime Kuma's
-// SQLite from inside the container, persists it in the keychain, and returns
+// SQLite from inside the container, persists it in the vault, and returns
 // the credentials so the panel can reveal them.
 func (h *ServersHandler) ResetUptimeKumaAdmin(w nethttp.ResponseWriter, r *nethttp.Request) {
 	id := r.PathValue("id")
@@ -191,7 +191,7 @@ type addServerRequest struct {
 }
 
 // Add probes a server over SSH with the root password and records it. The root
-// password is consumed here and stored only in the keychain, never echoed back.
+// password is consumed here and stored only in the vault, never echoed back.
 func (h *ServersHandler) Add(w nethttp.ResponseWriter, r *nethttp.Request) {
 	var req addServerRequest
 	if err := decodeJSON(w, r, &req); err != nil {
@@ -388,7 +388,7 @@ func streamSSE(w nethttp.ResponseWriter, log *slog.Logger, successMsg string, ru
 	}
 }
 
-// Delete removes a server and destroys its keychain secrets.
+// Delete removes a server and destroys its vault secrets.
 func (h *ServersHandler) Delete(w nethttp.ResponseWriter, r *nethttp.Request) {
 	id := r.PathValue("id")
 	if err := h.svc.Remove(id); err != nil {

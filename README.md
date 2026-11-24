@@ -12,8 +12,8 @@ Mountabo deploys any repository with a `Dockerfile` or a Docker Compose setup, w
 
 ## What You Need
 
-- Go
-- Node.js and npm
+- Docker (for Postgres locally, and for the hosted stack)
+- Go and Node.js with npm, for local development
 - a Linux VPS you can SSH into as `root`
 - a repo with either a `Dockerfile` or a Docker Compose setup
 
@@ -44,13 +44,20 @@ GITHUB_CLIENT_SECRET=...
 MOUNTABO_BACKEND=http://localhost:7778
 MOUNTABO_HTTP_ADDR=127.0.0.1:7778
 
+# Postgres holds all state. `make mountabo` starts a local one for you.
+DATABASE_URL=postgres://mountabo:mountabo@localhost:5432/mountabo?sslmode=disable
+
+# Seals server SSH keys and deploy keys in the database. Back it up.
+# openssl rand -base64 32
+MOUNTABO_MASTER_KEY=...
+
 # Bring your own AI key for the terminal page's AI helper. Without it the
 # terminal still works, but the helper shows a hint to set the key. Grab one
 # at https://console.anthropic.com.
 ANTHROPIC_API_KEY=...
 ```
 
-Mountabo is local first and bring your own key: the AI helper calls Anthropic directly from your backend, so the key never leaves your machine and you pay for your own usage.
+The AI helper is bring your own key: it calls Anthropic directly from your backend, and you pay for your own usage.
 
 ### 3. Start Mountabo
 
@@ -58,7 +65,20 @@ Mountabo is local first and bring your own key: the AI helper calls Anthropic di
 make mountabo
 ```
 
-Then open [http://localhost:4321](http://localhost:4321).
+This starts a local Postgres (`make db`), the backend and the frontend. Then open [http://localhost:4321](http://localhost:4321).
+
+## Hosting Mountabo on a server
+
+The hosted stack is Postgres, the Go API (private, never published) and the web app:
+
+```bash
+cp .env.example .env   # set POSTGRES_PASSWORD, MOUNTABO_MASTER_KEY, MOUNTABO_PUBLIC_URL, GitHub creds
+docker compose up -d --build
+```
+
+Put a TLS reverse proxy in front of port `4321` and point `MOUNTABO_PUBLIC_URL` at it; the GitHub OAuth callback URL is `$MOUNTABO_PUBLIC_URL/api/github/callback`. Back up `MOUNTABO_MASTER_KEY` and the `pgdata` volume together: one is useless without the other.
+
+> Sign-in and team access control are not in place yet. Until they land, keep a hosted install off the public internet (VPN or IP allowlist).
 
 ## GitHub Setup
 
@@ -139,7 +159,6 @@ To enable the helper, set `ANTHROPIC_API_KEY` in your `.env` to a key from [the 
 
 ## Notes
 
-- Mountabo runs locally.
-- The backend listens on `127.0.0.1:7778`.
-- The frontend runs on `http://localhost:4321`.
+- Locally, the backend listens on `127.0.0.1:7778` and the frontend on `http://localhost:4321`.
+- All state lives in Postgres. Server SSH keys and deploy keys are sealed with `MOUNTABO_MASTER_KEY`; app secrets are never stored by Mountabo, they go straight to GitHub Actions secrets.
 - The current setup flow is aimed at fresh Ubuntu-style servers.

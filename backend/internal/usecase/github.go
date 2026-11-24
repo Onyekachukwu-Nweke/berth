@@ -1,6 +1,6 @@
 // Package usecase holds mountabo's application logic and the ports it depends
 // on. It owns the interfaces it consumes; adapters in internal/github and
-// internal/keychain satisfy them. No HTTP, OAuth, or GitHub library types leak
+// internal/vault satisfy them. No HTTP, OAuth, or GitHub library types leak
 // across this boundary, only the domain types defined here.
 package usecase
 
@@ -22,7 +22,7 @@ const repoCacheTTL = 60 * time.Second
 var ErrNotConnected = errors.New("github not connected")
 
 // Token is the credential mountabo holds for a connected GitHub account: the
-// non-expiring OAuth access token, persisted in the OS keychain.
+// non-expiring OAuth access token, persisted in the encrypted vault.
 type Token struct {
 	AccessToken string
 }
@@ -111,7 +111,7 @@ type PortDetector interface {
 	DetectPorts(ctx context.Context, t Token, ref RepoRef) ([]ServicePort, DeployStrategy, error)
 }
 
-// TokenStore persists the connection token in the OS keychain. Load returns
+// TokenStore persists the connection token in the encrypted vault. Load returns
 // ErrNotConnected when nothing is stored; Delete is idempotent.
 type TokenStore interface {
 	Save(t Token) error
@@ -142,7 +142,7 @@ func NewGitHubConnector(exchanger CodeExchanger, accounts AccountFetcher, repos 
 // Connect exchanges code for a token, verifies it by reading the account it
 // belongs to, then stores it. The token is only persisted after it is proven
 // usable, so a failed exchange or a bad token never leaves a dead credential in
-// the keychain. The token itself never crosses back to the caller.
+// the vault. The token itself never crosses back to the caller.
 func (c *GitHubConnector) Connect(ctx context.Context, code, redirectURI string) (Account, error) {
 	token, err := c.exchanger.Exchange(ctx, code, redirectURI)
 	if err != nil {
@@ -229,7 +229,7 @@ func (c *GitHubConnector) DetectPorts(ctx context.Context, ref RepoRef) ([]Servi
 	return ports, strategy, nil
 }
 
-// Disconnect removes the stored token from the keychain. It is idempotent: a
+// Disconnect removes the stored token from the vault. It is idempotent: a
 // connector with no stored token disconnects without error.
 func (c *GitHubConnector) Disconnect() error {
 	if err := c.tokens.Delete(); err != nil {

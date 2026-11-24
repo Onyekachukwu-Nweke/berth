@@ -597,7 +597,7 @@ func isManagedSecret(name string) bool {
 	return false
 }
 
-// deployKeyVaultKey is the keychain entry holding a repo's deploy private key.
+// deployKeyVaultKey is the vault entry holding a repo's deploy private key.
 func deployKeyVaultKey(owner, repo string) string {
 	return "deploykey-" + owner + "-" + repo
 }

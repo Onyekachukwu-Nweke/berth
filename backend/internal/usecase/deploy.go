@@ -56,6 +56,12 @@ type DeployConfig struct {
 	DeployDir     string       `json:"deployDir"`
 	DeployKeyFile string       `json:"deployKeyFile"`
 	Ports         []DeployPort `json:"ports"`
+	// ComposeFile is an explicit compose file path for stacks that do not use one
+	// of the conventional names (docker-compose.prod.yml being the common case).
+	// Empty falls back to those names. Persisted because ReapplyWorkflow
+	// regenerates the script from this record alone — GitHub cannot tell it which
+	// compose file a stack uses.
+	ComposeFile string `json:"composeFile,omitempty"`
 }
 
 // DeployInput is what the operator supplies to wire continuous deployment of a
@@ -72,6 +78,7 @@ type DeployInput struct {
 	Strategy    string
 	RootDir     string
 	DeployDir   string
+	ComposeFile string
 	Ports       []DeployPort
 	EnvVars     []DeployEnvVar
 }
@@ -353,6 +360,7 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 			DeployDir:     strings.TrimSpace(in.DeployDir),
 			DeployKeyFile: cfg.DeployKeyFile,
 			Ports:         in.Ports,
+			ComposeFile:   strings.TrimSpace(in.ComposeFile),
 		},
 		CreatedAt: time.Now().UTC(),
 		CommitSHA: commitSHA,
@@ -454,6 +462,7 @@ func (s *DeployService) ReapplyWorkflow(ctx context.Context, t Token, owner, rep
 		EnvVars:       envs,
 		DeployKeyFile: dep.Config.DeployKeyFile,
 		DeploymentID:  DeploymentIDFor(dep),
+		ComposeFile:   dep.Config.ComposeFile,
 	}
 
 	const msg = "mountabo: sync deploy config for secrets change [skip ci]"
@@ -512,6 +521,7 @@ func buildConfig(in DeployInput) workflow.Config {
 		DeploymentID: DeriveDeploymentID(strings.TrimSpace(in.Owner), strings.TrimSpace(in.Repo), env),
 		RootDir:      in.RootDir,
 		DeployDir:    strings.TrimSpace(in.DeployDir),
+		ComposeFile:  strings.TrimSpace(in.ComposeFile),
 		Strategy:     strategy,
 		Ports:        ports,
 		EnvVars:      envs,

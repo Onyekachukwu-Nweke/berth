@@ -81,15 +81,35 @@ mountabo_state_write() {
 // the release bundle. Defining the id inside the bundle step instead left it
 // unbound at the point of first use, which under "set -u" aborts the deploy.
 const artifactIdentityBlock = `
-# --- mountabo: this build's identity ------------------------------------------
+# --- mountabo: this operation's identity --------------------------------------
 # The artifact names one BUILD, not one commit: the same commit rebuilt with
 # different build arguments or a moved base image is a different image, so a
 # commit-keyed name would be overwritten in place and the artifact that had been
 # running would stop being recoverable.
-ARTIFACT_ID="${MOUNTABO_ARTIFACT_ID:?MOUNTABO_ARTIFACT_ID must be set by the workflow}"
-OPERATION_ID="${MOUNTABO_OPERATION_ID:-}"
+#
+# A rollback names an artifact that already exists rather than minting one. It is
+# the same script either way — one code path, so a rollback can never diverge
+# from the deploy it is undoing — with only its inputs switched.
 REL_ROOT="$MOUNTABO_STATE/releases/$DEPLOYMENT_ID"
-BUNDLE="$REL_ROOT/$ARTIFACT_ID"
+if [ "$MOUNTABO_MODE" = rollback ]; then
+  ARTIFACT_ID="${MOUNTABO_ARTIFACT:?MOUNTABO_ARTIFACT must name a retained release}"
+  BUNDLE="$REL_ROOT/$ARTIFACT_ID"
+  if [ ! -d "$BUNDLE" ]; then
+    echo "error: release $ARTIFACT_ID is no longer retained on this server" >&2
+    echo "       mountabo keeps the active release and the one before it; pick a newer release" >&2
+    exit 1
+  fi
+  echo "=== rolling back to $ARTIFACT_ID (no rebuild) ==="
+else
+  ARTIFACT_ID="${MOUNTABO_ARTIFACT_ID:?MOUNTABO_ARTIFACT_ID must be set by the workflow}"
+  BUNDLE="$REL_ROOT/$ARTIFACT_ID"
+fi
+OPERATION_ID="${MOUNTABO_OPERATION_ID:-}"
+`
+
+// rollbackKind records why the state moved, so release history can tell a
+// rollback from an ordinary deploy.
+const rollbackKindBlock = `MOUNTABO_KIND="${MOUNTABO_KIND:-deploy}"
 `
 
 // bundleBlock writes the release bundle and marks the artifact as the candidate,
@@ -116,6 +136,9 @@ fi
 	}
 	return fmt.Sprintf(`
 # --- mountabo: record this build before touching anything running -------------
+# Skipped on rollback: that artifact's bundle was written when it was built, and
+# rewriting it would overwrite the record of what it actually is.
+if [ "$MOUNTABO_MODE" = deploy ]; then
 mkdir -p "$BUNDLE"
 
 # The images this release actually runs, by immutable id as well as by tag: a tag
@@ -147,9 +170,10 @@ jq -n \
 cp "$0" "$BUNDLE/runner.sh" 2>/dev/null || true
 chmod 600 "$BUNDLE/manifest.json" 2>/dev/null || true
 %[4]s
+echo "recorded release $ARTIFACT_ID"
+fi
 mountabo_state_write '.lifecycle = "deploying" | .candidate = $a | .incarnation = ($inc | tonumber)' \
   --arg a "$ARTIFACT_ID" --arg inc "$EXPECT_INCARNATION"
-echo "recorded release $ARTIFACT_ID"
 `, bundleFormatVersion, "${MOUNTABO_COMMIT:-unknown}", c.strategy(), extra)
 }
 
@@ -194,11 +218,11 @@ echo "verified: $ARTIFACT_ID is serving"
 # the release before it prunable, destroying the rollback target.
 __prev="$(mountabo_state_get '.active')"
 if [ -n "$__prev" ] && [ "$__prev" != "$ARTIFACT_ID" ]; then
-  mountabo_state_write '.previous = $p | .active = $a | .candidate = null | .running = $a | .lifecycle = "active"' \
-    --arg p "$__prev" --arg a "$ARTIFACT_ID"
+  mountabo_state_write '.previous = $p | .active = $a | .candidate = null | .running = $a | .lifecycle = "active" | .kind = $k' \
+    --arg p "$__prev" --arg a "$ARTIFACT_ID" --arg k "$MOUNTABO_KIND"
 else
-  mountabo_state_write '.active = $a | .candidate = null | .running = $a | .lifecycle = "active"' \
-    --arg a "$ARTIFACT_ID"
+  mountabo_state_write '.active = $a | .candidate = null | .running = $a | .lifecycle = "active" | .kind = $k' \
+    --arg a "$ARTIFACT_ID" --arg k "$MOUNTABO_KIND"
 fi
 `
 }
@@ -260,4 +284,14 @@ func (c Config) allLabels() string {
 // record it. It is metadata: the artifact id, not the commit, identifies a build.
 func commitEnvLine() string {
 	return strings.TrimSpace("MOUNTABO_COMMIT: ${{ github.sha }}")
+}
+
+// indentShell would indent a nested fragment for readability, but it must not:
+// several fragments contain here-documents, and indenting the body moves the
+// closing delimiter off column zero so it no longer terminates. The bash -n
+// harness catches that immediately, which is how this was found. Nested blocks
+// are therefore emitted at their original indentation, and the mode guards are
+// commented instead.
+func indentShell(s string) string {
+	return strings.TrimRight(s, "\n")
 }

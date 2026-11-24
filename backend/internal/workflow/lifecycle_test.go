@@ -246,7 +246,7 @@ esac
 exit 0
 `
 	body := "export MOUNTABO_TEST_SERVING=" + shellQuoteForTest(servingArtifact) + "\n" +
-		"ARTIFACT_ID=" + candidate + "\n" +
+		"ARTIFACT_ID=" + candidate + "\nMOUNTABO_KIND=deploy\n" +
 		`mountabo_state_write '.active = "art-1" | .candidate = $c' --arg c "` + candidate + `"` + "\n" +
 		verifyAndPromoteBlock(base()) + "\necho PROMOTED\n"
 	return lifecycleEnv(t, body, stub)

@@ -235,7 +235,7 @@ export function ConfigureView({
         : `no server is set up for "${effectiveEnvironment}" on ${targets.clientName || "this project"} yet. ask an admin to add it.`
       : placement.serverId !== server.id
         ? `"${effectiveEnvironment}" deploys to a different server.`
-        : `"${effectiveEnvironment}" deploys to this server${placement.requireApproval ? " and needs an admin's approval" : ""}.`;
+        : `"${effectiveEnvironment}" deploys to this server.`;
 
   // The domain's upstream port: the operator's explicit value, else the app's
   // first configured port. A domain with no resolvable port is invalid and
@@ -902,5 +902,5 @@ type RepoTargets = {
   clientId: string;
   clientName: string;
   permission: string;
-  targets: { environment: string; serverId: string; requireApproval: boolean; source: string }[];
+  targets: { environment: string; serverId: string; source: string }[];
 };

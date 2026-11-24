@@ -44,7 +44,7 @@ func agencyFixture(t *testing.T) (*AccessService, *memServerStore, *fakeDeployme
 		},
 		EnvRules: []EnvRule{
 			{ClientID: "acme", Environment: "development", ServerID: "shared-dev"},
-			{ClientID: "acme", Environment: "production", ServerID: "acme-prod", RequireApproval: true},
+			{ClientID: "acme", Environment: "production", ServerID: "acme-prod"},
 			{ClientID: "globex", Environment: "production", ServerID: "globex-prod"},
 		},
 	}}

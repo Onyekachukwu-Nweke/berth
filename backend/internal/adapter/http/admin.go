@@ -99,11 +99,10 @@ func (h *AdminHandler) DeleteLink(w nethttp.ResponseWriter, r *nethttp.Request) 
 	h.done(w, h.access.DeleteLink(r.PathValue("owner"), r.PathValue("repo")))
 }
 
-// SaveEnvRule points a client environment at a server: PUT /api/admin/clients/{id}/environments/{environment} {serverId, requireApproval}.
+// SaveEnvRule points a client environment at a server: PUT /api/admin/clients/{id}/environments/{environment} {serverId}.
 func (h *AdminHandler) SaveEnvRule(w nethttp.ResponseWriter, r *nethttp.Request) {
 	var req struct {
-		ServerID        string `json:"serverId"`
-		RequireApproval bool   `json:"requireApproval"`
+		ServerID string `json:"serverId"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
 		writeErrorTo(w, h.log, nethttp.StatusBadRequest, "invalid request body")
@@ -111,7 +110,7 @@ func (h *AdminHandler) SaveEnvRule(w nethttp.ResponseWriter, r *nethttp.Request)
 	}
 	h.done(w, h.access.SaveEnvRule(usecase.EnvRule{
 		ClientID: r.PathValue("id"), Environment: r.PathValue("environment"),
-		ServerID: req.ServerID, RequireApproval: req.RequireApproval,
+		ServerID: req.ServerID,
 	}))
 }
 
@@ -120,7 +119,7 @@ func (h *AdminHandler) DeleteEnvRule(w nethttp.ResponseWriter, r *nethttp.Reques
 	h.done(w, h.access.DeleteEnvRule(r.PathValue("id"), r.PathValue("environment")))
 }
 
-// SaveRepoRule overrides one repo environment: PUT /api/admin/repo-rules {owner, repo, environment, serverId, requireApproval}.
+// SaveRepoRule overrides one repo environment: PUT /api/admin/repo-rules {owner, repo, environment, serverId}.
 func (h *AdminHandler) SaveRepoRule(w nethttp.ResponseWriter, r *nethttp.Request) {
 	var rule usecase.RepoRule
 	if err := decodeJSON(w, r, &rule); err != nil {

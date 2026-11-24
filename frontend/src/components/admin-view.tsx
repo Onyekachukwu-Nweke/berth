@@ -5,8 +5,8 @@ import { useState, type ReactNode } from "react";
 
 type Client = { id: string; name: string };
 type RepoLink = { owner: string; repo: string; clientId: string };
-type EnvRule = { clientId: string; environment: string; serverId: string; requireApproval: boolean };
-type RepoRule = { owner: string; repo: string; environment: string; serverId: string; requireApproval: boolean };
+type EnvRule = { clientId: string; environment: string; serverId: string };
+type RepoRule = { owner: string; repo: string; environment: string; serverId: string };
 type ServerLite = { id: string; name: string; ip: string; clientId?: string };
 type UserRow = { id: number; login: string; name: string; isAdmin: boolean; lastLoginAt: string };
 type Installation = { id: number; account: string; type: string };
@@ -74,8 +74,8 @@ export function AdminView({ initial }: { initial: AdminData }) {
   // form state
   const [newClient, setNewClient] = useState({ id: "", name: "" });
   const [newLink, setNewLink] = useState({ owner: "", repo: "*", clientId: "" });
-  const [newRule, setNewRule] = useState({ clientId: "", environment: "", serverId: "", requireApproval: false });
-  const [newOverride, setNewOverride] = useState({ owner: "", repo: "", environment: "", serverId: "", requireApproval: false });
+  const [newRule, setNewRule] = useState({ clientId: "", environment: "", serverId: "" });
+  const [newOverride, setNewOverride] = useState({ owner: "", repo: "", environment: "", serverId: "" });
 
   // A rule may only point at a shared server or one the client owns.
   const serversFor = (clientId: string) =>
@@ -205,7 +205,6 @@ export function AdminView({ initial }: { initial: AdminData }) {
               <span className="text-cream">{clientName(r.clientId)}</span>
               <span className="text-lime">{r.environment}</span>
               <span className="text-muted">→ {serverName(r.serverId)}</span>
-              {r.requireApproval && <span className="rounded border border-line px-1.5 text-[11px] text-muted">approval</span>}
               <button className="ml-auto text-muted hover:text-red-300" disabled={busy} onClick={() => call("DELETE", `/api/admin/clients/${r.clientId}/environments/${encodeURIComponent(r.environment)}`)}>
                 remove
               </button>
@@ -217,8 +216,8 @@ export function AdminView({ initial }: { initial: AdminData }) {
           className="flex flex-wrap items-center gap-2"
           onSubmit={async (e) => {
             e.preventDefault();
-            const { clientId, environment, serverId, requireApproval } = newRule;
-            if (await call("PUT", `/api/admin/clients/${clientId}/environments/${encodeURIComponent(environment)}`, { serverId, requireApproval }))
+            const { clientId, environment, serverId } = newRule;
+            if (await call("PUT", `/api/admin/clients/${clientId}/environments/${encodeURIComponent(environment)}`, { serverId }))
               setNewRule({ ...newRule, environment: "", serverId: "" });
           }}
         >
@@ -231,10 +230,6 @@ export function AdminView({ initial }: { initial: AdminData }) {
             <option value="">server…</option>
             {serversFor(newRule.clientId).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
-          <label className="flex items-center gap-1.5 text-[13px] text-muted">
-            <input type="checkbox" checked={newRule.requireApproval} onChange={(e) => setNewRule({ ...newRule, requireApproval: e.target.checked })} />
-            needs approval
-          </label>
           <button className={primary} disabled={busy || !newRule.clientId || !newRule.environment || !newRule.serverId}>save</button>
         </form>
       </Card>
@@ -257,7 +252,7 @@ export function AdminView({ initial }: { initial: AdminData }) {
           className="flex flex-wrap items-center gap-2"
           onSubmit={async (e) => {
             e.preventDefault();
-            if (await call("PUT", "/api/admin/repo-rules", newOverride)) setNewOverride({ owner: "", repo: "", environment: "", serverId: "", requireApproval: false });
+            if (await call("PUT", "/api/admin/repo-rules", newOverride)) setNewOverride({ owner: "", repo: "", environment: "", serverId: "" });
           }}
         >
           <input className={input} placeholder="owner" value={newOverride.owner} onChange={(e) => setNewOverride({ ...newOverride, owner: e.target.value })} />

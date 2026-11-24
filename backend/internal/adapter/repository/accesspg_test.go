@@ -74,14 +74,14 @@ func TestAccessSQL_PolicyRoundTripAndCascade(t *testing.T) {
 	}
 	must(s.SaveClient(usecase.Client{ID: "acme", Name: "Acme"}))
 	must(s.SaveLink(usecase.RepoLink{Owner: "Acme-Org", Repo: "*", ClientID: "acme"}))
-	must(s.SaveEnvRule(usecase.EnvRule{ClientID: "acme", Environment: "Production", ServerID: "srv", RequireApproval: true}))
+	must(s.SaveEnvRule(usecase.EnvRule{ClientID: "acme", Environment: "Production", ServerID: "srv"}))
 	must(s.SaveRepoRule(usecase.RepoRule{Owner: "acme-org", Repo: "shop", Environment: "staging", ServerID: "srv"}))
 
 	p, _ = s.Policy()
 	if len(p.Clients) != 2 || len(p.Links) != 1 || len(p.EnvRules) != 1 || len(p.RepoRules) != 1 {
 		t.Fatalf("policy = %+v", p)
 	}
-	if p.Links[0].Owner != "acme-org" || p.EnvRules[0].Environment != "production" || !p.EnvRules[0].RequireApproval {
+	if p.Links[0].Owner != "acme-org" || p.EnvRules[0].Environment != "production" {
 		t.Errorf("names should be stored lowercased: %+v %+v", p.Links[0], p.EnvRules[0])
 	}
 	if tgt, ok := p.TargetFor("ACME-ORG", "Shop", "Production"); !ok || tgt.ServerID != "srv" {

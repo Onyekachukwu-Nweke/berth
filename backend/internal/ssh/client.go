@@ -211,11 +211,21 @@ func (c *Client) ApplyOptions(ctx context.Context, t usecase.SSHTarget, add, rem
 	return nil
 }
 
+// aptUpdateFn is the bootstrap's apt_update: tolerant of a broken third-party
+// repository, so one retired PPA doesn't block applying an option.
+const aptUpdateFn = `apt_update() {
+  if ! apt-get update -y -o Acquire::AllowReleaseInfoChange::Label=true -o Acquire::AllowReleaseInfoChange::Suite=true; then
+    log "warning: apt-get update reported errors (often a broken or retired third-party repository); continuing with the package lists it could fetch"
+  fi
+}
+`
+
 func composeApply(add, remove []string, params map[string]map[string]string) (string, error) {
 	var b strings.Builder
 	b.WriteString("set -euo pipefail\nexport DEBIAN_FRONTEND=noninteractive\nlog() { echo \"==> $*\"; }\n")
+	b.WriteString(aptUpdateFn)
 	if len(add) > 0 {
-		b.WriteString("apt-get update -y\n")
+		b.WriteString("apt_update\n")
 	}
 	for _, id := range remove {
 		if frag, ok := optionDisableScripts[id]; ok {

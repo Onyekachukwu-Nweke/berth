@@ -24,11 +24,15 @@ export function ConfigureView({
   branch,
   account,
   environment: environmentParam,
+  isAdmin = false,
 }: {
   source: Source;
   server: Server;
   branch: string;
   account: string | null;
+  // Admins may place a deploy on any server client isolation allows; developers
+  // deploy where the environment's rule points.
+  isAdmin?: boolean;
   // Prefilled environment name when arriving from a repo card's "+ environment"
   // (environment-first flow); defaults to "production" for a fresh deploy.
   environment?: string;
@@ -205,6 +209,34 @@ export function ConfigureView({
   const effectiveEnvironment = environment.trim() || branch;
   const environmentInvalid = !/^[A-Za-z0-9._-]+$/.test(effectiveEnvironment);
 
+  // Where this repo's environments deploy, per the access settings. The API
+  // enforces it; this only explains it before anyone presses deploy.
+  const [targets, setTargets] = useState<RepoTargets | null>(null);
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.name)}/targets`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((t: RepoTargets | null) => {
+        if (live) setTargets(t);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [source.owner, source.name]);
+  const placement = targets?.targets.find((t) => t.environment.toLowerCase() === effectiveEnvironment.toLowerCase());
+  const placementBlocked =
+    !isAdmin && targets !== null && (!placement || placement.serverId !== server.id);
+  const placementReason = !targets
+    ? null
+    : !placement
+      ? isAdmin
+        ? `no rule for "${effectiveEnvironment}" yet: as an admin you can still deploy here, or add the rule in access settings.`
+        : `no server is set up for "${effectiveEnvironment}" on ${targets.clientName || "this project"} yet. ask an admin to add it.`
+      : placement.serverId !== server.id
+        ? `"${effectiveEnvironment}" deploys to a different server.`
+        : `"${effectiveEnvironment}" deploys to this server${placement.requireApproval ? " and needs an admin's approval" : ""}.`;
+
   // The domain's upstream port: the operator's explicit value, else the app's
   // first configured port. A domain with no resolvable port is invalid and
   // blocks deploy, so the domain is never silently dropped for want of a port.
@@ -298,7 +330,10 @@ export function ConfigureView({
             placeholder="production"
           />
           <div className="mt-2 flex gap-2">
-            {["production", "staging"].map((name) => (
+            {(targets && targets.targets.length > 0
+              ? targets.targets.map((t) => t.environment)
+              : ["production", "staging"]
+            ).map((name) => (
               <button
                 key={name}
                 type="button"
@@ -317,6 +352,23 @@ export function ConfigureView({
             <p className="mt-2 text-[12px] text-red-300">
               use only letters, numbers, dots, dashes or underscores (no slashes or spaces)
               {environment.trim() === "" ? ` — the branch "${branch}" isn't a valid environment name, so type one` : ""}.
+            </p>
+          )}
+          {placementReason && (
+            <p className={`mt-2 text-[12px] ${placementBlocked ? "text-red-300" : "text-muted"}`}>
+              {targets?.clientName && <span className="text-cream">{targets.clientName} · </span>}
+              {placementReason}
+              {placement && placement.serverId !== server.id && (
+                <>
+                  {" "}
+                  <a
+                    className="text-lime hover:text-cream"
+                    href={`/configure?repo=${encodeURIComponent(`${source.owner}/${source.name}`)}&branch=${encodeURIComponent(branch)}&server=${encodeURIComponent(placement.serverId)}&environment=${encodeURIComponent(effectiveEnvironment)}`}
+                  >
+                    switch to it →
+                  </a>
+                </>
+              )}
             </p>
           )}
         </Section>
@@ -601,7 +653,7 @@ export function ConfigureView({
         {/* CTA: commit the workflow + deploy.sh and set the secrets, streamed live. */}
         <div className="mt-8">
           <button
-            disabled={!preview || envInvalid || domainInvalid || environmentInvalid}
+            disabled={!preview || envInvalid || domainInvalid || environmentInvalid || placementBlocked}
             onClick={() => {
               setDomainSkipped(false);
               setConfirmDeploy(previewReq);
@@ -610,6 +662,8 @@ export function ConfigureView({
             title={
               environmentInvalid
                 ? "the environment name must be letters, numbers, dots, dashes or underscores (no slashes)"
+                : placementBlocked
+                  ? (placementReason ?? "this environment can't deploy to this server")
                 : envInvalid
                   ? "fix the invalid environment variable name first"
                   : domainInvalid
@@ -843,3 +897,10 @@ function Code({ path, body }: { path: string; body: string }) {
     </div>
   );
 }
+
+type RepoTargets = {
+  clientId: string;
+  clientName: string;
+  permission: string;
+  targets: { environment: string; serverId: string; requireApproval: boolean; source: string }[];
+};

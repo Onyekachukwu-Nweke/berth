@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { backendURL } from "@/lib/servers";
+import { backendFetch, backendURL } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +15,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
   const { id, tool } = await params;
   let resp: Response;
   try {
-    resp = await fetch(`${backendURL()}/api/servers/${id}/dashboard/${tool}/open`, {
+    resp = await backendFetch(`${backendURL()}/api/servers/${id}/dashboard/${tool}/open`, {
       method: "POST",
       cache: "no-store",
       signal: AbortSignal.timeout(25_000),

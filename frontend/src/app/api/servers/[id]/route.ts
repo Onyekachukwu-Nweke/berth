@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { backendURL } from "@/lib/servers";
+import { backendFetch, backendURL } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
 
@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
-    const resp = await fetch(`${backendURL()}/api/servers/${id}`, { method: "DELETE" });
+    const resp = await backendFetch(`${backendURL()}/api/servers/${id}`, { method: "DELETE" });
     return new NextResponse(null, { status: resp.status });
   } catch {
     return NextResponse.json({ error: "couldn't reach the mountabo backend" }, { status: 502 });

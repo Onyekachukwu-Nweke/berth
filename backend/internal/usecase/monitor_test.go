@@ -98,7 +98,7 @@ func TestMonitorHistory_EnrichesWithRuns(t *testing.T) {
 	_ = servers.Save(Server{ID: "s1", IP: "203.0.113.7"})
 	svc := NewMonitorService(deps, releases, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, runs, servers, newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
 
-	got, err := svc.History(context.Background())
+	got, err := svc.History(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("History: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestMonitorHistory_SurfacesDeployLockAndClears(t *testing.T) {
 	locker.TryAcquire(lockKey("acme", "shop", "production")) // a deploy to this environment is in flight
 	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, locker, nil)
 
-	got, err := svc.History(context.Background())
+	got, err := svc.History(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("History: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestMonitorHistory_SurfacesDeployLockAndClears(t *testing.T) {
 	if !svc.ClearLock("acme", "shop", "production") {
 		t.Error("ClearLock should report it cleared a held lock")
 	}
-	got, err = svc.History(context.Background())
+	got, err = svc.History(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("History after clear: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestMonitorSetPort_RecordsPortForAppEnvironment(t *testing.T) {
 
 func TestMonitorHistory_EmptyWithoutDeployments(t *testing.T) {
 	svc := NewMonitorService(&fakeDeploymentStore{}, fakeReleaseReader{}, &fakeDeploymentStore{}, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, &fakeDeploymentStore{}, NewDeployLocker(), nil)
-	got, err := svc.History(context.Background())
+	got, err := svc.History(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("History: %v", err)
 	}
@@ -224,11 +224,30 @@ func TestMonitorHistory_EmptyWithoutDeployments(t *testing.T) {
 	}
 }
 
-func TestMonitorHistory_NotConnected(t *testing.T) {
+// An owner without the App installed must not hide the deployment: it still
+// lists, just without its Actions runs.
+func TestMonitorHistory_AppNotInstalledStillLists(t *testing.T) {
 	deps := &fakeDeploymentStore{saved: []Deployment{{Owner: "a", Repo: "r", Branch: "main"}}}
 	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadErr: ErrNotConnected}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
-	if _, err := svc.History(context.Background()); !errors.Is(err, ErrNotConnected) {
-		t.Fatalf("want ErrNotConnected, got %v", err)
+	got, err := svc.History(context.Background(), nil)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("History = %d items, %v; want the deployment listed", len(got), err)
+	}
+}
+
+// The filter is applied before any GitHub call: hidden repos never appear.
+func TestMonitorHistory_FiltersByRepo(t *testing.T) {
+	deps := &fakeDeploymentStore{saved: []Deployment{
+		{Owner: "acme", Repo: "shop", Branch: "main", Environment: "production"},
+		{Owner: "globex", Repo: "api", Branch: "main", Environment: "production"},
+	}}
+	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
+	got, err := svc.History(context.Background(), func(owner, _ string) bool { return owner == "acme" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Repo != "acme/shop" {
+		t.Fatalf("want only acme/shop, got %+v", got)
 	}
 }
 

@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"testing"
-
-	"github.com/goodylili/mountabo/internal/usecase"
 )
 
 func testVault(t *testing.T) *VaultSQL {
@@ -81,25 +79,5 @@ func TestVaultSQL_WrongMasterKeyFails(t *testing.T) {
 	}
 	if _, err := other.LoadSecret("k"); err == nil {
 		t.Fatal("a different master key decrypted the secret")
-	}
-}
-
-func TestVaultSQL_TokenStore(t *testing.T) {
-	v := testVault(t)
-	if _, err := v.Load(); !errors.Is(err, usecase.ErrNotConnected) {
-		t.Fatalf("Load before Save err = %v, want ErrNotConnected", err)
-	}
-	if err := v.Save(usecase.Token{AccessToken: "gho_abc"}); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	tok, err := v.Load()
-	if err != nil || tok.AccessToken != "gho_abc" {
-		t.Fatalf("Load = %+v, %v", tok, err)
-	}
-	if err := v.Delete(); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	if _, err := v.Load(); !errors.Is(err, usecase.ErrNotConnected) {
-		t.Errorf("Load after Delete err = %v, want ErrNotConnected", err)
 	}
 }

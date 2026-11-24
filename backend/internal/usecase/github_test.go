@@ -6,33 +6,18 @@ import (
 	"testing"
 )
 
-// fakeExchanger, fakeFetcher, fakeRepoLister, fakePortDetector, and fakeStore
-// are in-memory stand-ins for the connector's ports, letting the flow be tested
-// without GitHub or a keychain.
-type fakeExchanger struct {
-	token Token
-	err   error
-}
-
-func (f fakeExchanger) Exchange(context.Context, string, string) (Token, error) {
-	return f.token, f.err
-}
-
-type fakeFetcher struct {
-	account Account
-	err     error
-}
-
-func (f fakeFetcher) Account(context.Context, Token) (Account, error) {
-	return f.account, f.err
-}
-
+// fakeRepoLister, fakePortDetector, fakeStore and fakeUserTokens are in-memory
+// stand-ins for the connector's ports, letting it be tested without GitHub.
 type fakeRepoLister struct {
 	repos []Repo
 	err   error
+	calls int
+	seen  []Token
 }
 
-func (f fakeRepoLister) List(context.Context, Token) ([]Repo, error) {
+func (f *fakeRepoLister) List(_ context.Context, t Token) ([]Repo, error) {
+	f.calls++
+	f.seen = append(f.seen, t)
 	return f.repos, f.err
 }
 
@@ -40,181 +25,85 @@ type fakePortDetector struct {
 	ports    []ServicePort
 	strategy DeployStrategy
 	err      error
+	seen     Token
 }
 
-func (f fakePortDetector) DetectPorts(context.Context, Token, RepoRef) ([]ServicePort, DeployStrategy, error) {
+func (f *fakePortDetector) DetectPorts(_ context.Context, t Token, _ RepoRef) ([]ServicePort, DeployStrategy, error) {
+	f.seen = t
 	return f.ports, f.strategy, f.err
 }
 
+// fakeStore serves installation tokens (RepoTokens), recording which owner each
+// was minted for.
 type fakeStore struct {
-	saved   *Token
-	deleted bool
 	loadTok Token
 	loadErr error
-	saveErr error
+	owners  []string
 }
 
-func (f *fakeStore) Save(t Token) error { f.saved = &t; return f.saveErr }
-func (f *fakeStore) Load() (Token, error) {
+func (f *fakeStore) TokenFor(_ context.Context, owner string) (Token, error) {
+	f.owners = append(f.owners, owner)
 	return f.loadTok, f.loadErr
 }
-func (f *fakeStore) Delete() error { f.deleted = true; return nil }
 
-func TestConnect_StoresTokenAndReturnsAccount(t *testing.T) {
-	store := &fakeStore{}
-	c := NewGitHubConnector(
-		fakeExchanger{token: Token{AccessToken: "gho_abc"}},
-		fakeFetcher{account: Account{Login: "octocat"}},
-		fakeRepoLister{},
-		fakePortDetector{},
-		store,
-	)
+type fakeUserTokens map[int64]Token
 
-	account, err := c.Connect(context.Background(), "code-123", "http://localhost/cb")
-	if err != nil {
-		t.Fatalf("Connect returned error: %v", err)
+func (f fakeUserTokens) UserToken(_ context.Context, u User) (Token, error) {
+	t, ok := f[u.ID]
+	if !ok {
+		return Token{}, errors.New("no token")
 	}
-	if account.Login != "octocat" {
-		t.Errorf("login = %q, want octocat", account.Login)
+	return t, nil
+}
+
+// Repos are read with the signed-in user's own token (so GitHub decides what
+// they see) and cached per user, never shared between users.
+func TestRepositories_UsesEachUsersOwnTokenAndCachesPerUser(t *testing.T) {
+	lister := &fakeRepoLister{repos: []Repo{{FullName: "acme/shop", Permission: PermWrite}}}
+	users := fakeUserTokens{1: {AccessToken: "alice"}, 2: {AccessToken: "bob"}}
+	c := NewGitHubConnector(lister, &fakePortDetector{}, &fakeStore{}, users)
+
+	for range 2 {
+		if _, err := c.Repositories(context.Background(), User{ID: 1}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if store.saved == nil || store.saved.AccessToken != "gho_abc" {
-		t.Errorf("token not persisted, got %+v", store.saved)
+	if _, err := c.Repositories(context.Background(), User{ID: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if lister.calls != 2 {
+		t.Fatalf("want one GitHub call per user (cached), got %d", lister.calls)
+	}
+	if lister.seen[0].AccessToken != "alice" || lister.seen[1].AccessToken != "bob" {
+		t.Errorf("tokens used = %+v, want alice then bob", lister.seen)
 	}
 }
 
-func TestConnect_ExchangeFailureDoesNotStore(t *testing.T) {
-	store := &fakeStore{}
-	c := NewGitHubConnector(
-		fakeExchanger{err: errors.New("bad code")},
-		fakeFetcher{account: Account{Login: "octocat"}},
-		fakeRepoLister{},
-		fakePortDetector{},
-		store,
-	)
-
-	if _, err := c.Connect(context.Background(), "code", "uri"); err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if store.saved != nil {
-		t.Error("token should not be stored when exchange fails")
+func TestRepositories_PropagatesTokenFailure(t *testing.T) {
+	c := NewGitHubConnector(&fakeRepoLister{}, &fakePortDetector{}, &fakeStore{}, fakeUserTokens{})
+	if _, err := c.Repositories(context.Background(), User{ID: 9}); err == nil {
+		t.Fatal("want an error when the user has no token")
 	}
 }
 
-func TestConnect_AccountFailureDoesNotStore(t *testing.T) {
-	store := &fakeStore{}
-	c := NewGitHubConnector(
-		fakeExchanger{token: Token{AccessToken: "gho_abc"}},
-		fakeFetcher{err: errors.New("unauthorized")},
-		fakeRepoLister{},
-		fakePortDetector{},
-		store,
-	)
+// Port detection runs as the App installation of the repo's owner.
+func TestDetectPorts_UsesTheOwnersInstallationToken(t *testing.T) {
+	store := &fakeStore{loadTok: Token{AccessToken: "inst"}}
+	ports := &fakePortDetector{ports: []ServicePort{{Container: "3000"}}, strategy: StrategyDocker}
+	c := NewGitHubConnector(&fakeRepoLister{}, ports, store, fakeUserTokens{})
 
-	if _, err := c.Connect(context.Background(), "code", "uri"); err == nil {
-		t.Fatal("expected error, got nil")
+	got, strategy, err := c.DetectPorts(context.Background(), RepoRef{Owner: "acme", Name: "shop"})
+	if err != nil || len(got) != 1 || strategy != StrategyDocker {
+		t.Fatalf("DetectPorts = %v %q %v", got, strategy, err)
 	}
-	if store.saved != nil {
-		t.Error("token should not be stored when the account lookup fails")
+	if len(store.owners) != 1 || store.owners[0] != "acme" || ports.seen.AccessToken != "inst" {
+		t.Errorf("owners=%v token=%q; want acme / inst", store.owners, ports.seen.AccessToken)
 	}
 }
 
-func TestStatus_NotConnectedPropagates(t *testing.T) {
-	c := NewGitHubConnector(
-		fakeExchanger{},
-		fakeFetcher{},
-		fakeRepoLister{},
-		fakePortDetector{},
-		&fakeStore{loadErr: ErrNotConnected},
-	)
-
-	_, err := c.Status(context.Background())
-	if !errors.Is(err, ErrNotConnected) {
-		t.Fatalf("err = %v, want ErrNotConnected in chain", err)
-	}
-}
-
-func TestRepositories_ReturnsListedRepos(t *testing.T) {
-	c := NewGitHubConnector(
-		fakeExchanger{},
-		fakeFetcher{},
-		fakeRepoLister{repos: []Repo{{FullName: "octocat/hello"}, {FullName: "octocat/secret", Private: true}}},
-		fakePortDetector{},
-		&fakeStore{loadTok: Token{AccessToken: "gho_abc"}},
-	)
-
-	repos, err := c.Repositories(context.Background())
-	if err != nil {
-		t.Fatalf("Repositories returned error: %v", err)
-	}
-	if len(repos) != 2 {
-		t.Fatalf("got %d repos, want 2", len(repos))
-	}
-}
-
-func TestRepositories_NotConnectedPropagates(t *testing.T) {
-	c := NewGitHubConnector(
-		fakeExchanger{},
-		fakeFetcher{},
-		fakeRepoLister{},
-		fakePortDetector{},
-		&fakeStore{loadErr: ErrNotConnected},
-	)
-
-	if _, err := c.Repositories(context.Background()); !errors.Is(err, ErrNotConnected) {
-		t.Fatalf("err = %v, want ErrNotConnected in chain", err)
-	}
-}
-
-func TestDetectPorts_ReturnsDetectedPorts(t *testing.T) {
-	want := []ServicePort{
-		{Service: "web", EnvVar: "FRONTEND_PORT", Host: "3000", Container: "3000", Editable: true},
-		{Service: "db", Host: "5432", Container: "5432"},
-	}
-	c := NewGitHubConnector(
-		fakeExchanger{},
-		fakeFetcher{},
-		fakeRepoLister{},
-		fakePortDetector{ports: want, strategy: StrategyCompose},
-		&fakeStore{loadTok: Token{AccessToken: "gho_abc"}},
-	)
-
-	got, strategy, err := c.DetectPorts(context.Background(), RepoRef{Owner: "octocat", Name: "hello"})
-	if err != nil {
-		t.Fatalf("DetectPorts returned error: %v", err)
-	}
-	if strategy != StrategyCompose {
-		t.Errorf("strategy = %q, want compose", strategy)
-	}
-	if len(got) != len(want) {
-		t.Fatalf("got %d ports, want %d", len(got), len(want))
-	}
-	if got[0].EnvVar != "FRONTEND_PORT" || !got[0].Editable || got[1].Editable {
-		t.Errorf("ports not passed through faithfully: %+v", got)
-	}
-}
-
-func TestDetectPorts_NotConnectedPropagates(t *testing.T) {
-	c := NewGitHubConnector(
-		fakeExchanger{},
-		fakeFetcher{},
-		fakeRepoLister{},
-		fakePortDetector{},
-		&fakeStore{loadErr: ErrNotConnected},
-	)
-
-	if _, _, err := c.DetectPorts(context.Background(), RepoRef{}); !errors.Is(err, ErrNotConnected) {
-		t.Fatalf("err = %v, want ErrNotConnected in chain", err)
-	}
-}
-
-func TestDisconnect_DeletesToken(t *testing.T) {
-	store := &fakeStore{}
-	c := NewGitHubConnector(fakeExchanger{}, fakeFetcher{}, fakeRepoLister{}, fakePortDetector{}, store)
-
-	if err := c.Disconnect(); err != nil {
-		t.Fatalf("Disconnect returned error: %v", err)
-	}
-	if !store.deleted {
-		t.Error("Disconnect did not delete the stored token")
+func TestDetectPorts_AppNotInstalled(t *testing.T) {
+	c := NewGitHubConnector(&fakeRepoLister{}, &fakePortDetector{}, &fakeStore{loadErr: ErrNotConnected}, fakeUserTokens{})
+	if _, _, err := c.DetectPorts(context.Background(), RepoRef{Owner: "x", Name: "y"}); !errors.Is(err, ErrNotConnected) {
+		t.Fatalf("want ErrNotConnected, got %v", err)
 	}
 }

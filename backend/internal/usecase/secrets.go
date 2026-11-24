@@ -79,7 +79,7 @@ type SecretsView struct {
 // delete secrets, but never reads a value back. It reads a deployment's branch +
 // root dir to diff the configured names against the repo's .env.example.
 type SecretsService struct {
-	tokens      TokenStore
+	tokens      RepoTokens
 	deployments DeploymentStore
 	lister      EnvSecretLister
 	setter      EnvSecretSetter
@@ -89,7 +89,7 @@ type SecretsService struct {
 }
 
 // NewSecretsService wires the service to its ports.
-func NewSecretsService(tokens TokenStore, deployments DeploymentStore, lister EnvSecretLister, setter EnvSecretSetter, deleter EnvSecretDeleter, example EnvExampleReader, reapplier DeployReapplier) *SecretsService {
+func NewSecretsService(tokens RepoTokens, deployments DeploymentStore, lister EnvSecretLister, setter EnvSecretSetter, deleter EnvSecretDeleter, example EnvExampleReader, reapplier DeployReapplier) *SecretsService {
 	return &SecretsService{tokens: tokens, deployments: deployments, lister: lister, setter: setter, deleter: deleter, example: example, reapplier: reapplier}
 }
 
@@ -98,7 +98,7 @@ func NewSecretsService(tokens TokenStore, deployments DeploymentStore, lister En
 // are not yet configured. Values are never returned — GitHub secrets are
 // write-only.
 func (s *SecretsService) List(ctx context.Context, owner, repo, environment string) (SecretsView, error) {
-	token, err := s.tokens.Load()
+	token, err := s.tokens.TokenFor(ctx, owner)
 	if err != nil {
 		return SecretsView{}, fmt.Errorf("load token: %w", err)
 	}
@@ -160,7 +160,7 @@ func (s *SecretsService) Set(ctx context.Context, owner, repo, environment strin
 			return ApplyResult{}, fmt.Errorf("%w: %q", ErrMultilineValue, sec.Name)
 		}
 	}
-	token, err := s.tokens.Load()
+	token, err := s.tokens.TokenFor(ctx, owner)
 	if err != nil {
 		return ApplyResult{}, fmt.Errorf("load token: %w", err)
 	}
@@ -180,7 +180,7 @@ func (s *SecretsService) Delete(ctx context.Context, owner, repo, environment, n
 	if isManagedSecret(name) {
 		return ApplyResult{}, ErrManagedSecret
 	}
-	token, err := s.tokens.Load()
+	token, err := s.tokens.TokenFor(ctx, owner)
 	if err != nil {
 		return ApplyResult{}, fmt.Errorf("load token: %w", err)
 	}

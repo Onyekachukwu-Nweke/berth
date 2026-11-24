@@ -70,6 +70,9 @@ type Server struct {
 	// Domains are the custom domains fronted by nginx + HTTPS on this server,
 	// each proxying to a local app port. Managed live via AddDomain/RemoveDomain.
 	Domains []Domain `json:"domains,omitempty"`
+	// ClientID is the client that owns this server; empty means the agency's
+	// shared pool. A client's server only ever runs that client's repos.
+	ClientID string `json:"clientId,omitempty"`
 }
 
 // ChangeEvent records one configuration change applied to a server: which

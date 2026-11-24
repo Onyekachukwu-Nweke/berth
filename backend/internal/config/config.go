@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +41,15 @@ func (c *Config) Validate() error {
 	if len(c.MasterKey) != 32 {
 		return errors.New("MOUNTABO_MASTER_KEY must be 32 random bytes, base64-encoded; generate one with: openssl rand -base64 32")
 	}
+	if c.GitHub.AppID == 0 || c.GitHub.AppPrivateKey == "" {
+		return errors.New("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY are required (from your GitHub App's settings page)")
+	}
+	if c.GitHub.ClientID == "" || c.GitHub.ClientSecret == "" {
+		return errors.New("GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are required (the GitHub App's client id and a generated client secret)")
+	}
+	if len(c.GitHub.Admins) == 0 {
+		return errors.New("MOUNTABO_ADMINS must name at least one GitHub login, or nobody can manage servers")
+	}
 	return nil
 }
 
@@ -51,11 +61,16 @@ type AIConfig struct {
 	Model  string
 }
 
-// GitHubConfig holds the OAuth App credentials used to exchange authorization
-// codes for access tokens.
+// GitHubConfig holds the mountabo GitHub App: its id, slug and private key
+// (to act as the App on installations) and its client id/secret (for user
+// sign-in). Admins are GitHub logins with full control (MOUNTABO_ADMINS).
 type GitHubConfig struct {
-	ClientID     string
-	ClientSecret string
+	AppID         int64
+	AppSlug       string
+	AppPrivateKey string
+	ClientID      string
+	ClientSecret  string
+	Admins        []string
 }
 
 // Load reads configuration from the environment, applying defaults. Call
@@ -67,8 +82,12 @@ func Load() *Config {
 		HTTPAddr:        env("MOUNTABO_HTTP_ADDR", "127.0.0.1:7778"),
 		ShutdownTimeout: 10 * time.Second,
 		GitHub: GitHubConfig{
-			ClientID:     os.Getenv("GITHUB_CLIENT_ID"),
-			ClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
+			AppID:         appID(os.Getenv("GITHUB_APP_ID")),
+			AppSlug:       os.Getenv("GITHUB_APP_SLUG"),
+			AppPrivateKey: os.Getenv("GITHUB_APP_PRIVATE_KEY"),
+			ClientID:      os.Getenv("GITHUB_CLIENT_ID"),
+			ClientSecret:  os.Getenv("GITHUB_CLIENT_SECRET"),
+			Admins:        splitList(os.Getenv("MOUNTABO_ADMINS")),
 		},
 		AI: AIConfig{
 			APIKey: os.Getenv("ANTHROPIC_API_KEY"),
@@ -77,6 +96,16 @@ func Load() *Config {
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		MasterKey:   decodeKey(os.Getenv("MOUNTABO_MASTER_KEY")),
 	}
+}
+
+func appID(v string) int64 {
+	id, _ := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	return id
+}
+
+// splitList parses a comma- or whitespace-separated list.
+func splitList(v string) []string {
+	return strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' || r == '\t' })
 }
 
 // decodeKey decodes a base64 master key, returning nil when it is unset or not

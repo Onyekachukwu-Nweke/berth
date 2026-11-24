@@ -72,13 +72,22 @@ This starts a local Postgres (`make db`), the backend and the frontend. Then ope
 The hosted stack is Postgres, the Go API (private, never published) and the web app:
 
 ```bash
-cp .env.example .env   # set POSTGRES_PASSWORD, MOUNTABO_MASTER_KEY, MOUNTABO_PUBLIC_URL, GitHub creds
+cp .env.example .env   # set POSTGRES_PASSWORD, MOUNTABO_MASTER_KEY, MOUNTABO_PUBLIC_URL, the GitHub App, MOUNTABO_ADMINS
 docker compose up -d --build
 ```
 
-Put a TLS reverse proxy in front of port `4321` and point `MOUNTABO_PUBLIC_URL` at it; the GitHub OAuth callback URL is `$MOUNTABO_PUBLIC_URL/api/github/callback`. Back up `MOUNTABO_MASTER_KEY` and the `pgdata` volume together: one is useless without the other.
+Put a TLS reverse proxy in front of port `4321` and point `MOUNTABO_PUBLIC_URL` at it; the GitHub App's callback URL is `$MOUNTABO_PUBLIC_URL/api/auth/callback`. Back up `MOUNTABO_MASTER_KEY` and the `pgdata` volume together: one is useless without the other.
 
-> Sign-in and team access control are not in place yet. Until they land, keep a hosted install off the public internet (VPN or IP allowlist).
+## Who can do what
+
+Everyone signs in with GitHub. There are no Mountabo passwords and no user list to keep in sync.
+
+- **Repo access is GitHub's.** A person sees the repos they can reach on GitHub, wherever the Mountabo GitHub App is installed, including repos they're only an outside collaborator on. Write (push) access is needed to deploy; read access can view deployments. Removing someone from a repo on GitHub removes it in Mountabo within ten minutes.
+- **Where code runs is Mountabo's.** Admins (`MOUNTABO_ADMINS`) create **clients**, mark each server as shared (the agency's, e.g. a dev box) or owned by one client, link repos to clients (a whole client org with `*`, or single repos), and set each client's **environments** (e.g. Acme `development` → the shared dev box, Acme `production` → Acme's own server).
+- A developer picks an environment; the server follows from the rule. A client's server only ever runs that client's repos, for admins too.
+- Server management, the terminal and server logs are admin-only.
+
+Set this up under **access** in the header (admins only).
 
 ## GitHub Setup
 

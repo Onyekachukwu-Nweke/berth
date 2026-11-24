@@ -1,4 +1,3 @@
-import { backendURL } from "@/lib/servers";
 
 // getRepoBranches reads every branch on owner/repo from the Go backend, which
 // pages through the GitHub API with the user's stored OAuth token. Returns []
@@ -11,7 +10,7 @@ export async function getRepoBranches(
 ): Promise<string[]> {
   try {
     const resp = await fetch(
-      `${backendURL()}/api/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`,
+      `/api/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`,
       { signal, cache: "no-store" },
     );
     if (!resp.ok) return [];

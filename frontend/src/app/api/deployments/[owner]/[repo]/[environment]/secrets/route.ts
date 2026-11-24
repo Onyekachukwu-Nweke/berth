@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { backendURL } from "@/lib/servers";
+import { backendFetch, backendURL } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
 
@@ -58,7 +58,7 @@ export async function GET(
   const { owner, repo, environment } = await params;
   let resp: Response;
   try {
-    resp = await fetch(secretsURL(owner, repo, environment), {
+    resp = await backendFetch(secretsURL(owner, repo, environment), {
       cache: "no-store",
       signal: AbortSignal.timeout(25_000),
     });
@@ -84,7 +84,7 @@ export async function PUT(
   }
   let resp: Response;
   try {
-    resp = await fetch(secretsURL(owner, repo, environment), {
+    resp = await backendFetch(secretsURL(owner, repo, environment), {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: requestBody,

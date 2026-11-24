@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { Header } from "@/components/header";
 import { TerminalConsole } from "@/components/terminal-console";
 import { getServers } from "@/lib/servers";
@@ -10,6 +11,8 @@ import { getGithubConnection } from "@/lib/session";
 export default async function TerminalPage() {
   const [conn, servers] = await Promise.all([getGithubConnection(), getServers()]);
   const account = conn.connected ? conn.login : null;
+  // Running commands on a server is admin-only (the API enforces it too).
+  if (!conn.connected || !conn.isAdmin) redirect("/");
 
   return (
     <div className="flex min-h-screen flex-col">

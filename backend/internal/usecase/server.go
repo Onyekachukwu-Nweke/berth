@@ -523,6 +523,10 @@ func (s *ServerService) Remove(id string) error {
 	if err := s.vault.DeleteSecret(rootPasswordKey(id)); err != nil {
 		return fmt.Errorf("destroy root password: %w", err)
 	}
+	// The dashboard admin credential is created lazily, so a server that never had
+	// one has nothing to remove — hence best-effort. Leaving it behind would keep
+	// a credential in the keychain for a server that no longer exists.
+	_ = s.vault.DeleteSecret(uptimeKumaAdminKey(id))
 	if err := s.store.Delete(id); err != nil {
 		return fmt.Errorf("delete server: %w", err)
 	}

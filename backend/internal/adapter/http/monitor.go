@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	nethttp "net/http"
+	"strings"
 
 	"github.com/goodylili/mountabo/internal/usecase"
 )
@@ -72,24 +73,42 @@ func (h *MonitorHandler) Health(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 }
 
-// Delete tears the deployment named in the path (owner, repo, environment) fully
-// down: it stops and removes the app's container(s) on its server, deletes the
-// committed deploy workflow and deploy.sh from the repo, and removes the
-// deployment record and its deploy history. The teardown is best-effort: soft
-// failures (server unreachable, file already gone) are logged but still return
-// 204, so the user is never stuck. Not-found is 404.
+// Delete tears the deployment named in the path fully down: it disables the
+// trigger, removes what the deployment owns on its server, drops the GitHub
+// environment and (when nothing else needs it) the repo deploy key, and removes
+// the record and its history.
+//
+// Named volumes are removed only when ?volumes=true. They hold databases and
+// uploads, so a default that destroyed them would make an ordinary delete
+// unrecoverable.
+//
+// The server-side journal is returned in the body rather than discarded: a 204
+// would claim a clean server when the purge may have left resources it could not
+// remove. Soft failures still return 200 — the user is never stuck with an
+// undeletable deployment — but they are reported.
 func (h *MonitorHandler) Delete(w nethttp.ResponseWriter, r *nethttp.Request) {
 	owner, repo, environment := r.PathValue("owner"), r.PathValue("repo"), r.PathValue("environment")
-	if err := h.svc.Delete(r.Context(), owner, repo, environment); err != nil {
+	opts := usecase.DeleteOptions{RemoveVolumes: r.URL.Query().Get("volumes") == "true"}
+
+	var journal strings.Builder
+	if err := h.svc.Delete(r.Context(), owner, repo, environment, opts, &journal); err != nil {
 		if errors.Is(err, usecase.ErrDeploymentNotFound) {
 			h.writeError(w, nethttp.StatusNotFound, "deployment not found")
+			return
+		}
+		if errors.Is(err, usecase.ErrDeployInProgress) {
+			h.writeError(w, nethttp.StatusConflict, "a deploy is running for this deployment; wait for it to finish")
 			return
 		}
 		h.log.Error("delete deployment failed", "repo", owner+"/"+repo, "environment", environment, "err", err)
 		h.writeError(w, nethttp.StatusInternalServerError, "could not delete the deployment")
 		return
 	}
-	w.WriteHeader(nethttp.StatusNoContent)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(nethttp.StatusOK)
+	if err := json.NewEncoder(w).Encode(map[string]string{"cleanup": journal.String()}); err != nil {
+		h.log.Error("encode response", "err", err)
+	}
 }
 
 // SetPort records the published port for the deployment named in the path

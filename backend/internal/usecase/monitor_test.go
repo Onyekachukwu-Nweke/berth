@@ -3,6 +3,8 @@ package usecase
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 )
@@ -24,15 +26,19 @@ func (f fakeReleaseReader) Releases(_, _, _ string, _ int) ([]Release, int, erro
 	return f.releases, f.total, nil
 }
 
-// fakeContainerTeardown records the deployment identities it was asked to remove,
-// so a test can assert teardown ran against the right deployment — and only it.
+// fakeContainerTeardown records the purge specs it was asked to apply, so a test
+// can assert teardown ran against the right deployment — and only it — with the
+// options the operator actually chose.
 type fakeContainerTeardown struct {
 	removed []string
+	specs   []PurgeSpec
 	err     error
 }
 
-func (f *fakeContainerTeardown) RemoveApp(_ context.Context, _ SSHTarget, deploymentID string) error {
-	f.removed = append(f.removed, deploymentID)
+func (f *fakeContainerTeardown) PurgeApp(_ context.Context, _ SSHTarget, spec PurgeSpec, out io.Writer) error {
+	f.removed = append(f.removed, spec.DeploymentID)
+	f.specs = append(f.specs, spec)
+	_, _ = io.WriteString(out, "removed: containers\n")
 	return f.err
 }
 
@@ -238,7 +244,7 @@ func TestMonitorDelete_TearsDownContainerWorkflowAndRecord(t *testing.T) {
 	files := &fakeRepoFileDeleter{}
 	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, servers, vault, teardown, files, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
 
-	if err := svc.Delete(context.Background(), "acme", "shop", "production"); err != nil {
+	if err := svc.Delete(context.Background(), "acme", "shop", "production", DeleteOptions{}, io.Discard); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
@@ -271,7 +277,7 @@ func TestMonitorDelete_TearsDownContainerWorkflowAndRecord(t *testing.T) {
 func TestMonitorDelete_NotFound(t *testing.T) {
 	deps := &fakeDeploymentStore{}
 	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
-	if err := svc.Delete(context.Background(), "acme", "shop", "missing"); !errors.Is(err, ErrDeploymentNotFound) {
+	if err := svc.Delete(context.Background(), "acme", "shop", "missing", DeleteOptions{}, io.Discard); !errors.Is(err, ErrDeploymentNotFound) {
 		t.Fatalf("want ErrDeploymentNotFound, got %v", err)
 	}
 }
@@ -290,10 +296,150 @@ func TestMonitorDelete_RemovesRecordEvenWhenTeardownFails(t *testing.T) {
 	files := &fakeRepoFileDeleter{err: errors.New("github down")}
 	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "tok"}}, fakeRunLister{}, servers, vault, teardown, files, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, NewDeployLocker(), nil)
 
-	if err := svc.Delete(context.Background(), "acme", "shop", "production"); err != nil {
+	if err := svc.Delete(context.Background(), "acme", "shop", "production", DeleteOptions{}, io.Discard); err != nil {
 		t.Fatalf("Delete should succeed despite soft teardown failures, got %v", err)
 	}
 	if got, _ := deps.List(); len(got) != 0 {
 		t.Errorf("record still present after delete: %v", got)
 	}
+}
+
+// TestDelete_KeepsSharedResourcesWhileASiblingEnvironmentExists is the "deleting
+// one deployment cannot affect another" property at the mountabo level.
+//
+// The deploy key is per REPO, not per deployment. Removing it while another
+// environment of the same repo still deploys would break that deployment's clone,
+// on GitHub, on the box and in the vault at once.
+func TestDelete_KeepsSharedResourcesWhileASiblingEnvironmentExists(t *testing.T) {
+	deps := &fakeDeploymentStore{saved: []Deployment{
+		{ID: "d1", App: "shop", Owner: "acme", Repo: "shop", Branch: "main", Environment: "production",
+			ServerID: "s1", WorkflowFile: "w1.yml", Config: &DeployConfig{DeployDir: "/opt/shop", DeployKeyFile: "k"}},
+		{ID: "d2", App: "shop", Owner: "acme", Repo: "shop", Branch: "develop", Environment: "staging",
+			ServerID: "s1", WorkflowFile: "w2.yml", Config: &DeployConfig{DeployDir: "/opt/shop", DeployKeyFile: "k"}},
+	}}
+	servers := newMemServerStore()
+	_ = servers.Save(Server{ID: "s1", Name: "box", IP: "10.0.0.1", SSHPort: 22, Status: StatusReady})
+	vault := newFakeVault()
+	_ = vault.SaveSecret(privateKeyKey("s1"), "KEY")
+	_ = vault.SaveSecret(deployKeyVaultKey("acme", "shop"), "DEPLOYKEY")
+
+	purger := &fakeContainerTeardown{}
+	keys := &fakeRepoKeyDeleter{}
+	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "t"}},
+		fakeRunLister{}, servers, vault, purger, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, keys, deps,
+		NewDeployLocker(), testLogger())
+
+	if err := svc.Delete(context.Background(), "acme", "shop", "production", DeleteOptions{}, io.Discard); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if len(purger.specs) != 1 {
+		t.Fatalf("want one purge, got %d", len(purger.specs))
+	}
+	if purger.specs[0].RemoveDeployKey {
+		t.Error("the deploy key must be kept on the box while staging still uses it")
+	}
+	if len(keys.cleared) != 0 {
+		t.Error("the GitHub deploy key must be kept while staging still uses it")
+	}
+	if v, err := vault.LoadSecret(deployKeyVaultKey("acme", "shop")); err != nil || v == "" {
+		t.Error("the vault copy of the deploy key must be kept while staging still uses it")
+	}
+	// The server-side purge is still scoped to the deleted deployment only.
+	if got := purger.specs[0].DeploymentID; got != DeriveDeploymentID("acme", "shop", "production") {
+		t.Errorf("purge targeted %q, not the deployment being deleted", got)
+	}
+}
+
+// TestDelete_RemovesSharedResourcesForTheLastEnvironment is the other half: once
+// nothing else needs the key, leaving it behind is an orphaned live credential.
+func TestDelete_RemovesSharedResourcesForTheLastEnvironment(t *testing.T) {
+	deps := &fakeDeploymentStore{saved: []Deployment{
+		{ID: "d1", App: "shop", Owner: "acme", Repo: "shop", Branch: "main", Environment: "production",
+			ServerID: "s1", WorkflowFile: "w1.yml", Config: &DeployConfig{DeployDir: "/opt/shop", DeployKeyFile: "k"}},
+	}}
+	servers := newMemServerStore()
+	_ = servers.Save(Server{ID: "s1", Name: "box", IP: "10.0.0.1", SSHPort: 22, Status: StatusReady})
+	vault := newFakeVault()
+	_ = vault.SaveSecret(privateKeyKey("s1"), "KEY")
+	_ = vault.SaveSecret(deployKeyVaultKey("acme", "shop"), "DEPLOYKEY")
+
+	purger := &fakeContainerTeardown{}
+	keys := &fakeRepoKeyDeleter{}
+	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "t"}},
+		fakeRunLister{}, servers, vault, purger, &fakeRepoFileDeleter{}, &fakeRepoEnvDeleter{}, keys, deps,
+		NewDeployLocker(), testLogger())
+
+	if err := svc.Delete(context.Background(), "acme", "shop", "production", DeleteOptions{}, io.Discard); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if !purger.specs[0].RemoveDeployKey {
+		t.Error("the deploy key should be removed from the box once nothing else needs it")
+	}
+	if len(keys.cleared) == 0 {
+		t.Error("the GitHub deploy key should be removed for the last environment")
+	}
+}
+
+// TestDelete_DisablesTheTriggerBeforeTouchingTheServer keeps a push landing
+// mid-purge from recreating what is being removed.
+func TestDelete_DisablesTheTriggerBeforeTouchingTheServer(t *testing.T) {
+	deps := &fakeDeploymentStore{saved: []Deployment{
+		{ID: "d1", App: "shop", Owner: "acme", Repo: "shop", Branch: "main", Environment: "production",
+			ServerID: "s1", WorkflowFile: "w1.yml", Config: &DeployConfig{DeployDir: "/opt/shop"}},
+	}}
+	servers := newMemServerStore()
+	_ = servers.Save(Server{ID: "s1", Name: "box", IP: "10.0.0.1", SSHPort: 22, Status: StatusReady})
+	vault := newFakeVault()
+	_ = vault.SaveSecret(privateKeyKey("s1"), "KEY")
+
+	order := &orderRecorder{}
+	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "t"}},
+		fakeRunLister{}, servers, vault, order, order, &fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps,
+		NewDeployLocker(), testLogger())
+
+	if err := svc.Delete(context.Background(), "acme", "shop", "production", DeleteOptions{}, io.Discard); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if len(order.events) < 2 || order.events[0] != "workflow" {
+		t.Errorf("the trigger must be disabled first, got order %v", order.events)
+	}
+}
+
+// orderRecorder records the sequence of teardown steps.
+type orderRecorder struct{ events []string }
+
+func (o *orderRecorder) PurgeApp(_ context.Context, _ SSHTarget, _ PurgeSpec, _ io.Writer) error {
+	o.events = append(o.events, "purge")
+	return nil
+}
+
+func (o *orderRecorder) DeleteFile(_ context.Context, _ Token, _, _, _, _, _ string) error {
+	o.events = append(o.events, "workflow")
+	return nil
+}
+
+// TestDelete_HoldsTheDeployLock keeps a delete from racing a deploy mountabo
+// started against the very resources being removed.
+func TestDelete_HoldsTheDeployLock(t *testing.T) {
+	deps := &fakeDeploymentStore{saved: []Deployment{
+		{ID: "d1", App: "shop", Owner: "acme", Repo: "shop", Branch: "main", Environment: "production",
+			ServerID: "s1", WorkflowFile: "w1.yml", Config: &DeployConfig{DeployDir: "/opt/shop"}},
+	}}
+	locker := NewDeployLocker()
+	svc := NewMonitorService(deps, fakeReleaseReader{}, deps, &fakeStore{loadTok: Token{AccessToken: "t"}},
+		fakeRunLister{}, newMemServerStore(), newFakeVault(), &fakeContainerTeardown{}, &fakeRepoFileDeleter{},
+		&fakeRepoEnvDeleter{}, &fakeRepoKeyDeleter{}, deps, locker, testLogger())
+
+	locker.TryAcquire(lockKey("acme", "shop", "production"))
+	err := svc.Delete(context.Background(), "acme", "shop", "production", DeleteOptions{}, io.Discard)
+	if !errors.Is(err, ErrDeployInProgress) {
+		t.Errorf("want ErrDeployInProgress while a deploy holds the lock, got %v", err)
+	}
+}
+
+// testLogger discards output: these tests assert behaviour, and the teardown path
+// deliberately logs a great deal about what it kept and why.
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 }

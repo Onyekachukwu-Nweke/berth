@@ -212,13 +212,13 @@ func (s *AccessSQL) Policy() (usecase.Policy, error) {
 	}
 	_ = rows.Close()
 
-	rows, err = s.db.Query(`SELECT client_id, environment, server_id, require_approval FROM env_rules ORDER BY client_id, environment`)
+	rows, err = s.db.Query(`SELECT client_id, environment, server_id FROM env_rules ORDER BY client_id, environment`)
 	if err != nil {
 		return p, fmt.Errorf("query env rules: %w", err)
 	}
 	for rows.Next() {
 		var r usecase.EnvRule
-		if err := rows.Scan(&r.ClientID, &r.Environment, &r.ServerID, &r.RequireApproval); err != nil {
+		if err := rows.Scan(&r.ClientID, &r.Environment, &r.ServerID); err != nil {
 			_ = rows.Close()
 			return p, fmt.Errorf("scan env rule: %w", err)
 		}
@@ -226,14 +226,14 @@ func (s *AccessSQL) Policy() (usecase.Policy, error) {
 	}
 	_ = rows.Close()
 
-	rows, err = s.db.Query(`SELECT owner, repo, environment, server_id, require_approval FROM repo_rules ORDER BY owner, repo, environment`)
+	rows, err = s.db.Query(`SELECT owner, repo, environment, server_id FROM repo_rules ORDER BY owner, repo, environment`)
 	if err != nil {
 		return p, fmt.Errorf("query repo rules: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var r usecase.RepoRule
-		if err := rows.Scan(&r.Owner, &r.Repo, &r.Environment, &r.ServerID, &r.RequireApproval); err != nil {
+		if err := rows.Scan(&r.Owner, &r.Repo, &r.Environment, &r.ServerID); err != nil {
 			return p, fmt.Errorf("scan repo rule: %w", err)
 		}
 		p.RepoRules = append(p.RepoRules, r)
@@ -279,9 +279,9 @@ func (s *AccessSQL) DeleteLink(owner, repo string) error {
 
 // SaveEnvRule sets where a client's environment deploys.
 func (s *AccessSQL) SaveEnvRule(r usecase.EnvRule) error {
-	if _, err := s.db.Exec(`INSERT INTO env_rules (client_id, environment, server_id, require_approval) VALUES ($1, $2, $3, $4)
-		ON CONFLICT (client_id, environment) DO UPDATE SET server_id = excluded.server_id, require_approval = excluded.require_approval`,
-		r.ClientID, strings.ToLower(r.Environment), r.ServerID, r.RequireApproval); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO env_rules (client_id, environment, server_id) VALUES ($1, $2, $3)
+		ON CONFLICT (client_id, environment) DO UPDATE SET server_id = excluded.server_id`,
+		r.ClientID, strings.ToLower(r.Environment), r.ServerID); err != nil {
 		return fmt.Errorf("save env rule: %w", err)
 	}
 	return nil
@@ -297,9 +297,9 @@ func (s *AccessSQL) DeleteEnvRule(clientID, environment string) error {
 
 // SaveRepoRule sets a repo's environment override.
 func (s *AccessSQL) SaveRepoRule(r usecase.RepoRule) error {
-	if _, err := s.db.Exec(`INSERT INTO repo_rules (owner, repo, environment, server_id, require_approval) VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (owner, repo, environment) DO UPDATE SET server_id = excluded.server_id, require_approval = excluded.require_approval`,
-		strings.ToLower(r.Owner), strings.ToLower(r.Repo), strings.ToLower(r.Environment), r.ServerID, r.RequireApproval); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO repo_rules (owner, repo, environment, server_id) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (owner, repo, environment) DO UPDATE SET server_id = excluded.server_id`,
+		strings.ToLower(r.Owner), strings.ToLower(r.Repo), strings.ToLower(r.Environment), r.ServerID); err != nil {
 		return fmt.Errorf("save repo rule: %w", err)
 	}
 	return nil

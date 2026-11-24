@@ -98,19 +98,17 @@ type RepoLink struct {
 
 // EnvRule says where one of a client's environments deploys.
 type EnvRule struct {
-	ClientID        string `json:"clientId"`
-	Environment     string `json:"environment"`
-	ServerID        string `json:"serverId"`
-	RequireApproval bool   `json:"requireApproval"`
+	ClientID    string `json:"clientId"`
+	Environment string `json:"environment"`
+	ServerID    string `json:"serverId"`
 }
 
 // RepoRule overrides a client's rule for one repo and environment.
 type RepoRule struct {
-	Owner           string `json:"owner"`
-	Repo            string `json:"repo"`
-	Environment     string `json:"environment"`
-	ServerID        string `json:"serverId"`
-	RequireApproval bool   `json:"requireApproval"`
+	Owner       string `json:"owner"`
+	Repo        string `json:"repo"`
+	Environment string `json:"environment"`
+	ServerID    string `json:"serverId"`
 }
 
 // Policy is the whole placement policy. It is small (tens of rows), so it is
@@ -145,9 +143,8 @@ func (p Policy) ClientFor(owner, repo string) string {
 
 // Target is where one environment of a repo deploys, and why.
 type Target struct {
-	Environment     string `json:"environment"`
-	ServerID        string `json:"serverId"`
-	RequireApproval bool   `json:"requireApproval"`
+	Environment string `json:"environment"`
+	ServerID    string `json:"serverId"`
 	// Source is "repo" for a repo override, "client" for the client's rule.
 	Source string `json:"source"`
 }
@@ -157,13 +154,13 @@ type Target struct {
 func (p Policy) TargetFor(owner, repo, environment string) (Target, bool) {
 	for _, r := range p.RepoRules {
 		if strings.EqualFold(r.Owner, owner) && strings.EqualFold(r.Repo, repo) && strings.EqualFold(r.Environment, environment) {
-			return Target{Environment: r.Environment, ServerID: r.ServerID, RequireApproval: r.RequireApproval, Source: "repo"}, true
+			return Target{Environment: r.Environment, ServerID: r.ServerID, Source: "repo"}, true
 		}
 	}
 	client := p.ClientFor(owner, repo)
 	for _, r := range p.EnvRules {
 		if r.ClientID == client && strings.EqualFold(r.Environment, environment) {
-			return Target{Environment: r.Environment, ServerID: r.ServerID, RequireApproval: r.RequireApproval, Source: "client"}, true
+			return Target{Environment: r.Environment, ServerID: r.ServerID, Source: "client"}, true
 		}
 	}
 	return Target{}, false
@@ -184,12 +181,12 @@ func (p Policy) TargetsFor(owner, repo string) []Target {
 	client := p.ClientFor(owner, repo)
 	for _, r := range p.EnvRules {
 		if r.ClientID == client {
-			add(Target{Environment: r.Environment, ServerID: r.ServerID, RequireApproval: r.RequireApproval, Source: "client"})
+			add(Target{Environment: r.Environment, ServerID: r.ServerID, Source: "client"})
 		}
 	}
 	for _, r := range p.RepoRules {
 		if strings.EqualFold(r.Owner, owner) && strings.EqualFold(r.Repo, repo) {
-			add(Target{Environment: r.Environment, ServerID: r.ServerID, RequireApproval: r.RequireApproval, Source: "repo"})
+			add(Target{Environment: r.Environment, ServerID: r.ServerID, Source: "repo"})
 		}
 	}
 	out := make([]Target, 0, len(order))

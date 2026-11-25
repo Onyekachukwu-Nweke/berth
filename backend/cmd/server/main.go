@@ -86,7 +86,7 @@ func run() error {
 	// JSON-file persistence, and vault secrets. One ssh.Client serves probe,
 	// bootstrap, keygen, and port inspection.
 	serverSvc := usecase.NewServerService(serverStore, sshClient, sshClient, sshClient, sshClient, sshClient, sshClient, keyStore)
-	serverPortSvc := usecase.NewServerPortService(serverStore, keyStore, sshClient)
+	serverPortSvc := usecase.NewServerPortService(serverStore, keyStore, sshClient, deploymentStore)
 	serverMetricsSvc := usecase.NewServerMetricsService(serverStore, keyStore, sshClient)
 	serverLogsSvc := usecase.NewServerLogsService(serverStore, keyStore, sshClient)
 	// Uptime Kuma has no public HTTP setup endpoint, so mountabo generates a

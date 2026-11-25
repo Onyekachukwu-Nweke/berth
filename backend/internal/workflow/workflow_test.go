@@ -316,7 +316,7 @@ func TestCdRoot_MatchesAppRoot(t *testing.T) {
 	}
 }
 
-// Builds are named <run id>-<attempt>-<first 5 of the sha>: the step that sets
+// Builds are named <environment>-<run number>-<first 5 of the sha>: the step that sets
 // it runs before anything is built, and everything after reads it from env.
 func TestWorkflow_NamesTheBuildWithAShortSHA(t *testing.T) {
 	for _, strategy := range []Strategy{Compose, Docker} {
@@ -327,8 +327,8 @@ func TestWorkflow_NamesTheBuildWithAShortSHA(t *testing.T) {
 		if name < 0 || build < 0 || name > build {
 			t.Fatalf("%s: the naming step must come before the build", strategy)
 		}
-		if !strings.Contains(wf, `MOUNTABO_ARTIFACT_ID=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA::5}`) {
-			t.Errorf("%s: build name should use the first 5 characters of the sha", strategy)
+		if !strings.Contains(wf, `MOUNTABO_ARTIFACT_ID=production-${run}-${GITHUB_SHA::5}`) {
+			t.Errorf("%s: build name should be <environment>-<run>-<first 5 of the sha>", strategy)
 		}
 		// Image tags and the artifact id use the short name; only MOUNTABO_COMMIT
 		// keeps the full sha, for the release record.

@@ -1,9 +1,10 @@
 package workflow
 
 import (
-	"gopkg.in/yaml.v3"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // testID is a stand-in for a real usecase.DeriveDeploymentID result. Every

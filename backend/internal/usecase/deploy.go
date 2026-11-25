@@ -337,7 +337,6 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 		return fmt.Errorf("write workflow: %w", err)
 	}
 
-
 	// Resolve the release's commit and actor for the durable record. Both are
 	// best-effort: a failure leaves the field empty and only notes it, since the
 	// deploy has already succeeded and must not fail on tracking metadata.

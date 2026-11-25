@@ -518,6 +518,27 @@ fi
 // mounted configs), at their repo-relative paths. Never the source code.
 const composeFilesTar = "mountabo.compose.tar.gz"
 
+// removeOldCheckout turns a deploy directory that older versions filled with a
+// git clone into a plain one: the tracked files go, then the folders they
+// lived in once they are empty, then .git. Untracked files, such as data an
+// app wrote there, stay, because rmdir never removes a folder with anything
+// in it. Run from inside the deploy directory.
+const removeOldCheckout = `if [ -d .git ]; then
+  echo "removing the old source checkout (mountabo no longer copies your repository to the server)"
+  if command -v git >/dev/null 2>&1; then
+    # Remove the tracked files, then the folders they lived in once empty.
+    # rmdir only removes empty folders, so anything holding app data stays.
+    git ls-files -z | while IFS= read -r -d '' f; do
+      rm -f -- "$f"
+      dirname -- "$f"
+    done | sort -ru | while IFS= read -r d; do
+      [ "$d" = . ] || rmdir -p --ignore-fail-on-non-empty -- "$d" 2>/dev/null || true
+    done
+  fi
+  rm -rf .git
+fi
+`
+
 // unpackCompose puts the compose files in place on the server without a
 // checkout. A deploy unpacks the archive the runner shipped; a rollback
 // unpacks the copy kept with that release, so it runs against the compose
@@ -539,14 +560,7 @@ fi
 	return fmt.Sprintf(`sudo mkdir -p "$DEPLOY_DIR"
 sudo chown -R "$(id -un):$(id -gn)" "$(dirname "$DEPLOY_DIR")"
 cd "$DEPLOY_DIR"
-if [ -d .git ]; then
-  echo "removing the old source checkout (mountabo no longer copies your repository to the server)"
-  if command -v git >/dev/null 2>&1; then
-    git ls-files -z | xargs -0 -r rm -f --
-  fi
-  rm -rf .git
-fi
-%[3]sCOMPOSE_TAR=%[1]q
+%[4]s%[3]sCOMPOSE_TAR=%[1]q
 if [ "$MOUNTABO_MODE" = rollback ]; then
   COMPOSE_TAR="$BUNDLE/compose.tar.gz"
 fi
@@ -564,7 +578,7 @@ elif [ "$MOUNTABO_MODE" = deploy ]; then
 else
   echo "note: this release predates shipped compose files; using the ones already here"
 fi
-`, StagingDir(c)+"/"+composeFilesTar, composeFilesTar, removeKey)
+`, StagingDir(c)+"/"+composeFilesTar, composeFilesTar, removeKey, removeOldCheckout)
 }
 
 // populateEnvFiles regenerates every per-service env file a compose declares

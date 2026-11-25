@@ -358,7 +358,7 @@ func TestCompose_ShipsComposeFilesInsteadOfCloning(t *testing.T) {
 			t.Errorf("deploy.sh still contains %q", bad)
 		}
 	}
-	for _, want := range []string{`tar -xzf "$COMPOSE_TAR"`, `rm -f "$HOME/.ssh/mountabo_deploy_acme_shop"`, "git ls-files -z | xargs -0 -r rm -f --"} {
+	for _, want := range []string{`tar -xzf "$COMPOSE_TAR"`, `rm -f "$HOME/.ssh/mountabo_deploy_acme_shop"`, "rmdir -p --ignore-fail-on-non-empty"} {
 		if !strings.Contains(script, want) {
 			t.Errorf("deploy.sh missing %q", want)
 		}

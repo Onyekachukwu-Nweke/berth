@@ -59,8 +59,8 @@ func TestRollback_TakesItsInputsFromTheBundle(t *testing.T) {
 // TestRollback_DoesNotDisturbTheWorkingTreeOrConfiguration pins two things a
 // rollback must leave alone.
 //
-// The checkout: the release's compose was rendered against it, and fetching would
-// also require the branch to still resolve. The .env: GitHub Actions secret values
+// The compose files: a rollback unpacks the copy kept with its release, and
+// only a deploy records a new one. The .env: GitHub Actions secret values
 // are write-only, so mountabo cannot reconstruct it — a rollback restores code,
 // not secrets, and the file already on the box is the current configuration.
 func TestRollback_DoesNotDisturbTheWorkingTreeOrConfiguration(t *testing.T) {
@@ -79,10 +79,15 @@ func TestRollback_DoesNotDisturbTheWorkingTreeOrConfiguration(t *testing.T) {
 		k := strings.LastIndex(before, "\nfi\n")
 		return j >= 0 && j > k
 	}
-	for _, needle := range []string{`git reset --hard "origin/$BRANCH"`, "wrote $written environment variable(s) to .env"} {
+	for _, needle := range []string{`cp "$COMPOSE_TAR" "$BUNDLE/compose.tar.gz"`, "wrote $written environment variable(s) to .env"} {
 		if !guarded(needle) {
 			t.Errorf("%q must run only on a deploy, not a rollback:\n%s", needle, s)
 		}
+	}
+	// A rollback runs against the compose files kept with the target release,
+	// not whatever the latest deploy left in the directory.
+	if !strings.Contains(s, "if [ \"$MOUNTABO_MODE\" = rollback ]; then\n  COMPOSE_TAR=\"$BUNDLE/compose.tar.gz\"\nfi") {
+		t.Errorf("rollback must unpack the release's own compose files:\n%s", s)
 	}
 }
 

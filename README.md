@@ -47,7 +47,7 @@ MOUNTABO_HTTP_ADDR=127.0.0.1:7778
 # Postgres holds all state. `make mountabo` starts a local one for you.
 DATABASE_URL=postgres://mountabo:mountabo@localhost:5432/mountabo?sslmode=disable
 
-# Seals server SSH keys and deploy keys in the database. Back it up.
+# Seals server SSH keys in the database. Back it up.
 # openssl rand -base64 32
 MOUNTABO_MASTER_KEY=...
 
@@ -187,5 +187,5 @@ To enable the helper, set `ANTHROPIC_API_KEY` in your `.env` to a key from [the 
 ## Notes
 
 - Locally, the backend listens on `127.0.0.1:7778` and the frontend on `http://localhost:4321`.
-- All state lives in Postgres. Server SSH keys and deploy keys are sealed with `MOUNTABO_MASTER_KEY`; app secrets are never stored by Mountabo, they go straight to GitHub Actions secrets.
+- All state lives in Postgres. Server SSH keys are sealed with `MOUNTABO_MASTER_KEY`; app secrets are never stored by Mountabo, they go straight to GitHub Actions secrets. Your source code never goes to servers: the runner builds the images and ships them with just the compose files.
 - The current setup flow is aimed at fresh Ubuntu-style servers.

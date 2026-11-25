@@ -111,7 +111,7 @@ func run() error {
 	// the public half on the repo. ghClient also dispatches workflow_dispatch so a
 	// secrets change can redeploy. Constructed before the secrets service, which
 	// re-applies deployments through it (as a DeployReapplier) on secret changes.
-	deploySvc := usecase.NewDeployService(serverStore, keyStore, app, ghClient, ghClient, ghClient, deploymentStore, sshClient, ghClient, sshClient, ghClient, ghClient, deployLocker)
+	deploySvc := usecase.NewDeployService(serverStore, keyStore, app, ghClient, ghClient, ghClient, deploymentStore, ghClient, ghClient, ghClient, deployLocker)
 	deployHandler := httpadapter.NewDeployHandler(deploySvc, logger)
 
 	// The secrets service manages an environment's GitHub Actions secrets: GitHub

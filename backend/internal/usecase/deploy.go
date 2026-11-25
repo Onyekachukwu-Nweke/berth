@@ -134,18 +134,6 @@ type EnvSecretSetter interface {
 	SetEnvSecrets(ctx context.Context, t Token, owner, repo, environment string, secrets []NamedSecret) error
 }
 
-// RepoDeployKeyManager registers a read-only SSH deploy key on a repo, returning
-// its id, so a server can git clone it (and only it).
-type RepoDeployKeyManager interface {
-	AddDeployKey(ctx context.Context, t Token, owner, repo, title, publicKey string, readOnly bool) (int64, error)
-}
-
-// DeployKeyInstaller writes a repo's deploy private key onto the server (in the
-// deploy user's ~/.ssh) over SSH, streaming progress to out.
-type DeployKeyInstaller interface {
-	InstallDeployKey(ctx context.Context, t SSHTarget, keyName, privateKey string, out io.Writer) error
-}
-
 // RefResolver reports the head commit SHA of a repo branch, so a deploy can
 // record the exact commit it is releasing. Best-effort at deploy time: a failure
 // leaves the release's commit unset rather than blocking the deploy.
@@ -173,9 +161,7 @@ type DeployService struct {
 	envs       EnvManager
 	secrets    EnvSecretSetter
 	history    DeploymentStore
-	keys       KeyMaker
-	deployKeys RepoDeployKeyManager
-	installer  DeployKeyInstaller
+	repoKeys   RepoKeyDeleter
 	refs       RefResolver
 	dispatcher WorkflowDispatcher
 	locker     *DeployLocker
@@ -188,8 +174,8 @@ var _ DeployReapplier = (*DeployService)(nil)
 // the request context); it is read best-effort and never block a deploy. dispatcher redeploys via
 // workflow_dispatch when a secret change is re-applied. locker serializes deploys
 // per target so two concurrent deploys never race on the same repo files.
-func NewDeployService(servers ServerStore, vault SecretVault, tokens RepoTokens, repo RepoWriter, envs EnvManager, secrets EnvSecretSetter, history DeploymentStore, keys KeyMaker, deployKeys RepoDeployKeyManager, installer DeployKeyInstaller, refs RefResolver, dispatcher WorkflowDispatcher, locker *DeployLocker) *DeployService {
-	return &DeployService{servers: servers, vault: vault, tokens: tokens, repo: repo, envs: envs, secrets: secrets, history: history, keys: keys, deployKeys: deployKeys, installer: installer, refs: refs, dispatcher: dispatcher, locker: locker}
+func NewDeployService(servers ServerStore, vault SecretVault, tokens RepoTokens, repo RepoWriter, envs EnvManager, secrets EnvSecretSetter, history DeploymentStore, repoKeys RepoKeyDeleter, refs RefResolver, dispatcher WorkflowDispatcher, locker *DeployLocker) *DeployService {
+	return &DeployService{servers: servers, vault: vault, tokens: tokens, repo: repo, envs: envs, secrets: secrets, history: history, repoKeys: repoKeys, refs: refs, dispatcher: dispatcher, locker: locker}
 }
 
 // Preview generates the deploy artifacts from the config alone, no server, no
@@ -273,11 +259,10 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 	if existing, found := s.findDeployment(in.Owner, in.Repo, env); found {
 		cfg.DeploymentID = DeploymentIDFor(existing)
 	}
-	// The docker strategy runs an image built + shipped from the runner and never
-	// clones on the server, so it needs no deploy key. Only the compose strategy
-	// (which clones the repo for its compose file) gets one.
-	needsDeployKey := cfg.Strategy != workflow.Docker
-	if needsDeployKey {
+	// Nothing is cloned onto the server any more: the runner ships the compose
+	// files with the images. Servers deployed by older versions still hold a
+	// read-only deploy key for the repo; naming it lets deploy.sh delete it.
+	if cfg.Strategy != workflow.Docker {
 		cfg.DeployKeyFile = deployKeyFileName(in.Owner, in.Repo)
 	}
 
@@ -296,34 +281,7 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 		return fmt.Errorf("set environment secrets: %w", err)
 	}
 
-	// Give the server a read-only deploy key so deploy.sh can clone this repo
-	// (and only this repo). Reuse the per-repo key across deploys; on first
-	// deploy, generate one, register its public half on the repo, and keep the
-	// private half in the vault. The private key is then installed on the box.
-	// Skipped entirely for the docker strategy, which ships a prebuilt image and
-	// never clones.
-	if needsDeployKey {
-		deployKey, _ := s.vault.LoadSecret(deployKeyVaultKey(in.Owner, in.Repo))
-		if deployKey == "" {
-			priv, pub, gerr := s.keys.Generate(fmt.Sprintf("mountabo-deploy@%s/%s", in.Owner, in.Repo))
-			if gerr != nil {
-				return fmt.Errorf("generate deploy key: %w", gerr)
-			}
-			progress(out, "registering read-only deploy key on %s/%s", in.Owner, in.Repo)
-			if _, aerr := s.deployKeys.AddDeployKey(ctx, token, in.Owner, in.Repo, fmt.Sprintf("mountabo deploy (%s)", server.Name), pub, true); aerr != nil {
-				return fmt.Errorf("register deploy key: %w", aerr)
-			}
-			if serr := s.vault.SaveSecret(deployKeyVaultKey(in.Owner, in.Repo), priv); serr != nil {
-				return fmt.Errorf("store deploy key: %w", serr)
-			}
-			deployKey = priv
-		}
-		progress(out, "installing deploy key on %s", server.Name)
-		target := SSHTarget{Host: server.IP, Port: server.SSHPort, User: BootstrapUser, PrivateKey: key, Fingerprint: server.Fingerprint}
-		if ierr := s.installer.InstallDeployKey(ctx, target, cfg.DeployKeyFile, deployKey, out); ierr != nil {
-			return fmt.Errorf("install deploy key: %w", ierr)
-		}
-	}
+	s.retireDeployKey(ctx, token, in.Owner, in.Repo, env, out)
 
 	scriptPath := workflow.ScriptPath(cfg)
 	progress(out, "writing %s", scriptPath)
@@ -606,6 +564,44 @@ func deployKeyVaultKey(owner, repo string) string {
 
 // deployKeyFileName is the (filesystem-safe) name the deploy key is installed
 // under in the deploy user's ~/.ssh, one per repo.
+// retireDeployKey removes the read-only deploy key that older deploys added to
+// the repo (and kept in the vault) to clone it onto servers. It only does so
+// when no other environment of the repo exists: one that hasn't been
+// redeployed yet still runs a deploy.sh that clones with that key. Failure is
+// only reported; it never fails the deploy.
+func (s *DeployService) retireDeployKey(ctx context.Context, token Token, owner, repo, env string, out io.Writer) {
+	if k, _ := s.vault.LoadSecret(deployKeyVaultKey(owner, repo)); k == "" {
+		return
+	}
+	all, err := s.history.List()
+	if err != nil {
+		return
+	}
+	var others []string
+	for _, d := range all {
+		if strings.EqualFold(d.Owner, owner) && strings.EqualFold(d.Repo, repo) && !strings.EqualFold(d.Environment, env) {
+			others = append(others, d.Environment)
+		}
+	}
+	if len(others) > 0 {
+		progress(out, "note: keeping %s/%s's old deploy key until %s %s redeployed", owner, repo, strings.Join(others, ", "), pluralIs(len(others)))
+		return
+	}
+	if err := s.repoKeys.DeleteDeployKey(ctx, token, owner, repo, "mountabo deploy"); err != nil {
+		progress(out, "note: could not remove the old deploy key from %s/%s: %v", owner, repo, err)
+		return
+	}
+	_ = s.vault.DeleteSecret(deployKeyVaultKey(owner, repo))
+	progress(out, "removed the old read-only deploy key from %s/%s (servers no longer clone the repository)", owner, repo)
+}
+
+func pluralIs(n int) string {
+	if n == 1 {
+		return "is"
+	}
+	return "are"
+}
+
 func deployKeyFileName(owner, repo string) string {
 	var b strings.Builder
 	b.WriteString("mountabo_deploy_")

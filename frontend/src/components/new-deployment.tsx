@@ -817,14 +817,14 @@ export function NewDeployment({
             mountabo will connect to <span className="text-cream">{confirmSetup.ip}</span>{" "}as root once
             and prepare it for deployments. it creates an unprivileged{" "}
             <span className="text-cream">mountabo</span>{" "}user, generates and installs a dedicated
-            ed25519 deploy key, and applies the base hardening. you can add or remove hardening later.
+            ed25519 SSH key, and applies the base hardening. you can add or remove hardening later.
             nothing runs until you confirm.
           </>
         }
         steps={[
           "connect to the server as root over SSH using the password you provided",
           "create the unprivileged mountabo user with sudo and a locked password",
-          "generate an ed25519 deploy key and install its public key for the mountabo user",
+          "generate an ed25519 SSH key and install its public key for the mountabo user",
           "store the private key encrypted in Mountabo's vault; the server only gets the public half in authorized_keys",
           "apply the base hardening and confirm mountabo can log in with the new key",
         ]}

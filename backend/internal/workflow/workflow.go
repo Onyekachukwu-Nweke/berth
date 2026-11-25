@@ -56,9 +56,9 @@ type Config struct {
 	Strategy    Strategy
 	Ports       []Port
 	EnvVars     []EnvVar
-	// DeployKeyFile, when set, is the name of the repo's read-only deploy key
-	// under the deploy user's ~/.ssh; deploy.sh uses it for git over SSH. Empty
-	// falls back to whatever key the server's git already has.
+	// DeployKeyFile, when set, names the read-only deploy key that older
+	// deploys installed under the deploy user's ~/.ssh to clone the repo.
+	// Nothing clones any more; deploy.sh deletes the file if it is still there.
 	DeployKeyFile string
 	// DeploymentID is the canonical identity every server-side resource is named
 	// from (usecase.DeriveDeploymentID): the committed script, the staging
@@ -320,6 +320,31 @@ func buildStep(c Config) string {
             printf '  %%s:\n    image: %%s\n' "$s" "$tag" >> mountabo.image.override.yml
             tags="$tags $tag"
           done
+          # Ship only what compose needs on the server: the compose file(s) and the
+          # files they reference inside this repository (env files, mounted
+          # configs), at their repo paths. Never the source code.
+          ws="$(git rev-parse --show-toplevel)"
+          here="$(pwd -P)"
+          ov=""
+          for f in docker-compose.override.yml docker-compose.override.yaml compose.override.yml compose.override.yaml; do
+            if [ -f "$f" ]; then ov="$f"; break; fi
+          done
+          {
+            printf '%%s\n' "$compose"
+            if [ -n "$ov" ]; then printf '%%s\n' "$ov"; fi
+            docker compose -f "$compose" ${ov:+-f "$ov"} config --no-interpolate --format json | jq -r '
+              [ (.services[]? | (.volumes[]? | select(.type == "bind") | .source),
+                                (.env_file[]? | if type == "object" then .path else . end)),
+                (.configs[]? | .file), (.secrets[]? | .file) ] | .[] | select(. != null)'
+          } | while IFS= read -r p; do
+            case "$p" in /*) abs="$p" ;; *) abs="$here/$p" ;; esac
+            [ -e "$abs" ] || continue
+            abs="$(realpath "$abs")"
+            case "$abs" in "$ws"/*) printf '%%s\0' "${abs#"$ws"/}" ;; esac
+          done | sort -zu > mountabo.compose.list
+          tar -czf %[4]s -C "$ws" --null -T mountabo.compose.list
+          echo "shipping to the server: $(tr '\0' ' ' < mountabo.compose.list)"
+
           # A compose stack with no build: services has nothing to offload — its
           # images are all pulled, so the server just pulls them on up. Skip the
           # tarball + override entirely (the ship + load steps handle their absence).
@@ -329,7 +354,7 @@ func buildStep(c Config) string {
           else
             echo "no build: services in compose; images will be pulled on the server"
           fi
-`, c.imageRepo(), root, ArtifactIDExpr)
+`, c.imageRepo(), root, ArtifactIDExpr, composeFilesTar)
 }
 
 // ownershipLabels are the labels stamped on every resource this deployment
@@ -373,7 +398,7 @@ func rsyncArtifacts(c Config) string {
 	if root != "." {
 		prefix = root + "/"
 	}
-	return fmt.Sprintf("%[1]simage.tar.zst %[1]smountabo.image.override.yml", prefix)
+	return fmt.Sprintf("%[1]simage.tar.zst %[1]smountabo.image.override.yml %[1]s%[2]s", prefix, composeFilesTar)
 }
 
 // rootDirOrDot is the app root relative to the repo, or "." at the repo root.
@@ -408,17 +433,16 @@ func DeployScript(c Config) string {
 }
 
 // header is the shared top of every deploy.sh: strict mode, the branch and
-// deploy directory, the repo's SSH URL, and a banner.
+// deploy directory, and a banner.
 func header(c Config) string {
 	return fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
 
 BRANCH="${1:-%[1]s}"
-DEPLOYMENT_ID=%[6]q
+DEPLOYMENT_ID=%[4]q
 DEPLOY_DIR="${DEPLOY_DIR:-%[2]s}/$DEPLOYMENT_ID"
-REPO_URL="git@github.com:%[3]s/%[4]s.git"
 
-echo "=== %[5]s deploy (branch: $BRANCH) ==="`, c.Branch, c.DeployDir, c.Owner, c.Repo, c.App, c.deploymentID())
+echo "=== %[3]s deploy (branch: $BRANCH) ==="`, c.Branch, c.DeployDir, c.App, c.deploymentID())
 }
 
 // lockPreamble serializes the whole operation on the server and refuses to run
@@ -489,37 +513,59 @@ fi
 `, c.incarnation())
 }
 
-// gitAuth points git at the repo's read-only deploy key for SSH clones, when
-// one is configured. mountabo installs that key on the server out of band.
-func gitAuth(c Config) string {
-	if c.DeployKeyFile == "" {
-		return ""
-	}
-	return fmt.Sprintf(`# Use the repo's read-only deploy key for git over SSH.
-export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/%s -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+// composeFilesTar is the archive the runner ships with a compose deploy: the
+// compose file(s) and the files they reference inside the repo (env files,
+// mounted configs), at their repo-relative paths. Never the source code.
+const composeFilesTar = "mountabo.compose.tar.gz"
 
+// unpackCompose puts the compose files in place on the server without a
+// checkout. A deploy unpacks the archive the runner shipped; a rollback
+// unpacks the copy kept with that release, so it runs against the compose
+// files it was built with. Unpacking only overwrites the shipped files: data
+// a container keeps in the deploy directory is left alone.
+//
+// Servers set up by older versions hold a full clone of the repo here, plus a
+// deploy key that can read it. Both go: the clone's tracked files and .git are
+// removed (untracked runtime files stay), and so is the key.
+func unpackCompose(c Config) string {
+	removeKey := ""
+	if c.DeployKeyFile != "" {
+		removeKey = fmt.Sprintf(`if [ -f "$HOME/.ssh/%[1]s" ]; then
+  echo "removing the old repository deploy key from this server (no longer needed)"
+  rm -f "$HOME/.ssh/%[1]s" "$HOME/.ssh/%[1]s.pub"
+fi
 `, c.DeployKeyFile)
-}
-
-// clonePull clones the repo on first deploy, or fast-forwards it on later ones.
-// DEPLOY_DIR often lives under a root-owned path such as /opt, where the deploy
-// user cannot create directories, so it is created with sudo (the bootstrap
-// grants the deploy user passwordless sudo) and then handed to the deploy user
-// so git and docker run without root from here on.
-const clonePull = `sudo mkdir -p "$DEPLOY_DIR"
+	}
+	return fmt.Sprintf(`sudo mkdir -p "$DEPLOY_DIR"
 sudo chown -R "$(id -un):$(id -gn)" "$(dirname "$DEPLOY_DIR")"
-
-if [ -d "$DEPLOY_DIR/.git" ]; then
-  echo "Pulling latest changes..."
-  cd "$DEPLOY_DIR"
-  git fetch origin
-  git reset --hard "origin/$BRANCH"
+cd "$DEPLOY_DIR"
+if [ -d .git ]; then
+  echo "removing the old source checkout (mountabo no longer copies your repository to the server)"
+  if command -v git >/dev/null 2>&1; then
+    git ls-files -z | xargs -0 -r rm -f --
+  fi
+  rm -rf .git
+fi
+%[3]sCOMPOSE_TAR=%[1]q
+if [ "$MOUNTABO_MODE" = rollback ]; then
+  COMPOSE_TAR="$BUNDLE/compose.tar.gz"
+fi
+if [ -f "$COMPOSE_TAR" ]; then
+  tar -xzf "$COMPOSE_TAR" -C "$DEPLOY_DIR"
+  echo "compose files in place: $(tar -tzf "$COMPOSE_TAR" | grep -v '/$' | tr '\n' ' ')"
+  if [ "$MOUNTABO_MODE" = deploy ]; then
+    mkdir -p "$BUNDLE"
+    cp "$COMPOSE_TAR" "$BUNDLE/compose.tar.gz"
+    rm -f %[1]q
+  fi
+elif [ "$MOUNTABO_MODE" = deploy ]; then
+  echo "error: the compose files were not shipped with this build (%[2]s is missing)" >&2
+  exit 1
 else
-  echo "Cloning repository..."
-  rm -rf "$DEPLOY_DIR"
-  git clone --branch "$BRANCH" "$REPO_URL" "$DEPLOY_DIR"
-  cd "$DEPLOY_DIR"
-fi`
+  echo "note: this release predates shipped compose files; using the ones already here"
+fi
+`, StagingDir(c)+"/"+composeFilesTar, composeFilesTar, removeKey)
+}
 
 // populateEnvFiles regenerates every per-service env file a compose declares
 // (env_file:) from the .env just written, so configured variables reach every
@@ -728,6 +774,33 @@ func envWriteBlock(c Config, includePorts bool) string {
 	} else {
 		b.WriteString(": > .env\n")
 	}
+	// compose reads .env with a dotenv parser: values are double-quoted with
+	// \ " $ and line breaks escaped, so any value (a quote, a $ in a password,
+	// a multi-line key) arrives exactly as set. docker run --env-file takes
+	// values literally and has no quoting, so there a value is written as is,
+	// and one with a line break, which it cannot hold, is refused.
+	if includePorts {
+		b.WriteString(`mountabo_env_line() {
+  local v="$2"
+  v="${v//\\/\\\\}"
+  v="${v//\"/\\\"}"
+  v="${v//\$/\\\$}"
+  v="${v//$'\n'/\\n}"
+  v="${v//$'\r'/\\r}"
+  printf '%s="%s"\n' "$1" "$v"
+}
+`)
+	} else {
+		b.WriteString(`mountabo_env_line() {
+  case "$2" in
+    *$'\n'*|*$'\r'*)
+      echo "error: $1 contains a line break, which docker --env-file cannot hold; use a compose file for this app" >&2
+      return 1 ;;
+  esac
+  printf '%s=%s\n' "$1" "$2"
+}
+`)
+	}
 	b.WriteString(`written=0
 for k in ${MOUNTABO_ENV_KEYS:-}; do
   # Test whether the variable is SET, not whether it is non-empty. A variable an
@@ -740,7 +813,7 @@ for k in ${MOUNTABO_ENV_KEYS:-}; do
     echo "warning: env var $k is not set on this GitHub environment (add it in the secrets tab, then redeploy)"
     continue
   fi
-  printf '%s=%s\n' "$k" "${!k}" >> .env
+  mountabo_env_line "$k" "${!k}" >> .env
   written=$((written + 1))
 done
 echo "wrote $written environment variable(s) to .env"
@@ -893,13 +966,8 @@ func composeScript(c Config) string {
 	}
 
 	b.WriteByte('\n')
-	b.WriteString(gitAuth(c))
-	// A rollback re-points to a retained artifact; it must not move the working
-	// tree, because the checkout is what the release's own compose was rendered
-	// against. Fetching would also require the branch to still resolve.
-	b.WriteString("if [ \"$MOUNTABO_MODE\" = deploy ]; then\n")
-	b.WriteString(indentShell(clonePull))
-	b.WriteString("\nfi\n")
+	// No clone: the runner ships the compose files; see unpackCompose.
+	b.WriteString(unpackCompose(c))
 	b.WriteString(`cd "$DEPLOY_DIR"` + "\n")
 	b.WriteString(cdRoot(c))
 	// Pin the compose project name so each (app, branch) deploy owns a stable,

@@ -48,10 +48,9 @@ func (s *ServerPortService) Ports(ctx context.Context, id, owner, repo, environm
 	if s.deployments == nil {
 		return view, nil
 	}
-	deps, err := s.deployments.List()
-	if err != nil {
-		return view, nil
-	}
+	// Best-effort: if the records can't be read, what's listening still
+	// guards against collisions, so it is returned on its own.
+	deps, _ := s.deployments.List()
 	for _, d := range deps {
 		if d.ServerID != id || d.Port <= 0 {
 			continue

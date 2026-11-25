@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -342,5 +344,85 @@ func TestWorkflow_NamesTheBuildWithAShortSHA(t *testing.T) {
 		if err := yaml.Unmarshal([]byte(wf), &doc); err != nil {
 			t.Fatalf("%s: workflow is not valid YAML: %v", strategy, err)
 		}
+	}
+}
+
+// Compose deploys ship the compose files from the runner; nothing on the
+// server clones the repository or holds a key that can read it.
+func TestCompose_ShipsComposeFilesInsteadOfCloning(t *testing.T) {
+	c := Config{App: "web", Owner: "acme", Repo: "shop", Branch: "main", Environment: "production", Strategy: Compose,
+		DeploymentID: testID, DeployKeyFile: "mountabo_deploy_acme_shop", Ports: []Port{{EnvVar: "APP_PORT", Value: "3000", Container: "3000"}}}
+	script, wf := DeployScript(c), Workflow(c)
+	for _, bad := range []string{"git clone", "git fetch", "GIT_SSH_COMMAND", "REPO_URL"} {
+		if strings.Contains(script, bad) {
+			t.Errorf("deploy.sh still contains %q", bad)
+		}
+	}
+	for _, want := range []string{`tar -xzf "$COMPOSE_TAR"`, `rm -f "$HOME/.ssh/mountabo_deploy_acme_shop"`, "git ls-files -z | xargs -0 -r rm -f --"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("deploy.sh missing %q", want)
+		}
+	}
+	for _, want := range []string{"tar -czf mountabo.compose.tar.gz", "--null -T mountabo.compose.list", "mountabo.compose.tar.gz"} {
+		if !strings.Contains(wf, want) {
+			t.Errorf("workflow missing %q", want)
+		}
+	}
+}
+
+// renderEnvLine runs the generated mountabo_env_line on value and returns the
+// .env line it writes.
+func renderEnvLine(t *testing.T, script, value string) string {
+	t.Helper()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	i := strings.Index(script, "mountabo_env_line() {")
+	j := strings.Index(script[i:], "\n}\n")
+	fn := script[i : i+j+3]
+	cmd := exec.Command(bash, "-c", fn+`mountabo_env_line K "$V"`)
+	cmd.Env = append(os.Environ(), "V="+value)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("mountabo_env_line: %v\n%s", err, out)
+	}
+	return string(out)
+}
+
+// Compose reads .env with a dotenv parser, so values are double-quoted with
+// \ " $ and line breaks escaped. These encodings were checked against a real
+// docker compose: every value reached the container unchanged.
+func TestComposeEnv_QuotesEveryValueSafely(t *testing.T) {
+	script := DeployScript(Config{App: "web", Branch: "main", Environment: "production", Strategy: Compose, DeploymentID: testID})
+	for value, want := range map[string]string{
+		"plain":          `K="plain"`,
+		`has "quotes"`:   `K="has \"quotes\""`,
+		"it's":           `K="it's"`,
+		"$HOME and ${X}": `K="\$HOME and \${X}"`,
+		`back\slash`:     `K="back\\slash"`,
+		"line1\nline2":   `K="line1\nline2"`,
+		"":               `K=""`,
+		"hash # kept":    `K="hash # kept"`,
+	} {
+		if got := strings.TrimSuffix(renderEnvLine(t, script, value), "\n"); got != want {
+			t.Errorf("value %q: got %s, want %s", value, got, want)
+		}
+	}
+}
+
+// docker run --env-file takes values literally and can't hold a line break.
+func TestDockerEnv_WritesRawValuesAndRefusesLineBreaks(t *testing.T) {
+	script := DeployScript(Config{App: "web", Branch: "main", Environment: "production", Strategy: Docker, DeploymentID: testID})
+	if got := renderEnvLine(t, script, `has "quotes" & $x`); got != "K=has \"quotes\" & $x\n" {
+		t.Errorf("docker env line = %q, want the raw value", got)
+	}
+	bash, _ := exec.LookPath("bash")
+	i := strings.Index(script, "mountabo_env_line() {")
+	j := strings.Index(script[i:], "\n}\n")
+	cmd := exec.Command(bash, "-c", script[i:i+j+3]+`mountabo_env_line K "$V"`)
+	cmd.Env = append(os.Environ(), "V=a\nb")
+	if err := cmd.Run(); err == nil {
+		t.Error("a value with a line break should be refused for docker --env-file")
 	}
 }

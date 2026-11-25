@@ -49,7 +49,7 @@ func TestGeneratedScriptsParse(t *testing.T) {
 		root.RootDir = ""
 		cases[name+"/repo-root"] = root
 
-		// No deploy key: gitAuth emits nothing.
+		// No old deploy key to clean up: nothing is emitted for it.
 		noKey := full
 		noKey.DeployKeyFile = ""
 		cases[name+"/no-deploy-key"] = noKey

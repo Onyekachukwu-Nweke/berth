@@ -17,9 +17,28 @@ const bundleFormatVersion = 1
 // build arguments, a moved base image or newly resolved dependencies produces a
 // different image, and a secret change triggers exactly that rebuild — so a
 // commit-keyed tag is overwritten in place and "the artifact that was running"
-// stops being recoverable. run_id and run_attempt make every build distinct;
-// the sha stays in the name so a human can still read what it came from.
-const ArtifactIDExpr = "${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}"
+// stops being recoverable. The run number (plus the attempt on a re-run) makes
+// every build of an environment distinct; the environment and the first
+// characters of the sha make it readable. Actions expressions can't cut a
+// string, so the workflow's first step computes it (see nameBuildStep) and
+// later steps read it from env.
+const ArtifactIDExpr = "${{ env.MOUNTABO_ARTIFACT_ID }}"
+
+// shortSHALen is how much of the commit sha goes into a build's name.
+const shortSHALen = 5
+
+// nameBuildStep sets MOUNTABO_ARTIFACT_ID for the rest of the job:
+// <environment>-<run number>[.<attempt>]-<first characters of the sha>, e.g.
+// development-42-9f3c2, or development-42.2-9f3c2 for a re-run of run 42.
+func nameBuildStep(c Config) string {
+	return fmt.Sprintf(`      - name: Name this build
+        run: |
+          run="$GITHUB_RUN_NUMBER"
+          [ "$GITHUB_RUN_ATTEMPT" = 1 ] || run="$run.$GITHUB_RUN_ATTEMPT"
+          echo "MOUNTABO_ARTIFACT_ID=%s-${run}-${GITHUB_SHA::%d}" >> "$GITHUB_ENV"
+
+`, c.environment(), shortSHALen)
+}
 
 // OperationIDExpr is the GitHub Actions expression that names one push-triggered
 // OPERATION.

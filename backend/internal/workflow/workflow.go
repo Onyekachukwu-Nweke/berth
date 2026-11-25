@@ -231,7 +231,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-%[6]s
+%[11]s%[6]s
       - name: Ship image and deploy script to the server
         timeout-minutes: 10
         env:
@@ -271,7 +271,7 @@ jobs:
             chmod +x %[8]s/%[10]s
             %[8]s/%[10]s %[2]s
 `, c.App, c.Branch, c.environment(), envBlock.String(), forward, buildStep(c), rsyncArtifacts(c),
-		StagingDir(c), ScriptPath(c), ScriptName(c))
+		StagingDir(c), ScriptPath(c), ScriptName(c), nameBuildStep(c))
 }
 
 // buildStep renders the runner build+save step for the strategy: it builds the

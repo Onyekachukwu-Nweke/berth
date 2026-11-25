@@ -3,6 +3,8 @@ package workflow
 import (
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // testID is a stand-in for a real usecase.DeriveDeploymentID result. Every
@@ -311,5 +313,34 @@ func TestCdRoot_MatchesAppRoot(t *testing.T) {
 	c.RootDir = ""
 	if got := cdRoot(c); got != "" {
 		t.Errorf("cdRoot at repo root = %q, want empty", got)
+	}
+}
+
+// Builds are named <environment>-<run number>-<first 5 of the sha>: the step that sets
+// it runs before anything is built, and everything after reads it from env.
+func TestWorkflow_NamesTheBuildWithAShortSHA(t *testing.T) {
+	for _, strategy := range []Strategy{Compose, Docker} {
+		wf := Workflow(Config{App: "web", Branch: "main", Environment: "production", Strategy: strategy, DeploymentID: testID,
+			Ports: []Port{{EnvVar: "APP_PORT", Value: "3000", Container: "3000"}}})
+		name := strings.Index(wf, "- name: Name this build")
+		build := strings.Index(wf, "- name: Build")
+		if name < 0 || build < 0 || name > build {
+			t.Fatalf("%s: the naming step must come before the build", strategy)
+		}
+		if !strings.Contains(wf, `MOUNTABO_ARTIFACT_ID=production-${run}-${GITHUB_SHA::5}`) {
+			t.Errorf("%s: build name should be <environment>-<run>-<first 5 of the sha>", strategy)
+		}
+		// Image tags and the artifact id use the short name; only MOUNTABO_COMMIT
+		// keeps the full sha, for the release record.
+		if strings.Contains(wf, ":${{ github.sha }}") || strings.Contains(wf, "-${{ github.sha }}") {
+			t.Errorf("%s: build names must not carry the full sha", strategy)
+		}
+		if !strings.Contains(wf, "MOUNTABO_ARTIFACT_ID: ${{ env.MOUNTABO_ARTIFACT_ID }}") {
+			t.Errorf("%s: the deploy step should read the build name from env", strategy)
+		}
+		var doc map[string]any
+		if err := yaml.Unmarshal([]byte(wf), &doc); err != nil {
+			t.Fatalf("%s: workflow is not valid YAML: %v", strategy, err)
+		}
 	}
 }

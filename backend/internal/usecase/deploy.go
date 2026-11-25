@@ -281,16 +281,19 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 		cfg.DeployKeyFile = deployKeyFileName(in.Owner, in.Repo)
 	}
 
-	scriptPath := workflow.ScriptPath(cfg)
-	progress(out, "writing %s", scriptPath)
-	if err := s.repo.PutFile(ctx, token, in.Owner, in.Repo, in.Branch, scriptPath, workflow.DeployScript(cfg), "mountabo: add deploy script"); err != nil {
-		return fmt.Errorf("write deploy script: %w", err)
+	// Everything the run needs goes in place BEFORE the workflow is committed:
+	// that commit triggers a run straight away, and GitHub hands a job its
+	// environment secrets when the job starts. Committing first meant the first
+	// run started with empty SERVER_HOST/SERVER_USER and failed at its SSH step.
+	progress(out, "creating environment %s", env)
+	if err := s.envs.EnsureEnvironment(ctx, token, in.Owner, in.Repo, env); err != nil {
+		return fmt.Errorf("create environment: %w", err)
 	}
 
-	wfPath := workflow.Path(cfg)
-	progress(out, "writing %s", wfPath)
-	if err := s.repo.PutFile(ctx, token, in.Owner, in.Repo, in.Branch, wfPath, workflow.Workflow(cfg), "mountabo: add deploy workflow"); err != nil {
-		return fmt.Errorf("write workflow: %w", err)
+	secrets := deploySecrets(server, key, in)
+	progress(out, "setting %d secrets on environment %s", len(secrets), env)
+	if err := s.secrets.SetEnvSecrets(ctx, token, in.Owner, in.Repo, env, secrets); err != nil {
+		return fmt.Errorf("set environment secrets: %w", err)
 	}
 
 	// Give the server a read-only deploy key so deploy.sh can clone this repo
@@ -322,15 +325,16 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 		}
 	}
 
-	progress(out, "creating environment %s", env)
-	if err := s.envs.EnsureEnvironment(ctx, token, in.Owner, in.Repo, env); err != nil {
-		return fmt.Errorf("create environment: %w", err)
+	scriptPath := workflow.ScriptPath(cfg)
+	progress(out, "writing %s", scriptPath)
+	if err := s.repo.PutFile(ctx, token, in.Owner, in.Repo, in.Branch, scriptPath, workflow.DeployScript(cfg), "mountabo: add deploy script"); err != nil {
+		return fmt.Errorf("write deploy script: %w", err)
 	}
 
-	secrets := deploySecrets(server, key, in)
-	progress(out, "setting %d secrets on environment %s", len(secrets), env)
-	if err := s.secrets.SetEnvSecrets(ctx, token, in.Owner, in.Repo, env, secrets); err != nil {
-		return fmt.Errorf("set environment secrets: %w", err)
+	wfPath := workflow.Path(cfg)
+	progress(out, "writing %s", wfPath)
+	if err := s.repo.PutFile(ctx, token, in.Owner, in.Repo, in.Branch, wfPath, workflow.Workflow(cfg), "mountabo: add deploy workflow"); err != nil {
+		return fmt.Errorf("write workflow: %w", err)
 	}
 
 	// Resolve the release's commit and actor for the durable record. Both are

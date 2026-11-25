@@ -12,14 +12,135 @@ export type Template = {
   port: number;
   notes: string[];
   files: TemplateFile[];
+  // Extra lines for the app service (e.g. "    init: true\n").
+  composeExtra?: string;
+  // How the app reads its add-ons: connection URLs (the default), or Laravel's
+  // DB_URL / REDIS_URL names.
+  envStyle?: "url" | "laravel";
+  // A static site has no server code to use a database or cache.
+  noAddons?: boolean;
 };
+
+// ── add-ons ──────────────────────────────────────────────────────────────
+// Services a template can run beside the app. Each gets a named volume (its
+// data survives deploys), no published port (only the app reaches it, over
+// the compose network), a health check the app waits on, and a password read
+// from .env. Images are the current supported lines.
+
+export type AddonId = "postgres" | "mysql" | "redis";
+
+export type Addon = {
+  id: AddonId;
+  name: string;
+  description: string;
+  // Add-ons in the same group are alternatives (one database per app).
+  group?: "database";
+  service: string;
+  volume: string;
+  // Variables the operator sets, with a comment, for .env.example.
+  envExample: string[];
+  // Environment the app gets, by env style.
+  appEnv: { url: string[]; laravel: string[] };
+};
+
+export const ADDONS: Addon[] = [
+  {
+    id: "postgres",
+    name: "PostgreSQL 18",
+    description: "Relational database, data on a named volume.",
+    group: "database",
+    service: `  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: \${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
+      POSTGRES_DB: \${POSTGRES_DB:-app}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+`,
+    volume: "postgres-data",
+    envExample: ["POSTGRES_PASSWORD=", "# Optional: POSTGRES_USER (default app), POSTGRES_DB (default app)"],
+    appEnv: {
+      url: ["DATABASE_URL: \${DATABASE_URL:-postgres://\${POSTGRES_USER:-app}:\${POSTGRES_PASSWORD}@postgres:5432/\${POSTGRES_DB:-app}}"],
+      laravel: [
+        "DB_CONNECTION: \${DB_CONNECTION:-pgsql}",
+        "DB_URL: \${DB_URL:-pgsql://\${POSTGRES_USER:-app}:\${POSTGRES_PASSWORD}@postgres:5432/\${POSTGRES_DB:-app}}",
+      ],
+    },
+  },
+  {
+    id: "mysql",
+    name: "MySQL 8.4 LTS",
+    description: "Relational database, data on a named volume.",
+    group: "database",
+    service: `  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: \${MYSQL_DATABASE:-app}
+      MYSQL_USER: \${MYSQL_USER:-app}
+      MYSQL_PASSWORD: \${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: \${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+`,
+    volume: "mysql-data",
+    envExample: ["MYSQL_PASSWORD=", "MYSQL_ROOT_PASSWORD=", "# Optional: MYSQL_USER (default app), MYSQL_DATABASE (default app)"],
+    appEnv: {
+      url: ["DATABASE_URL: \${DATABASE_URL:-mysql://\${MYSQL_USER:-app}:\${MYSQL_PASSWORD}@mysql:3306/\${MYSQL_DATABASE:-app}}"],
+      laravel: [
+        "DB_CONNECTION: \${DB_CONNECTION:-mysql}",
+        "DB_URL: \${DB_URL:-mysql://\${MYSQL_USER:-app}:\${MYSQL_PASSWORD}@mysql:3306/\${MYSQL_DATABASE:-app}}",
+      ],
+    },
+  },
+  {
+    id: "redis",
+    name: "Redis 8",
+    description: "Cache and queues, persisted with an append-only file.",
+    service: `  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "\${REDIS_PASSWORD}"]
+    environment:
+      REDISCLI_AUTH: \${REDIS_PASSWORD}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+`,
+    volume: "redis-data",
+    envExample: ["REDIS_PASSWORD="],
+    appEnv: {
+      url: ["REDIS_URL: \${REDIS_URL:-redis://:\${REDIS_PASSWORD}@redis:6379/0}"],
+      laravel: ["REDIS_URL: \${REDIS_URL:-redis://:\${REDIS_PASSWORD}@redis:6379/0}"],
+    },
+  },
+];
 
 // Every compose file publishes the app as ${APP_PORT:-<port>} (Mountabo sets
 // the host port per environment) and reads .env, which deploy.sh writes from
 // the environment's GitHub secrets. The .env is optional so the image still
-// builds on the Actions runner, where it doesn't exist.
-function compose(port: number, containerPort = port, extra = ""): string {
-  return `services:
+// builds on the Actions runner, where it doesn't exist. Add-ons are appended
+// as services; the app gets their connection settings as defaults it can
+// override from Mountabo, and waits until they are healthy.
+function compose(port: number, containerPort = port, extra = "", addons: Addon[] = [], style: "url" | "laravel" = "url"): string {
+  const env = addons.flatMap((a) => a.appEnv[style]);
+  let out = `services:
   app:
     build: .
     restart: unless-stopped
@@ -29,6 +150,37 @@ ${extra}    ports:
       - path: .env
         required: false
 `;
+  if (env.length) out += "    environment:\n" + env.map((e) => `      ${e}\n`).join("");
+  if (addons.length) {
+    out += "    depends_on:\n" + addons.map((a) => `      ${a.id}:\n        condition: service_healthy\n`).join("");
+    out += "\n" + addons.map((a) => a.service).join("\n");
+    out += "\nvolumes:\n" + addons.map((a) => `  ${a.volume}:\n`).join("");
+  }
+  return out;
+}
+
+// templateFiles is a template's files with the chosen add-ons applied: the
+// compose file gains their services, and a .env.example lists the passwords
+// to set (Mountabo's Configure page pre-fills its keys).
+export function templateFiles(t: Template, addonIds: AddonId[]): TemplateFile[] {
+  const addons = ADDONS.filter((a) => addonIds.includes(a.id));
+  const files = t.files.map((f) =>
+    f.path === "docker-compose.yml"
+      ? { ...f, content: compose(t.port, t.port, t.composeExtra ?? "", addons, t.envStyle ?? "url") }
+      : f,
+  );
+  if (addons.length) {
+    files.push({
+      path: ".env.example",
+      content: [
+        "# Variables the add-ons in docker-compose.yml need. Set them in Mountabo.",
+        "# Use letters and digits only (they go inside connection URLs), e.g.: openssl rand -hex 24",
+        ...addons.flatMap((a) => a.envExample),
+        "",
+      ].join("\n"),
+    });
+  }
+  return files;
 }
 
 const nodeIgnore = `node_modules
@@ -82,7 +234,7 @@ export const TEMPLATES: Template[] = [
   {
     id: "nextjs",
     name: "Next.js",
-    stack: "Node 22 · standalone output",
+    stack: "Node 26 · standalone output",
     description: "A Next.js app built once and run from its standalone server, as a non-root user.",
     port: 3000,
     notes: [
@@ -95,21 +247,21 @@ export const TEMPLATES: Template[] = [
       {
         path: "Dockerfile",
         content: `# syntax=docker/dockerfile:1
-FROM node:22-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json* pnpm-lock.yaml* yarn.lock* ./
 RUN if [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile; \\
     elif [ -f yarn.lock ]; then corepack enable && yarn install --immutable; \\
     else npm ci; fi
 
-FROM node:22-alpine AS build
+FROM node:26-alpine AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-FROM node:22-alpine
+FROM node:26-alpine
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
 COPY --from=build --chown=node:node /app/public ./public
@@ -126,8 +278,9 @@ CMD ["node", "server.js"]
   },
   {
     id: "node-api",
+    composeExtra: "    init: true\n",
     name: "Node.js API",
-    stack: "Node 22 · Express, Fastify, Nest…",
+    stack: "Node 26 · Express, Fastify, Nest…",
     description: "A Node service: install, build if there's a build script, drop dev dependencies, run npm start.",
     port: 8080,
     notes: [
@@ -139,14 +292,14 @@ CMD ["node", "server.js"]
       {
         path: "Dockerfile",
         content: `# syntax=docker/dockerfile:1
-FROM node:22-alpine AS build
+FROM node:26-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
 COPY . .
 RUN npm run build --if-present && npm prune --omit=dev
 
-FROM node:22-alpine
+FROM node:26-alpine
 WORKDIR /app
 ENV NODE_ENV=production PORT=8080
 COPY --from=build --chown=node:node /app ./
@@ -162,7 +315,7 @@ CMD ["npm", "start"]
   {
     id: "fastapi",
     name: "Python · FastAPI",
-    stack: "Python 3.13 · uvicorn",
+    stack: "Python 3.14 · uvicorn",
     description: "A FastAPI (or any ASGI) app served by uvicorn, as a non-root user.",
     port: 8000,
     notes: [
@@ -173,7 +326,7 @@ CMD ["npm", "start"]
       {
         path: "Dockerfile",
         content: `# syntax=docker/dockerfile:1
-FROM python:3.13-slim
+FROM python:3.14-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /app
 RUN useradd --create-home --uid 10001 app && chown app:app /app
@@ -192,7 +345,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
   {
     id: "django",
     name: "Python · Django",
-    stack: "Python 3.13 · gunicorn",
+    stack: "Python 3.14 · gunicorn",
     description: "A Django project behind gunicorn. Static files are collected when the container starts.",
     port: 8000,
     notes: [
@@ -204,7 +357,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
       {
         path: "Dockerfile",
         content: `# syntax=docker/dockerfile:1
-FROM python:3.13-slim
+FROM python:3.14-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /app
 RUN useradd --create-home --uid 10001 app && chown app:app /app
@@ -222,8 +375,9 @@ CMD ["sh", "-c", "python manage.py collectstatic --noinput && exec gunicorn conf
   },
   {
     id: "laravel",
+    envStyle: "laravel",
     name: "PHP · Laravel",
-    stack: "PHP 8.4 · FrankenPHP",
+    stack: "PHP 8.5 · FrankenPHP",
     description: "A Laravel app: Composer and Vite build stages, served by FrankenPHP as a non-root user.",
     port: 8080,
     notes: [
@@ -246,15 +400,15 @@ COPY . .
 # Package manifests cached on a dev machine list dev-only packages; rebuild them.
 RUN rm -f bootstrap/cache/*.php && composer dump-autoload --optimize --no-dev --no-scripts
 
-FROM node:22-alpine AS assets
+FROM node:26-alpine AS assets
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM dunglas/frankenphp:1-php8.4
-RUN install-php-extensions pdo_mysql pdo_pgsql intl zip bcmath opcache pcntl
+FROM dunglas/frankenphp:1-php8.5
+RUN install-php-extensions pdo_mysql pdo_pgsql redis intl zip bcmath opcache pcntl
 WORKDIR /app
 RUN useradd --create-home --uid 10001 app && chown -R app:app /app /data/caddy /config/caddy
 COPY --chown=app:app --from=vendor /app ./
@@ -273,7 +427,7 @@ CMD ["sh", "-c", "php artisan config:cache && php artisan route:cache && php art
   {
     id: "php",
     name: "PHP",
-    stack: "PHP 8.4 · FrankenPHP",
+    stack: "PHP 8.5 · FrankenPHP",
     description: "A plain PHP app (or Symfony, Slim…) served by FrankenPHP, with Composer if the project uses it.",
     port: 8080,
     notes: [
@@ -291,7 +445,7 @@ RUN if [ -f composer.json ]; then \
       composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader --ignore-platform-reqs; \
     fi
 
-FROM dunglas/frankenphp:1-php8.4
+FROM dunglas/frankenphp:1-php8.5
 RUN install-php-extensions pdo_mysql pdo_pgsql opcache
 WORKDIR /app
 RUN useradd --create-home --uid 10001 app && chown -R app:app /app /data/caddy /config/caddy
@@ -308,7 +462,7 @@ CMD ["frankenphp", "php-server", "--listen", ":8080", "--root", "/app"]
   {
     id: "go",
     name: "Go",
-    stack: "Go 1.26 · distroless",
+    stack: "Go 1.27 · distroless",
     description: "A static Go binary in a distroless image: tiny, no shell, runs as non-root.",
     port: 8080,
     notes: [
@@ -320,14 +474,14 @@ CMD ["frankenphp", "php-server", "--listen", ":8080", "--root", "/app"]
       {
         path: "Dockerfile",
         content: `# syntax=docker/dockerfile:1
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/app .
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 COPY --from=build /out/app /app
 EXPOSE 8080
 ENTRYPOINT ["/app"]
@@ -350,6 +504,7 @@ docker-compose.yml
   },
   {
     id: "static-spa",
+    noAddons: true,
     name: "Static site / SPA",
     stack: "Vite, React, Vue · nginx",
     description: "Builds the site with Node and serves the files from a small nginx image, with SPA routing.",
@@ -363,7 +518,7 @@ docker-compose.yml
       {
         path: "Dockerfile",
         content: `# syntax=docker/dockerfile:1
-FROM node:22-alpine AS build
+FROM node:26-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
@@ -371,7 +526,7 @@ COPY . .
 RUN npm run build
 
 # The unprivileged image runs nginx as a non-root user on port 8080.
-FROM nginxinc/nginx-unprivileged:1.27-alpine
+FROM nginxinc/nginx-unprivileged:1.30-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 8080

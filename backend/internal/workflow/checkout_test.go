@@ -49,7 +49,7 @@ func TestRemoveOldCheckout_LeavesOnlyAppData(t *testing.T) {
 	}
 
 	var left []string
-	_ = filepath.Walk(dir, func(p string, info os.FileInfo, _ error) error {
+	_ = filepath.Walk(dir, func(p string, _ os.FileInfo, _ error) error {
 		if p != dir {
 			rel, _ := filepath.Rel(dir, p)
 			left = append(left, rel)

@@ -5,7 +5,7 @@ import { ConfirmAction } from "@/components/confirm-action";
 import { Check, Docker, GithubMark } from "@/components/icons";
 import type { Source } from "@/lib/data";
 import { fetchRepos, readCachedRepos } from "@/lib/repo-cache";
-import { TEMPLATES, buildAIPrompt, findTemplate, suggestTemplate, type TemplateFile } from "@/lib/templates";
+import { ADDONS, TEMPLATES, buildAIPrompt, findTemplate, suggestTemplate, templateFiles, type AddonId } from "@/lib/templates";
 
 type Tree = { repo: string; branch: string; paths: string[] } | null;
 
@@ -28,7 +28,10 @@ export function TemplatesView({
   initialTemplate?: string;
 }) {
   const [templateId, setTemplateId] = useState(findTemplate(initialTemplate)?.id ?? TEMPLATES[0].id);
-  const [edits, setEdits] = useState<Record<string, TemplateFile[]>>({});
+  // Hand edits, per template, by file path. Everything else is generated from
+  // the template and the chosen add-ons.
+  const [edits, setEdits] = useState<Record<string, Record<string, string>>>({});
+  const [addonIds, setAddonIds] = useState<AddonId[]>([]);
   const [activePath, setActivePath] = useState<string>("Dockerfile");
   const [copied, setCopied] = useState<string | null>(null);
 
@@ -42,9 +45,24 @@ export function TemplatesView({
   const [commitState, setCommitState] = useState<{ busy: boolean; result?: { ok: boolean; text: string } }>({ busy: false });
 
   const template = findTemplate(templateId) ?? TEMPLATES[0];
-  const files = edits[template.id] ?? template.files;
+  const templateEdits = edits[template.id] ?? {};
+  const files = templateFiles(template, template.noAddons ? [] : addonIds).map((f) =>
+    f.path in templateEdits ? { ...f, content: templateEdits[f.path] } : f,
+  );
   const active = files.find((f) => f.path === activePath) ?? files[0];
-  const edited = Boolean(edits[template.id]);
+  const edited = Object.keys(templateEdits).length > 0;
+  // Add-ons rewrite the compose file, so they lock once it is edited by hand.
+  const addonsLocked = "docker-compose.yml" in templateEdits;
+
+  function toggleAddon(id: AddonId) {
+    const group = ADDONS.find((a) => a.id === id)?.group;
+    setAddonIds((cur) => {
+      if (cur.includes(id)) return cur.filter((x) => x !== id);
+      // Add-ons in a group are alternatives: one database per app.
+      const others = group ? cur.filter((x) => ADDONS.find((a) => a.id === x)?.group !== group) : cur;
+      return [...others, id];
+    });
+  }
 
   // Repos for the picker: the browser cache first, the API on a miss.
   useEffect(() => {
@@ -97,10 +115,7 @@ export function TemplatesView({
   const suggested = currentTree ? suggestTemplate(currentTree.paths) : undefined;
 
   function updateFile(content: string) {
-    setEdits((all) => ({
-      ...all,
-      [template.id]: files.map((f) => (f.path === active.path ? { ...f, content } : f)),
-    }));
+    setEdits((all) => ({ ...all, [template.id]: { ...(all[template.id] ?? {}), [active.path]: content } }));
   }
 
   async function copy(text: string, what: string) {
@@ -263,6 +278,39 @@ export function TemplatesView({
                   <li key={n}>{n}</li>
                 ))}
               </ul>
+            )}
+            {!template.noAddons && (
+              <div className="mt-3">
+                <p className="text-[12px] font-medium text-cream">Add-ons</p>
+                <div className="mt-1.5 flex flex-wrap gap-2">
+                  {ADDONS.map((a) => {
+                    const on = addonIds.includes(a.id);
+                    return (
+                      <button
+                        key={a.id}
+                        type="button"
+                        aria-pressed={on}
+                        disabled={addonsLocked}
+                        title={a.description}
+                        onClick={() => toggleAddon(a.id)}
+                        className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                          on ? "border-line-strong bg-surface-hover text-cream" : "border-line text-muted hover:text-cream"
+                        }`}
+                      >
+                        <span className={`h-1.5 w-1.5 rounded-full ${on ? "bg-ok" : "bg-faint"}`} />
+                        {a.name}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mt-1.5 text-[12px] text-muted">
+                  {addonsLocked
+                    ? "You edited docker-compose.yml, so add-ons are locked. Reset to change them."
+                    : addonIds.length
+                      ? "Each runs beside your app with a persistent volume and no public port. The app gets its connection URL and waits until it is healthy. Set the passwords listed in .env.example in Mountabo."
+                      : "Run a database or cache next to your app, on the same server."}
+                </p>
+              </div>
             )}
           </div>
 

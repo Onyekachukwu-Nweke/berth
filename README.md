@@ -166,6 +166,15 @@ With a template you can:
 - **Copy AI prompt** to get a prompt that spells out these rules and includes the template and, if you picked a repo, its file list. Paste it into your AI to adapt the setup to the project.
 - **Commit to repo** to write the files onto a branch with the GitHub App. This needs push access, and it warns you before replacing files that already exist.
 
+**Add-ons:** toggle **PostgreSQL 18**, **MySQL 8.4 LTS** (one database per app) or **Redis 8** on any server template. Each one runs beside your app in the same compose file:
+- a named volume, so data survives deploys;
+- no public port;
+- a health check the app waits for.
+
+The app receives `DATABASE_URL` / `REDIS_URL` (Laravel gets `DB_URL` / `REDIS_URL`), built from passwords you set in Mountabo. The generated `.env.example` lists them, and Configure pre-fills those keys.
+
+Base images follow the newest supported, settled release of each runtime: Node 26 LTS, Python 3.14, PHP 8.5, Go 1.27 (distroless Debian 13) and nginx 1.30.
+
 Repos with no Docker setup show an **Add Docker setup** link on New deployment.
 
 ## Terminal

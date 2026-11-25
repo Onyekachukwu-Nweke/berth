@@ -136,7 +136,8 @@ func (h *ServersHandler) Logs(w nethttp.ResponseWriter, r *nethttp.Request) {
 // never changes it.
 func (h *ServersHandler) Ports(w nethttp.ResponseWriter, r *nethttp.Request) {
 	id := r.PathValue("id")
-	ports, err := h.ports.Listening(r.Context(), id)
+	q := r.URL.Query()
+	view, err := h.ports.Ports(r.Context(), id, q.Get("owner"), q.Get("repo"), q.Get("environment"))
 	if errors.Is(err, usecase.ErrServerNotFound) {
 		h.writeError(w, nethttp.StatusNotFound, "server not found")
 		return
@@ -146,7 +147,7 @@ func (h *ServersHandler) Ports(w nethttp.ResponseWriter, r *nethttp.Request) {
 		h.writeError(w, nethttp.StatusBadGateway, "could not check server ports")
 		return
 	}
-	h.writeJSON(w, nethttp.StatusOK, map[string][]int{"listening": ports})
+	h.writeJSON(w, nethttp.StatusOK, view)
 }
 
 type addServerRequest struct {

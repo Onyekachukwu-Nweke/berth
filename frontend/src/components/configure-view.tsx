@@ -12,7 +12,7 @@ import { ConfirmAction } from "@/components/confirm-action";
 import { GithubMark, Plus, Branch as BranchIcon } from "@/components/icons";
 import type { Server, Source } from "@/lib/data";
 import { type DetectedPort, fetchDetectedPorts, normalizeDir } from "@/lib/ports";
-import { fetchListeningPorts } from "@/lib/server-ports";
+import { assignPorts, fetchServerPorts, type ServerPorts } from "@/lib/server-ports";
 import { type DeployPreview, type PreviewPort, type PreviewRequest, fetchPreview } from "@/lib/deploy-preview";
 import { addEnvKeys, type EnvVar, mergeEnv, parseEnvFile } from "@/lib/deploy-template";
 import { fetchEnvExampleKeys } from "@/lib/env-example";
@@ -72,10 +72,17 @@ export function ConfigureView({
   const [exampleKeys, setExampleKeys] = useState<string[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Ports already listening on the selected server. A host port in this set is
-  // flagged as a collision in the form (but never changed, the operator decides).
-  const [busyPorts, setBusyPorts] = useState<{ id: string; ports: Set<number> } | null>(null);
-  const busy = busyPorts && busyPorts.id === server.id ? busyPorts.ports : null;
+  // The server's ports for this deployment: taken (listening, or claimed by
+  // another mountabo deployment there) and this deployment's current port.
+  // Keyed so a stale answer for another server or environment reads as null.
+  const portsTarget = `${server.id}|${source.owner}/${source.name}|${environment.trim() || branch}`;
+  const [serverPortsState, setServerPortsState] = useState<{ key: string; data: ServerPorts } | null>(null);
+  const serverPorts = serverPortsState && serverPortsState.key === portsTarget ? serverPortsState.data : null;
+  const busy = serverPorts ? serverPorts.taken : null;
+  // Host ports the operator typed. Every other editable port is assigned by
+  // mountabo: its current port on a redeploy, else the compose default when it
+  // is free, else the first free port in 3000-9999.
+  const [touchedPorts, setTouchedPorts] = useState<Set<string>>(() => new Set());
 
   function importEnv(text: string) {
     const parsed = parseEnvFile(text);
@@ -127,33 +134,51 @@ export function ConfigureView({
     return () => ctrl.abort();
   }, [source.owner, source.name, branch, rootDir]);
 
-  // Load the ports already in use on the selected server so the form can flag a
-  // host port that would collide. Keyed to the server id so a stale set reads
-  // back as null until the new server's ports load.
+  // Load the server's ports for this deployment, so host ports are picked free
+  // and a collision is caught before deploying.
   useEffect(() => {
     const ctrl = new AbortController();
-    fetchListeningPorts(server.id, ctrl.signal)
-      .then((ports) => setBusyPorts({ id: server.id, ports: new Set(ports) }))
-      .catch(() => setBusyPorts({ id: server.id, ports: new Set() }));
+    const env = environment.trim() || branch;
+    fetchServerPorts(server.id, { owner: source.owner, repo: source.name, environment: env }, ctrl.signal).then((data) =>
+      setServerPortsState({ key: portsTarget, data }),
+    );
     return () => ctrl.abort();
-  }, [server.id]);
+  }, [server.id, source.owner, source.name, environment, branch, portsTarget]);
+
+  // autoPorts assigns every editable port the operator hasn't typed: the
+  // deployment's current port on a redeploy (first port), else its default if
+  // free, else the first free port in 3000-9999. Fixed ports and typed ports
+  // count as used, so two ports never get the same number.
+  const autoPorts = useMemo(
+    () => (detected && serverPorts ? assignPorts(detected, serverPorts, isDocker, touchedPorts, portValues) : {}),
+    [detected, serverPorts, isDocker, touchedPorts, portValues],
+  );
+
+  // The host port in effect for a port key: what the operator typed, else the
+  // auto-assigned one, else the detected default.
+  const portValueFor = (key: string, fallback: string) =>
+    touchedPorts.has(key) ? (portValues[key] ?? fallback) : (autoPorts[key]?.value ?? portValues[key] ?? fallback);
 
   // The ports mountabo will set, in the shape the backend expects. In docker
   // mode every EXPOSE'd port gets an editable host port (default = container
-  // port); in compose mode only env-var-backed ports are mountabo's to set.
+  // port). In compose mode env-var-backed ports are mountabo's to set; a port
+  // fixed in the compose file is sent with no variable so the health check,
+  // the deployment record and a domain still know the app's port.
   const configuredPorts: PreviewPort[] = useMemo(() => {
     const ports = detected ?? [];
     if (isDocker) {
-      return ports.map((p) => ({
-        envVar: "",
-        value: portValues[p.container] ?? p.host ?? p.container,
-        container: p.container,
-      }));
+      return ports.map((p) => ({ envVar: "", value: portValueFor(p.container, p.host || p.container), container: p.container }));
     }
     return ports
-      .filter((p) => p.editable)
-      .map((p) => ({ envVar: p.envVar, value: portValues[p.envVar] ?? p.host, container: p.container }));
-  }, [detected, isDocker, portValues]);
+      .filter((p) => p.editable || p.host)
+      .map((p) =>
+        p.editable
+          ? { envVar: p.envVar, value: portValueFor(p.envVar, p.host), container: p.container }
+          : { envVar: "", value: p.host, container: p.container },
+      );
+    // portValueFor is derived from these
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detected, isDocker, portValues, autoPorts, touchedPorts]);
 
   // The preview (workflow + deploy.sh + secrets) is generated by the backend,
   // the single source of truth, so it always matches what a deploy commits. The
@@ -409,8 +434,9 @@ export function ConfigureView({
                   // Value key: env var (compose) or container port (docker).
                   const key = p.envVar || p.container;
                   const editable = isDocker || p.editable; // docker: every EXPOSE'd port is editable
-                  const value = portValues[key] ?? p.host ?? p.container;
-                  const occupied = editable && !!busy && value.trim() !== "" && busy.has(Number(value));
+                  const value = editable ? portValueFor(key, p.host || p.container) : p.host;
+                  const occupied = !!busy && value.trim() !== "" && busy.has(Number(value)) && (!editable || touchedPorts.has(key));
+                  const auto = autoPorts[key];
                   const label = isDocker
                     ? `host port for :${p.container}`
                     : p.editable
@@ -429,7 +455,11 @@ export function ConfigureView({
                       {editable ? (
                         <input
                           value={value}
-                          onChange={(e) => setPortValues((v) => ({ ...v, [key]: e.target.value }))}
+                          onChange={(e) => {
+                            const typed = e.target.value.replace(/[^0-9]/g, "");
+                            setPortValues((v) => ({ ...v, [key]: typed }));
+                            setTouchedPorts((t) => new Set(t).add(key));
+                          }}
                           inputMode="numeric"
                           aria-invalid={occupied}
                           className={`${inputCls} ${occupied ? "border-err/60" : ""}`}
@@ -442,6 +472,22 @@ export function ConfigureView({
                           <span className="min-w-0 flex-1 truncate font-mono">{p.host || "auto"}</span>
                           <span className="shrink-0 text-[11px] text-faint">fixed</span>
                         </div>
+                      )}
+                      {editable && auto?.current && (
+                        <span className="mt-1 block text-[11px] text-muted">Current port, kept on redeploy.</span>
+                      )}
+                      {editable && auto?.movedFrom && (
+                        <span className="mt-1 block text-[11px] text-muted">
+                          {auto.movedFrom} is taken on {server.name}, so mountabo picked {auto.value}.
+                        </span>
+                      )}
+                      {editable && !auto && !touchedPorts.has(key) && busy === null && (
+                        <span className="mt-1 block text-[11px] text-faint">Checking which ports are free…</span>
+                      )}
+                      {!editable && occupied && (
+                        <span className="mt-1 block text-[11px] text-err">
+                          {`${p.host} is taken on ${server.name} and is fixed in your compose file. Change it to "\${${(p.service || "APP").toUpperCase().replace(/[^A-Z0-9]/g, "_")}_PORT:-${p.host}}:${p.container}" so mountabo can pick a free one.`}
+                        </span>
                       )}
                     </label>
                   );
@@ -629,7 +675,7 @@ export function ConfigureView({
           {domainHost.trim() !== "" && (
             <div className="mt-3">
               <label className="mb-1 block text-[12px] text-muted">
-                app port to proxy to{detectedPort ? " (detected from your project)" : ""}
+                app port to proxy to{detectedPort ? ` (defaults to ${detectedPort}, the app's port)` : ""}
               </label>
               <input
                 value={domainPort}
@@ -641,7 +687,7 @@ export function ConfigureView({
               {domainInvalid && (
                 <p className="mt-1.5 text-[12px] text-err">
                   {detectedPort
-                    ? "enter the port your app publishes on the server so nginx can proxy the domain to it."
+                    ? "enter the port your app publishes on the server so the server's proxy can reach it."
                     : "mountabo didn't detect a published port for this app. a domain proxies to a port, so enter the host port your app publishes (and make sure your compose/Dockerfile actually publishes it), otherwise remove the domain."}
                 </p>
               )}

@@ -4,27 +4,79 @@
 
 export type EnvVar = { key: string; value: string };
 
-// parseEnvFile turns the contents of a .env file (or pasted blob) into rows.
-// It accepts `KEY=value`, `export KEY=value`, blank lines, and `#` comments,
-// and strips one layer of surrounding single/double quotes from values. It does
-// not strip inline comments, secret values legitimately contain `#`.
+// parseEnvFile turns the contents of a .env file (or pasted blob) into rows,
+// following the usual dotenv rules:
+//   KEY=value and export KEY=value; blank lines and # comment lines skipped
+//   "double quoted": may span lines; \n \r \t \" \\ and \$ are unescaped
+//   'single quoted': may span lines; taken literally
+//   unquoted: the rest of the line, trimmed. Inline # is kept, because secret
+//   values legitimately contain it (a password, a URL fragment).
+// A quoted value that is never closed is taken as the rest of its line, never
+// with the stray quote, so a broken paste can't produce a broken .env later.
 export function parseEnvFile(text: string): EnvVar[] {
   const out: EnvVar[] = [];
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const body = line.startsWith("export ") ? line.slice(7).trim() : line;
-    const eq = body.indexOf("=");
-    if (eq <= 0) continue; // no key, or no `=`
-    const key = body.slice(0, eq).trim();
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue; // not a valid env name
-    let value = body.slice(eq + 1).trim();
-    if (value.length >= 2 && (value[0] === '"' || value[0] === "'") && value.at(-1) === value[0]) {
-      value = value.slice(1, -1);
+  const src = text.replace(/\r\n?/g, "\n");
+  let i = 0;
+  const lineEnd = (from: number) => {
+    const n = src.indexOf("\n", from);
+    return n < 0 ? src.length : n;
+  };
+  while (i < src.length) {
+    const end = lineEnd(i);
+    const line = src.slice(i, end).trim();
+    if (!line || line.startsWith("#")) {
+      i = end + 1;
+      continue;
     }
-    out.push({ key, value });
+    const body = line.startsWith("export ") ? line.slice(7).trimStart() : line;
+    const eq = body.indexOf("=");
+    const key = eq > 0 ? body.slice(0, eq).trim() : "";
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      i = end + 1;
+      continue;
+    }
+    // Position of the value's first character in src.
+    let v = src.indexOf("=", i) + 1;
+    while (v < end && (src[v] === " " || src[v] === "\t")) v++;
+    const quote = src[v];
+    if (quote === '"' || quote === "'") {
+      const close = findClosingQuote(src, v + 1, quote);
+      if (close >= 0) {
+        const raw = src.slice(v + 1, close);
+        out.push({ key, value: quote === '"' ? unescapeDouble(raw) : raw });
+        i = lineEnd(close) + 1;
+        continue;
+      }
+      // Never closed: keep the rest of the line, without the stray quote.
+      out.push({ key, value: src.slice(v + 1, end).trim() });
+      i = end + 1;
+      continue;
+    }
+    out.push({ key, value: src.slice(v, end).trim() });
+    i = end + 1;
   }
   return out;
+}
+
+// findClosingQuote finds the quote that ends a value: one followed by nothing
+// but whitespace or a # comment on its line. A quote with more text after it
+// is part of the value (a pasted key or message), not its end.
+function findClosingQuote(src: string, from: number, quote: string): number {
+  for (let j = from; j < src.length; j++) {
+    if (quote === '"' && src[j] === "\\") {
+      j++;
+      continue;
+    }
+    if (src[j] !== quote) continue;
+    let k = j + 1;
+    while (k < src.length && (src[k] === " " || src[k] === "\t")) k++;
+    if (k >= src.length || src[k] === "\n" || src[k] === "#") return j;
+  }
+  return -1;
+}
+
+function unescapeDouble(raw: string): string {
+  return raw.replace(/\\([nrt"\\$])/g, (_, c: string) => ({ n: "\n", r: "\r", t: "\t" })[c] ?? c);
 }
 
 // mergeEnv overlays imported vars onto existing rows: empty rows are dropped,

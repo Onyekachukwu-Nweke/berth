@@ -73,14 +73,14 @@ export function ConfigureView({
   const fileRef = useRef<HTMLInputElement>(null);
 
   // The server's ports for this deployment: taken (listening, or claimed by
-  // another mountabo deployment there) and this deployment's current port.
+  // another berth deployment there) and this deployment's current port.
   // Keyed so a stale answer for another server or environment reads as null.
   const portsTarget = `${server.id}|${source.owner}/${source.name}|${environment.trim() || branch}`;
   const [serverPortsState, setServerPortsState] = useState<{ key: string; data: ServerPorts } | null>(null);
   const serverPorts = serverPortsState && serverPortsState.key === portsTarget ? serverPortsState.data : null;
   const busy = serverPorts ? serverPorts.taken : null;
   // Host ports the operator typed. Every other editable port is assigned by
-  // mountabo: its current port on a redeploy, else the compose default when it
+  // berth: its current port on a redeploy, else the compose default when it
   // is free, else the first free port in 3000-9999.
   const [touchedPorts, setTouchedPorts] = useState<Set<string>>(() => new Set());
 
@@ -159,9 +159,9 @@ export function ConfigureView({
   const portValueFor = (key: string, fallback: string) =>
     touchedPorts.has(key) ? (portValues[key] ?? fallback) : (autoPorts[key]?.value ?? portValues[key] ?? fallback);
 
-  // The ports mountabo will set, in the shape the backend expects. In docker
+  // The ports berth will set, in the shape the backend expects. In docker
   // mode every EXPOSE'd port gets an editable host port (default = container
-  // port). In compose mode env-var-backed ports are mountabo's to set; a port
+  // port). In compose mode env-var-backed ports are berth's to set; a port
   // fixed in the compose file is sent with no variable so the health check,
   // the deployment record and a domain still know the app's port.
   const configuredPorts: PreviewPort[] = useMemo(() => {
@@ -190,7 +190,7 @@ export function ConfigureView({
   const [deployBody, setDeployBody] = useState<PreviewRequest | null>(null);
   const [deployed, setDeployed] = useState(false);
   // Optional custom domain captured on this same page (Vercel-style: one place
-  // for env vars + domain setup). When the operator fills it in, mountabo
+  // for env vars + domain setup). When the operator fills it in, berth
   // applies it via the same SSE add-domain flow right after the deploy stream
   // finishes successfully. The port is taken from the first configured port,
   // so the operator never picks it twice.
@@ -217,7 +217,7 @@ export function ConfigureView({
   const [confirmDeploy, setConfirmDeploy] = useState<PreviewRequest | null>(null);
 
   // The operator only sees their own secrets. The server connection secrets
-  // (SERVER_HOST, SERVER_SSH_KEY, SERVER_USER, DEPLOY_DIR) are managed: mountabo
+  // (SERVER_HOST, SERVER_SSH_KEY, SERVER_USER, DEPLOY_DIR) are managed: berth
   // sets them on the repo automatically, so they are abstracted away here and
   // never listed, only summarised as "set automatically".
   const userSecrets = preview?.secrets.filter((s) => !s.managed) ?? [];
@@ -478,7 +478,7 @@ export function ConfigureView({
                       )}
                       {editable && auto?.movedFrom && (
                         <span className="mt-1 block text-[11px] text-muted">
-                          {auto.movedFrom} is taken on {server.name}, so mountabo picked {auto.value}.
+                          {auto.movedFrom} is taken on {server.name}, so berth picked {auto.value}.
                         </span>
                       )}
                       {editable && !auto && !touchedPorts.has(key) && busy === null && (
@@ -486,7 +486,7 @@ export function ConfigureView({
                       )}
                       {!editable && occupied && (
                         <span className="mt-1 block text-[11px] text-err">
-                          {`${p.host} is taken on ${server.name} and is fixed in your compose file. Change it to "\${${(p.service || "APP").toUpperCase().replace(/[^A-Z0-9]/g, "_")}_PORT:-${p.host}}:${p.container}" so mountabo can pick a free one.`}
+                          {`${p.host} is taken on ${server.name} and is fixed in your compose file. Change it to "\${${(p.service || "APP").toUpperCase().replace(/[^A-Z0-9]/g, "_")}_PORT:-${p.host}}:${p.container}" so berth can pick a free one.`}
                         </span>
                       )}
                     </label>
@@ -499,7 +499,7 @@ export function ConfigureView({
 
         <Section label="environment variables" hint="become encrypted repo secrets">
           <p className="mb-3 text-[12px] leading-5 text-muted">
-            your app&apos;s own variables only. mountabo sets the server connection (host, ssh key, deploy
+            your app&apos;s own variables only. berth sets the server connection (host, ssh key, deploy
             directory) for you, so you never add server details like an ip or password here.
           </p>
           {/* Import a whole .env at once: paste it or pick a file. Parsing is
@@ -648,7 +648,7 @@ export function ConfigureView({
         <Section label="custom domain (optional)" hint="nginx + free https on this server">
           <p className="mb-3 text-[12px] leading-5 text-muted">
             point your domain&apos;s A record at <span className="text-cream">{server.ip}</span>{" "}first.
-            after the deploy stream finishes, mountabo fronts your app on https with a Let&apos;s Encrypt
+            after the deploy stream finishes, berth fronts your app on https with a Let&apos;s Encrypt
             certificate.
           </p>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -688,7 +688,7 @@ export function ConfigureView({
                 <p className="mt-1.5 text-[12px] text-err">
                   {detectedPort
                     ? "enter the port your app publishes on the server so the server's proxy can reach it."
-                    : "mountabo didn't detect a published port for this app. a domain proxies to a port, so enter the host port your app publishes (and make sure your compose/Dockerfile actually publishes it), otherwise remove the domain."}
+                    : "berth didn't detect a published port for this app. a domain proxies to a port, so enter the host port your app publishes (and make sure your compose/Dockerfile actually publishes it), otherwise remove the domain."}
                 </p>
               )}
             </div>
@@ -745,7 +745,7 @@ export function ConfigureView({
           subtitle={`${source.owner}/${source.name} → ${server.name}`}
           summary={
             <>
-              mountabo will commit the workflow and deploy script below to{" "}
+              berth will commit the workflow and deploy script below to{" "}
               <span className="text-cream">
                 {source.owner}/{source.name}
               </span>{" "}
@@ -759,7 +759,7 @@ export function ConfigureView({
           stepsLabel="exact files and script that will be written, then run on the server"
           steps={
             preview
-              ? `# ${preview.workflowPath}\n${preview.workflow}\n\n# deploy.sh\n${preview.deployScript}\n\n# your environment variables, set as encrypted secrets on ${source.owner}/${source.name}\n${userSecrets.map((s) => s.name).join("\n") || "(none)"}\n\n# the server connection is set automatically by mountabo (${managedSecretCount} managed secrets, not shown)`
+              ? `# ${preview.workflowPath}\n${preview.workflow}\n\n# deploy.sh\n${preview.deployScript}\n\n# your environment variables, set as encrypted secrets on ${source.owner}/${source.name}\n${userSecrets.map((s) => s.name).join("\n") || "(none)"}\n\n# the server connection is set automatically by berth (${managedSecretCount} managed secrets, not shown)`
               : undefined
           }
           loading={!preview}
@@ -894,7 +894,7 @@ export function ConfigureView({
                   )}
                   <p className="px-5 py-3 text-[12px] leading-5 text-muted">
                     your values are encrypted (sealed box) before upload; they never leave your machine in
-                    the clear. mountabo also sets the server connection automatically, you do not manage it
+                    the clear. berth also sets the server connection automatically, you do not manage it
                     here.
                   </p>
                 </div>

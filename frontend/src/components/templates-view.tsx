@@ -13,7 +13,7 @@ const btn =
   "flex items-center gap-1.5 rounded-md border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-body transition-colors hover:border-line-strong hover:text-cream disabled:opacity-50";
 
 // TemplatesView: pick a template, edit its files in place, then copy them, hand
-// them to an AI with a prompt that spells out Mountabo's conventions, or commit
+// them to an AI with a prompt that spells out Berth's conventions, or commit
 // them into a repo. Picking a repo reads its file list to suggest a template,
 // flag files that would be overwritten, and give the AI real context.
 export function TemplatesView({
@@ -141,7 +141,7 @@ export function TemplatesView({
       const resp = await fetch(`/api/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/files`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ branch: effectiveBranch, message: `mountabo: add Docker setup (${template.name})`, files }),
+        body: JSON.stringify({ branch: effectiveBranch, message: `berth: add Docker setup (${template.name})`, files }),
       });
       const data = (await resp.json().catch(() => ({}))) as { error?: string };
       setCommitState({
@@ -154,7 +154,7 @@ export function TemplatesView({
         setTree({ ...currentTree, paths: Array.from(new Set([...currentTree.paths, ...files.map((f) => f.path)])) });
       }
     } catch {
-      setCommitState({ busy: false, result: { ok: false, text: "Couldn't reach Mountabo." } });
+      setCommitState({ busy: false, result: { ok: false, text: "Couldn't reach Berth." } });
     }
   }
 
@@ -307,7 +307,7 @@ export function TemplatesView({
                   {addonsLocked
                     ? "You edited docker-compose.yml, so add-ons are locked. Reset to change them."
                     : addonIds.length
-                      ? "Each runs beside your app with a persistent volume and no public port. The app gets its connection URL and waits until it is healthy. Set the passwords listed in .env.example in Mountabo."
+                      ? "Each runs beside your app with a persistent volume and no public port. The app gets its connection URL and waits until it is healthy. Set the passwords listed in .env.example in Berth."
                       : "Run a database or cache next to your app, on the same server."}
                 </p>
               </div>
@@ -358,7 +358,7 @@ export function TemplatesView({
           subtitle={effectiveBranch}
           summary={
             <>
-              Mountabo writes these files to <span className="text-cream">{repo}</span> on{" "}
+              Berth writes these files to <span className="text-cream">{repo}</span> on{" "}
               <span className="text-cream">{effectiveBranch}</span>{" "}using the GitHub App, one commit per file.
               {overwrites.length > 0 && (
                 <>
@@ -368,7 +368,7 @@ export function TemplatesView({
                   </span>
                 </>
               )}{" "}
-              If the branch already deploys with Mountabo, these commits trigger a deploy.
+              If the branch already deploys with Berth, these commits trigger a deploy.
             </>
           }
           stepsLabel="files"

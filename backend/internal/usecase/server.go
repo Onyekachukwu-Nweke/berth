@@ -16,7 +16,7 @@ import (
 // preventing concurrent or duplicate bootstrap runs against the same host.
 var ErrSetupInProgress = errors.New("setup already in progress for this server")
 
-// BootstrapUser is the non-root account mountabo creates and uses on every
+// BootstrapUser is the non-root account berth creates and uses on every
 // server. Fixed by product decision.
 const BootstrapUser = "mountabo"
 
@@ -46,7 +46,7 @@ type ServerSpecs struct {
 	Hostname string `json:"hostname"`
 }
 
-// Server is a VPS the user has added. Secrets (root password, mountabo private
+// Server is a VPS the user has added. Secrets (root password, berth private
 // key) live in the vault, never on this struct.
 type Server struct {
 	ID          string       `json:"id"`
@@ -59,7 +59,7 @@ type Server struct {
 	Fingerprint string       `json:"fingerprint"`
 	CreatedAt   time.Time    `json:"createdAt"`
 	// UserPublicKey is the operator's own SSH public key (a public value, safe to
-	// store) installed alongside mountabo's so the human can also reach the box.
+	// store) installed alongside berth's so the human can also reach the box.
 	UserPublicKey string `json:"userPublicKey,omitempty"`
 	// Options are the ids of opt-in hardening settings currently applied to the
 	// server (persisted). Toggled per-server and applied live via ApplyOptions.
@@ -118,7 +118,7 @@ type SSHTarget struct {
 	Port     int
 	User     string
 	Password string
-	// PrivateKey, when set, is used for key-based auth (the mountabo user)
+	// PrivateKey, when set, is used for key-based auth (the berth user)
 	// instead of Password (used for the initial root connection).
 	PrivateKey string
 	// Fingerprint is the expected SHA256 host key fingerprint. Empty means
@@ -133,9 +133,9 @@ type SSHTarget struct {
 type BootstrapParams struct {
 	User      string
 	Timezone  string
-	PublicKey string // mountabo's generated public key
+	PublicKey string // berth's generated public key
 	// UserPublicKey is the operator's own public key, installed alongside
-	// mountabo's so they can SSH in directly. Empty if none is available.
+	// berth's so they can SSH in directly. Empty if none is available.
 	UserPublicKey string
 	// Options are the ids of opt-in hardening steps to append after the base
 	// setup, in catalog order. Empty means base setup only.
@@ -223,7 +223,7 @@ type ServerBootstrapper interface {
 }
 
 // OptionApplier enables/disables hardening options on an already-set-up server
-// (connecting as the mountabo user via its key, running with sudo), streaming
+// (connecting as the berth user via its key, running with sudo), streaming
 // output to out. add and remove are option ids in catalog order; params maps an
 // option id to its collected parameter values (key→value).
 type OptionApplier interface {
@@ -231,19 +231,19 @@ type OptionApplier interface {
 }
 
 // RootRunner runs a shell script as root on an already-set-up server (connecting
-// as the mountabo user with its key, executing via sudo), streaming output to
+// as the berth user with its key, executing via sudo), streaming output to
 // out. It is the generic execution path behind domain setup and teardown.
 type RootRunner interface {
 	RunAsRoot(ctx context.Context, t SSHTarget, script string, out io.Writer) error
 }
 
-// KeyMaker generates an SSH keypair for mountabo's access to a server.
+// KeyMaker generates an SSH keypair for berth's access to a server.
 type KeyMaker interface {
 	Generate(comment string) (privatePEM, publicKey string, err error)
 }
 
 // LocalKeyProvider reads the operator's own SSH public key from this machine
-// (mountabo runs locally), so it can be installed for their direct access.
+// (berth runs locally), so it can be installed for their direct access.
 // Returns "" (no error) when none is found.
 type LocalKeyProvider interface {
 	LocalPublicKey() (string, error)
@@ -369,7 +369,7 @@ func (s *ServerService) Get(id string) (Server, error) {
 }
 
 // Setup runs the bootstrap on a probed server, streaming progress to out. It
-// generates mountabo's SSH key, installs the public half on the server, applies
+// generates berth's SSH key, installs the public half on the server, applies
 // any opt-in hardening options the operator selected, and on success stores the
 // private half in the vault and marks the server ready. Progress lines are
 // written to out as they happen.
@@ -412,7 +412,7 @@ func (s *ServerService) Setup(ctx context.Context, id string, options []string, 
 
 	// Resolve the operator's own public key so they get direct SSH access:
 	// prefer one they pasted, else auto-detect a local ~/.ssh key. If neither
-	// exists, only mountabo will have access, say so in the live log.
+	// exists, only berth will have access, say so in the live log.
 	userKey := strings.TrimSpace(server.UserPublicKey)
 	if userKey == "" {
 		if detected, derr := s.localKeys.LocalPublicKey(); derr == nil {
@@ -420,7 +420,7 @@ func (s *ServerService) Setup(ctx context.Context, id string, options []string, 
 		}
 	}
 	if userKey == "" {
-		_, _ = io.WriteString(out, "==> note: no personal SSH key found (~/.ssh) or pasted, only mountabo will have key access to this server\n")
+		_, _ = io.WriteString(out, "==> note: no personal SSH key found (~/.ssh) or pasted, only berth will have key access to this server\n")
 	}
 
 	// Pin the host key captured when the server was added: if it doesn't match,
@@ -437,10 +437,10 @@ func (s *ServerService) Setup(ctx context.Context, id string, options []string, 
 	}
 
 	if err := s.vault.SaveSecret(privateKeyKey(id), privateKey); err != nil {
-		return fmt.Errorf("store mountabo key: %w", err)
+		return fmt.Errorf("store berth key: %w", err)
 	}
 	// The root password is kept in the vault (encrypted at rest), not
-	// discarded. mountabo does not harden sshd, so the operator keeps using it
+	// discarded. berth does not harden sshd, so the operator keeps using it
 	// for root SSH/console access. It is destroyed only when the server is
 	// removed.
 
@@ -452,10 +452,10 @@ func (s *ServerService) Setup(ctx context.Context, id string, options []string, 
 }
 
 // ApplyOptions changes which hardening options are applied to an already-set-up
-// server to match desired: it connects as the mountabo user with the stored key
+// server to match desired: it connects as the berth user with the stored key
 // (root password not needed) and runs the enable scripts for newly-ticked
 // options and the disable scripts for unticked ones, streaming to out, then
-// persists the new set. Only valid once the server is ready (the mountabo key
+// persists the new set. Only valid once the server is ready (the berth key
 // exists).
 func (s *ServerService) ApplyOptions(ctx context.Context, id string, desired []string, params map[string]map[string]string, out io.Writer) error {
 	s.mu.Lock()
@@ -481,7 +481,7 @@ func (s *ServerService) ApplyOptions(ctx context.Context, id string, desired []s
 
 	key, err := s.vault.LoadSecret(privateKeyKey(id))
 	if err != nil {
-		return fmt.Errorf("load mountabo key: %w", err)
+		return fmt.Errorf("load berth key: %w", err)
 	}
 
 	desired = canonicalOptions(desired)
@@ -530,7 +530,7 @@ func subtract(a, b []string) []string {
 }
 
 // Remove deletes a server and destroys its secrets, completing the key
-// lifecycle: the mountabo private key and any retained root password are wiped
+// lifecycle: the berth private key and any retained root password are wiped
 // from the vault before the server record is dropped. Secret deletes are
 // idempotent, so a partially-set-up server removes cleanly too.
 func (s *ServerService) Remove(id string) error {
@@ -538,7 +538,7 @@ func (s *ServerService) Remove(id string) error {
 		return err
 	}
 	if err := s.vault.DeleteSecret(privateKeyKey(id)); err != nil {
-		return fmt.Errorf("destroy mountabo key: %w", err)
+		return fmt.Errorf("destroy berth key: %w", err)
 	}
 	if err := s.vault.DeleteSecret(rootPasswordKey(id)); err != nil {
 		return fmt.Errorf("destroy root password: %w", err)

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // AccessSQL persists who can do what: users and their sessions, each user's

@@ -89,7 +89,7 @@ export function ServerDomains({
   return (
     <div className="border-t border-line px-4 py-5">
       <p className="text-[13px] leading-6 text-body">
-        domains: point a custom domain at this server. mountabo installs nginx, fronts your app on{" "}
+        domains: point a custom domain at this server. berth installs nginx, fronts your app on{" "}
         <span className="text-cream">https</span>{" "}with a free Let&apos;s Encrypt certificate, and keeps it
         renewed.
       </p>

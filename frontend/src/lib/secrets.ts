@@ -1,5 +1,5 @@
 // Per-environment GitHub Actions secrets, as the Go backend reports them. GitHub
-// is the single store: mountabo lists the configured names (+ updated times),
+// is the single store: berth lists the configured names (+ updated times),
 // sets values (write-only), and deletes secrets — but never reads a value back.
 
 // DeploymentSecret is one configured environment secret. There is no value:

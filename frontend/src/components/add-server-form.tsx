@@ -86,7 +86,7 @@ export function AddServerForm({
       const data = (await resp.json().catch(() => ({}))) as { error?: string };
       setError(data.error ?? "could not add server");
     } catch {
-      setError("could not reach mountabo");
+      setError("could not reach berth");
     } finally {
       setBusy(false);
     }

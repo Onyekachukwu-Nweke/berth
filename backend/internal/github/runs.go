@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 	gogithub "github.com/google/go-github/v88/github"
 )
 

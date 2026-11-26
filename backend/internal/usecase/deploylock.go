@@ -7,7 +7,7 @@ import (
 
 // DeployLocker serializes deploys per target: at most one deploy operation may
 // hold a given key at a time. It is an in-process, in-memory registry — the
-// right scope for mountabo's local-first, single-process model. A process
+// right scope for berth's local-first, single-process model. A process
 // restart clears all locks, which is correct: no deploy is actually running
 // locally after a restart. It is safe for concurrent use.
 //

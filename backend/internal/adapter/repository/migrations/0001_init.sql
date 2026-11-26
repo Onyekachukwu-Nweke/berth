@@ -48,7 +48,7 @@ CREATE TABLE deploy_events (
 CREATE INDEX idx_deploy_events_target ON deploy_events (owner, repo, environment, at DESC);
 
 -- The platform's own credentials (server SSH keys, deploy keys, tool admin
--- logins). Sealed with AES-256-GCM under MOUNTABO_MASTER_KEY; the database
+-- logins). Sealed with AES-256-GCM under BERTH_MASTER_KEY; the database
 -- never sees a plaintext value. App secrets are NOT here: those live only in
 -- GitHub Actions secrets.
 CREATE TABLE vault_secrets (

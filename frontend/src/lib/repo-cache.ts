@@ -46,7 +46,7 @@ export function writeCachedRepos(account: string, repos: Source[]): number {
 }
 
 // Clears cached repositories. With an account it removes just that entry; with
-// no argument it purges every mountabo repo cache entry, so a stale or wrong
+// no argument it purges every berth repo cache entry, so a stale or wrong
 // listing for any account is forgotten and the next load fetches fresh.
 export function clearCachedRepos(account?: string): void {
   if (typeof window === "undefined") return;

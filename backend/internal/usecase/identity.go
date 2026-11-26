@@ -8,7 +8,7 @@ import (
 
 // deploymentIDPrefix marks a canonical deployment id so it is recognisable in
 // container names, image references and paths on a server that may also carry
-// resources mountabo did not create.
+// resources berth did not create.
 const deploymentIDPrefix = "mtb-"
 
 // DeriveDeploymentID returns the canonical server-side identity for a

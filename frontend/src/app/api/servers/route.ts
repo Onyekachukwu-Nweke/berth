@@ -15,7 +15,7 @@ export async function POST(request: Request) {
       body: await request.text(),
     });
   } catch {
-    return NextResponse.json({ error: "couldn't reach the mountabo backend" }, { status: 502 });
+    return NextResponse.json({ error: "couldn't reach the berth backend" }, { status: 502 });
   }
   const body = await resp.text();
   return new NextResponse(body, {

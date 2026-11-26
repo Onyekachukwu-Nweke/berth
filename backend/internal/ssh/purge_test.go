@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 func purgeSpec() usecase.PurgeSpec {

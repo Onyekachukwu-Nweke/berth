@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // ServerSQL persists servers in Postgres, one JSONB document per server. It

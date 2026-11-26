@@ -520,7 +520,7 @@ export function MonitorView({
           subtitle={confirmDomain.server.ip}
           summary={
             <>
-              mountabo will configure <span className="text-cream">{confirmDomain.server.name}</span>{" "}to
+              berth will configure <span className="text-cream">{confirmDomain.server.name}</span>{" "}to
               front <span className="text-cream">{confirmDomain.value.host}</span>{" "}on https, proxying to
               your app on port <span className="text-cream">{confirmDomain.value.upstream}</span>. it
               {confirmDomain.server.proxy === "traefik" ? "routes it through Traefik, which obtains" : "installs nginx if needed, writes the vhost below, and obtains"}{" "}a Let&apos;s Encrypt
@@ -536,7 +536,7 @@ export function MonitorView({
               : domainPreviewLoading
                 ? undefined
                 : [
-                    "connect to the server as the mountabo user over SSH (with sudo)",
+                    "connect to the server as the berth user over SSH (with sudo)",
                     "install nginx if it is not already present",
                     `write the nginx vhost for ${confirmDomain.value.host}`,
                     "obtain a Let's Encrypt certificate over http and enable https",
@@ -559,14 +559,14 @@ export function MonitorView({
           destructive
           summary={
             <>
-              mountabo will stop fronting <span className="text-cream">{confirmDomain.host}</span> on{" "}
+              berth will stop fronting <span className="text-cream">{confirmDomain.host}</span> on{" "}
               <span className="text-cream">{confirmDomain.server.name}</span>: it removes the nginx vhost
               and its certificate, then reloads nginx. your app keeps running on its local port. nothing
               runs until you confirm.
             </>
           }
           steps={[
-            "connect to the server as the mountabo user over SSH (with sudo)",
+            "connect to the server as the berth user over SSH (with sudo)",
             `remove the nginx vhost for ${confirmDomain.host}`,
             "delete the Let's Encrypt certificate for the domain",
             "reload nginx so it stops serving the domain",
@@ -581,7 +581,7 @@ export function MonitorView({
       )}
 
       {/* Delete a deployment: type-to-confirm, honest about what it does and
-          does not do. It only removes mountabo's local tracking. */}
+          does not do. It only removes berth's local tracking. */}
       {confirmDelete && (
         <ConfirmAction
           title={`delete ${confirmDelete.app}`}
@@ -590,7 +590,7 @@ export function MonitorView({
           requireTyping={confirmDelete.app}
           summary={
             <>
-              this tears down <span className="text-cream">{confirmDelete.app}</span>. mountabo stops and
+              this tears down <span className="text-cream">{confirmDelete.app}</span>. berth stops and
               removes its running container on{" "}
               <span className="text-cream">{serverById.get(confirmDelete.serverId)?.name ?? confirmDelete.serverId}</span>,
               deletes the deploy workflow from{" "}
@@ -603,7 +603,7 @@ export function MonitorView({
           steps={[
             `stop and remove the running container for ${confirmDelete.app} on ${serverById.get(confirmDelete.serverId)?.name ?? confirmDelete.serverId}`,
             `delete the deploy workflow and deploy.sh from ${confirmDelete.repo} so it no longer deploys`,
-            "remove the deployment record and its append-only history from mountabo",
+            "remove the deployment record and its append-only history from berth",
           ]}
           confirmLabel="delete deployment"
           onConfirm={() => void confirmDeployDelete(confirmDelete)}
@@ -625,7 +625,7 @@ export function MonitorView({
           }
           stepsLabel="what clearing does"
           steps={[
-            `release mountabo's in-process deploy lock for ${confirmClearLock.app}`,
+            `release berth's in-process deploy lock for ${confirmClearLock.app}`,
             "does not touch the server, the running app, or GitHub — it only frees the local lock",
           ]}
           confirmLabel="clear stuck lock"
@@ -665,7 +665,7 @@ function HealthBanner({ health }: { health: AppHealth | null | undefined }) {
       <div className="mt-6 flex items-center gap-3 rounded-lg border border-line bg-surface-2/50 px-4 py-3">
         <CircleDot className="text-muted" />
         <span className="text-[13px] text-muted">
-          Health unknown: Mountabo couldn&apos;t probe the app. The server may not be set up, or is unreachable.
+          Health unknown: Berth couldn&apos;t probe the app. The server may not be set up, or is unreachable.
         </span>
       </div>
     );
@@ -1194,7 +1194,7 @@ function applyNotice(res: ApplyResult, okText: string): { tone: "info" | "warn";
 }
 
 // SecretsPanel is the per-environment secrets tab, laid out as a configuration
-// table. GitHub Actions env secrets are the single store: mountabo shows which
+// table. GitHub Actions env secrets are the single store: berth shows which
 // names are configured (with GitHub's updated time), lets you set values
 // (write-only) and delete secrets, but can never read a value back — so there is
 // no reveal or copy. Operator variables come first; system-managed connection
@@ -1403,7 +1403,7 @@ function SecretsPanel({
         </div>
       )}
 
-      {/* system-managed connection secrets: set by mountabo when it configures the
+      {/* system-managed connection secrets: set by berth when it configures the
           deploy (server host/user/ssh key + deploy dir). These are NOT application
           variables; they are read-only here and, like all secrets, write-only. */}
       {managed.length > 0 && (
@@ -1420,7 +1420,7 @@ function SecretsPanel({
                   return (
                     <tr key={s.name}>
                       <td className="px-4 py-3 font-mono text-cream">{s.name}</td>
-                      <td className="px-4 py-3 text-muted">managed by mountabo</td>
+                      <td className="px-4 py-3 text-muted">managed by berth</td>
                       <td className="hidden px-4 py-3 text-right text-muted md:table-cell">
                         {updated ? `updated ${updated}` : ""}
                       </td>
@@ -1664,7 +1664,7 @@ function SecretDialog({
 
 // DashboardsPanel shows each installed monitoring tool. A tool is opened on
 // its own domain on the server (the reverse proxy forwards HTTPS and websockets
-// to its loopback port), so it works wherever Mountabo is hosted.
+// to its loopback port), so it works wherever Berth is hosted.
 function DashboardsPanel({
   server,
   dashboards,
@@ -1689,7 +1689,7 @@ const hostRe = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
 // DashboardCard links to the tool's domain when it has one, and otherwise
 // offers to create it (through the same confirm-and-stream flow as an app
-// domain). For Uptime Kuma it also shows the admin login Mountabo seeded.
+// domain). For Uptime Kuma it also shows the admin login Berth seeded.
 function DashboardCard({
   server,
   tool,
@@ -1708,7 +1708,7 @@ function DashboardCard({
   const hostOk = hostRe.test(cleanHost);
 
   // Uptime Kuma has no public HTTP setup endpoint, so the operator can never
-  // guess the admin password. Mountabo offers to generate one and seed it into
+  // guess the admin password. Berth offers to generate one and seed it into
   // its SQLite from inside the container, and shows it here.
   const isKuma = tool.id === "uptime-kuma";
   const [admin, setAdmin] = useState<UptimeKumaAdmin | null>(null);
@@ -1765,7 +1765,7 @@ function DashboardCard({
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0 text-[12.5px] leading-6 text-body">
                 <p className="text-muted">
-                  Log in with these. Mountabo generated them and seeded them into Uptime Kuma.
+                  Log in with these. Berth generated them and seeded them into Uptime Kuma.
                 </p>
                 <p className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[13px]">
                   <span>
@@ -1797,7 +1797,7 @@ function DashboardCard({
           ) : (
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-[12.5px] leading-6 text-body">
-                Uptime Kuma has no admin yet, and no API to create one. Mountabo can generate a login, seed it
+                Uptime Kuma has no admin yet, and no API to create one. Berth can generate a login, seed it
                 into the container, and show it here.
               </p>
               <button

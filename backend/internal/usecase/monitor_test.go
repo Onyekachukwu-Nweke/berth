@@ -324,7 +324,7 @@ func TestMonitorDelete_RemovesRecordEvenWhenTeardownFails(t *testing.T) {
 }
 
 // TestDelete_KeepsSharedResourcesWhileASiblingEnvironmentExists is the "deleting
-// one deployment cannot affect another" property at the mountabo level.
+// one deployment cannot affect another" property at the berth level.
 //
 // The deploy key is per REPO, not per deployment. Removing it while another
 // environment of the same repo still deploys would break that deployment's clone,
@@ -438,7 +438,7 @@ func (o *orderRecorder) DeleteFile(_ context.Context, _ Token, _, _, _, _, _ str
 	return nil
 }
 
-// TestDelete_HoldsTheDeployLock keeps a delete from racing a deploy mountabo
+// TestDelete_HoldsTheDeployLock keeps a delete from racing a deploy berth
 // started against the very resources being removed.
 func TestDelete_HoldsTheDeployLock(t *testing.T) {
 	deps := &fakeDeploymentStore{saved: []Deployment{

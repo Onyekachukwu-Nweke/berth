@@ -1,4 +1,4 @@
-// Package github talks to GitHub: as the mountabo GitHub App (installation
+// Package github talks to GitHub: as the berth GitHub App (installation
 // tokens for repo operations) and as a signed-in user (identity and the repos
 // they can reach). These concrete types satisfy ports declared in
 // internal/usecase.
@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 	"golang.org/x/oauth2"
 	githuboauth "golang.org/x/oauth2/github"
 )

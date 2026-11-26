@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // maxBodyBytes caps request bodies. Exchange payloads are a short code plus a
@@ -56,7 +56,7 @@ func (h *GitHubHandler) CommitFiles(w nethttp.ResponseWriter, r *nethttp.Request
 	case errors.Is(err, usecase.ErrInvalidFiles):
 		h.writeError(w, nethttp.StatusBadRequest, err.Error())
 	case errors.Is(err, usecase.ErrNotConnected):
-		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
+		h.writeError(w, nethttp.StatusFailedDependency, "the berth GitHub App is not installed on this repository's account")
 	default:
 		h.log.Error("commit files failed", "err", err)
 		h.writeError(w, nethttp.StatusBadGateway, "GitHub refused the commit; check that the branch exists and isn't protected")
@@ -74,7 +74,7 @@ func (h *GitHubHandler) Branches(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 	names, err := h.branches.List(r.Context(), owner, repo)
 	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
+		h.writeError(w, nethttp.StatusFailedDependency, "the berth GitHub App is not installed on this repository's account")
 		return
 	}
 	if err != nil {
@@ -104,7 +104,7 @@ func (h *GitHubHandler) Repos(w nethttp.ResponseWriter, r *nethttp.Request) {
 	u, _ := usecase.UserFrom(r.Context())
 	repos, err := h.connector.Repositories(r.Context(), u)
 	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
+		h.writeError(w, nethttp.StatusFailedDependency, "the berth GitHub App is not installed on this repository's account")
 		return
 	}
 	if err != nil {
@@ -164,7 +164,7 @@ func (h *GitHubHandler) Ports(w nethttp.ResponseWriter, r *nethttp.Request) {
 	ref := usecase.RepoRef{Owner: owner, Name: repo, Ref: q.Get("ref"), Dir: q.Get("dir")}
 	ports, strategy, err := h.connector.DetectPorts(r.Context(), ref)
 	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
+		h.writeError(w, nethttp.StatusFailedDependency, "the berth GitHub App is not installed on this repository's account")
 		return
 	}
 	if err != nil {
@@ -199,7 +199,7 @@ func (h *GitHubHandler) Tree(w nethttp.ResponseWriter, r *nethttp.Request) {
 
 	entries, err := h.tree.Tree(r.Context(), owner, repo, ref)
 	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
+		h.writeError(w, nethttp.StatusFailedDependency, "the berth GitHub App is not installed on this repository's account")
 		return
 	}
 	if err != nil {
@@ -226,7 +226,7 @@ func (h *GitHubHandler) EnvExample(w nethttp.ResponseWriter, r *nethttp.Request)
 	ref := usecase.RepoRef{Owner: owner, Name: repo, Ref: q.Get("ref"), Dir: q.Get("dir")}
 	keys, err := h.envExample.Keys(r.Context(), ref)
 	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
+		h.writeError(w, nethttp.StatusFailedDependency, "the berth GitHub App is not installed on this repository's account")
 		return
 	}
 	if err != nil {
@@ -259,7 +259,7 @@ func (h *GitHubHandler) RunSteps(w nethttp.ResponseWriter, r *nethttp.Request) {
 
 	steps, err := h.runSteps.Steps(r.Context(), owner, repo, ref, q.Get("environment"))
 	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
+		h.writeError(w, nethttp.StatusFailedDependency, "the berth GitHub App is not installed on this repository's account")
 		return
 	}
 	if err != nil {
@@ -287,7 +287,7 @@ func (h *GitHubHandler) JobLogs(w nethttp.ResponseWriter, r *nethttp.Request) {
 
 	lines, err := h.runSteps.JobLog(r.Context(), owner, repo, jobID)
 	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
+		h.writeError(w, nethttp.StatusFailedDependency, "the berth GitHub App is not installed on this repository's account")
 		return
 	}
 	if err != nil {

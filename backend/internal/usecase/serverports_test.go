@@ -17,7 +17,7 @@ func (f *fakeInspector) ListeningPorts(_ context.Context, t SSHTarget) ([]int, e
 	return f.ports, f.err
 }
 
-func TestServerPortService_ListsViaMountaboKey(t *testing.T) {
+func TestServerPortService_ListsViaBerthKey(t *testing.T) {
 	store, vault := newMemServerStore(), newFakeVault()
 	_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady, Fingerprint: "fp"})
 	_ = vault.SaveSecret(privateKeyKey("s1"), "KEY-PEM")
@@ -31,7 +31,7 @@ func TestServerPortService_ListsViaMountaboKey(t *testing.T) {
 	if len(got) != 3 || got[1] != 80 {
 		t.Errorf("ports = %v, want [22 80 443]", got)
 	}
-	// Connects as the mountabo user with the stored key and pins the host key.
+	// Connects as the berth user with the stored key and pins the host key.
 	if insp.target.User != BootstrapUser || insp.target.PrivateKey != "KEY-PEM" || insp.target.Fingerprint != "fp" {
 		t.Errorf("unexpected target %+v", insp.target)
 	}

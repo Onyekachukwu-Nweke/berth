@@ -232,6 +232,6 @@ func TestRemove_RefusesSelfAndConfiguredAdmins(t *testing.T) {
 		t.Errorf("removing yourself = %v, want a refusal", err)
 	}
 	if err := f.auth.Remove(User{ID: 99, Login: "boss", IsAdmin: true}, u.ID); !IsForbidden(err) {
-		t.Errorf("removing a MOUNTABO_ADMINS admin = %v, want a refusal", err)
+		t.Errorf("removing a BERTH_ADMINS admin = %v, want a refusal", err)
 	}
 }

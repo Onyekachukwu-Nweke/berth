@@ -61,7 +61,7 @@ func validateCommit(in CommitFilesInput) error {
 		if !safeRepoPath.MatchString(p) || strings.Contains(p, "..") {
 			return fmt.Errorf("%w: %q is not a plain relative path", ErrInvalidFiles, p)
 		}
-		// Workflows are mountabo's to write, from the deploy flow.
+		// Workflows are berth's to write, from the deploy flow.
 		if strings.HasPrefix(strings.ToLower(p), ".github/") {
 			return fmt.Errorf("%w: %q: files under .github are managed by deploys", ErrInvalidFiles, p)
 		}
@@ -89,7 +89,7 @@ func (s *RepoFileService) Commit(ctx context.Context, in CommitFilesInput) error
 	for _, f := range in.Files {
 		msg := strings.TrimSpace(in.Message)
 		if msg == "" {
-			msg = "mountabo: add " + f.Path
+			msg = "berth: add " + f.Path
 		} else {
 			msg = msg + " (" + f.Path + ")"
 		}

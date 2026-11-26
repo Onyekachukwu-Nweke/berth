@@ -19,7 +19,7 @@ var ErrInvalidSecretName = errors.New("invalid secret name")
 
 // ErrMultilineValue is returned when a secret value contains a newline. Values
 // are injected as single .env lines (docker --env-file / compose .env), which
-// can't represent multiline values, so mountabo rejects them up front. (The
+// can't represent multiline values, so berth rejects them up front. (The
 // managed SERVER_SSH_KEY may be multiline but is set via the deploy path and is
 // never written to .env, so it is unaffected.)
 var ErrMultilineValue = errors.New("secret value cannot contain newlines")
@@ -48,7 +48,7 @@ type SecretInfo struct {
 }
 
 // EnvSecretLister lists an environment's Actions secret names + updated times
-// (never values), so mountabo can show what is configured.
+// (never values), so berth can show what is configured.
 type EnvSecretLister interface {
 	ListEnvSecrets(ctx context.Context, t Token, owner, repo, environment string) ([]SecretInfo, error)
 }
@@ -59,7 +59,7 @@ type EnvSecretDeleter interface {
 }
 
 // SecretView is one environment secret shaped for the UI. GitHub Actions secret
-// values are write-only, so there is no value field: mountabo shows the name, the
+// values are write-only, so there is no value field: berth shows the name, the
 // managed classification, and GitHub's last-updated time only.
 type SecretView struct {
 	Name      string    `json:"name"`
@@ -74,7 +74,7 @@ type SecretsView struct {
 }
 
 // SecretsService reads and manages an environment's GitHub Actions secrets on the
-// connected user's behalf. GitHub is the single source of truth: mountabo can
+// connected user's behalf. GitHub is the single source of truth: berth can
 // list the configured names (+ updated times), set values (write-only), and
 // delete secrets, but never reads a value back. It reads a deployment's branch +
 // root dir to diff the configured names against the repo's .env.example.

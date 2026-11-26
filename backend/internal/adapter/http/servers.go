@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // ServersHandler serves the add-server, list, live-setup, port-check,
@@ -132,7 +132,7 @@ func (h *ServersHandler) Logs(w nethttp.ResponseWriter, r *nethttp.Request) {
 }
 
 // Ports reports the ports already listening on a server so the configure UI can
-// flag a deploy port that would collide. The port stays editable; mountabo
+// flag a deploy port that would collide. The port stays editable; berth
 // never changes it.
 func (h *ServersHandler) Ports(w nethttp.ResponseWriter, r *nethttp.Request) {
 	id := r.PathValue("id")
@@ -345,7 +345,7 @@ func streamSSE(w nethttp.ResponseWriter, log *slog.Logger, successMsg string, ru
 	case errors.Is(err, usecase.ErrServerNotFound):
 		sw.event("error", "server not found")
 	case errors.Is(err, usecase.ErrNotConnected):
-		sw.event("error", "the mountabo GitHub App is not installed on this repository's account")
+		sw.event("error", "the berth GitHub App is not installed on this repository's account")
 	case errors.Is(err, usecase.ErrSetupInProgress):
 		sw.event("error", "another setup/apply is already running for this server")
 	case errors.Is(err, usecase.ErrDeployInProgress):
@@ -353,7 +353,7 @@ func streamSSE(w nethttp.ResponseWriter, log *slog.Logger, successMsg string, ru
 	case errors.Is(err, usecase.ErrRunInProgress):
 		sw.event("error", "a deploy run is in flight for this deployment; wait for it or force the rollback")
 	case errors.Is(err, usecase.ErrArtifactNotRetained):
-		sw.event("error", "that release is no longer on the server; mountabo keeps the active release and the one before it")
+		sw.event("error", "that release is no longer on the server; berth keeps the active release and the one before it")
 	case errors.Is(err, usecase.ErrNoPreviousRelease):
 		sw.event("error", "there is no earlier retained release to roll back to")
 	case errors.Is(err, usecase.ErrApprovalStale):

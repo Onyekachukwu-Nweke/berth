@@ -2,7 +2,7 @@ import type { DetectedPort } from "@/lib/ports";
 
 // ServerPorts is what a deploy form needs to choose a host port without a
 // collision: ports in use on the server (listening now, or claimed by another
-// mountabo deployment there), and this deployment's own current port, which a
+// berth deployment there), and this deployment's own current port, which a
 // redeploy keeps.
 export type ServerPorts = { taken: Set<number>; current: number | null };
 
@@ -31,7 +31,7 @@ export async function fetchServerPorts(
   }
 }
 
-// AUTO_PORT_RANGE is where mountabo picks host ports for apps.
+// AUTO_PORT_RANGE is where berth picks host ports for apps.
 export const AUTO_PORT_MIN = 3000;
 export const AUTO_PORT_MAX = 9999;
 

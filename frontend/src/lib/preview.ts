@@ -1,9 +1,9 @@
 import type { Server, Source } from "@/lib/data";
 
-// The exact file mountabo would write to the repo. Kept as a template so the
+// The exact file berth would write to the repo. Kept as a template so the
 // preview pane shows precisely what lands in .github/workflows/.
 export function workflowYaml(source: Source, server: Server, branch: string): string {
-  return `name: mountabo deploy
+  return `name: berth deploy
 
 on:
   push:

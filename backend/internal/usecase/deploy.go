@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goodylili/mountabo/internal/workflow"
+	"github.com/Onyekachukwu-Nweke/berth/internal/workflow"
 )
 
 // secretName matches a valid GitHub Actions secret name: letters, digits and
@@ -28,7 +28,7 @@ var envNameSafe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 var ErrDeployInProgress = errors.New("deploy already in progress for this target")
 
 // ErrLegacyDeployment is returned by ReapplyWorkflow for a deployment recorded
-// before its deploy config was persisted: mountabo can't regenerate its artifacts,
+// before its deploy config was persisted: berth can't regenerate its artifacts,
 // so a secrets-tab change can't be auto-applied — a full redeploy is needed.
 var ErrLegacyDeployment = errors.New("deployment predates persisted config; redeploy from configure to apply")
 
@@ -96,7 +96,7 @@ type NamedSecret struct {
 }
 
 // SecretMeta describes a secret the deploy needs, without its value: Managed is
-// true for the server-connection secrets mountabo fills in, false for the
+// true for the server-connection secrets berth fills in, false for the
 // operator's own env vars. Used by the preview so the UI can show what will be
 // set and by whom.
 type SecretMeta struct {
@@ -104,7 +104,7 @@ type SecretMeta struct {
 	Managed bool   `json:"managed"`
 }
 
-// DeployArtifacts is exactly what mountabo will commit and configure: the
+// DeployArtifacts is exactly what berth will commit and configure: the
 // workflow file (and its path), deploy.sh, and the secrets it needs. Generated
 // purely from a DeployInput so the UI can preview byte-for-byte what a deploy
 // would do.
@@ -151,7 +151,7 @@ type WorkflowDispatcher interface {
 // DeployService configures continuous deployment of a repo to a server: it
 // commits the workflow and deploy.sh, creates the deployment environment, and
 // stores the secrets the workflow needs (server connection details, managed by
-// mountabo, plus the operator's own env vars). It is also the single source of
+// berth, plus the operator's own env vars). It is also the single source of
 // truth for the generated files, so the UI previews via Preview.
 type DeployService struct {
 	servers    ServerStore
@@ -199,7 +199,7 @@ func (s *DeployService) Preview(in DeployInput) (DeployArtifacts, error) {
 // along live. The deployment itself runs later on GitHub's runner (triggered by
 // a push), so nothing executes on the server here; what runs there is the
 // committed deploy.sh, observable in the Actions log. SERVER_SSH_KEY is
-// mountabo's stored private key for the box; it is set as a secret but never
+// berth's stored private key for the box; it is set as a secret but never
 // written to out.
 func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Writer) error {
 	if in.ServerID == "" {
@@ -239,8 +239,8 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 		return fmt.Errorf("load github token: %w", err)
 	}
 
-	// mountabo's private key for this box becomes SERVER_SSH_KEY so GitHub's
-	// runner can SSH in as the mountabo user (its public half is already an
+	// berth's private key for this box becomes SERVER_SSH_KEY so GitHub's
+	// runner can SSH in as the berth user (its public half is already an
 	// authorized_key from bootstrap).
 	key, err := s.vault.LoadSecret(privateKeyKey(in.ServerID))
 	if err != nil {
@@ -285,13 +285,13 @@ func (s *DeployService) Deploy(ctx context.Context, in DeployInput, out io.Write
 
 	scriptPath := workflow.ScriptPath(cfg)
 	progress(out, "writing %s", scriptPath)
-	if err := s.repo.PutFile(ctx, token, in.Owner, in.Repo, in.Branch, scriptPath, workflow.DeployScript(cfg), "mountabo: add deploy script"); err != nil {
+	if err := s.repo.PutFile(ctx, token, in.Owner, in.Repo, in.Branch, scriptPath, workflow.DeployScript(cfg), "berth: add deploy script"); err != nil {
 		return fmt.Errorf("write deploy script: %w", err)
 	}
 
 	wfPath := workflow.Path(cfg)
 	progress(out, "writing %s", wfPath)
-	if err := s.repo.PutFile(ctx, token, in.Owner, in.Repo, in.Branch, wfPath, workflow.Workflow(cfg), "mountabo: add deploy workflow"); err != nil {
+	if err := s.repo.PutFile(ctx, token, in.Owner, in.Repo, in.Branch, wfPath, workflow.Workflow(cfg), "berth: add deploy workflow"); err != nil {
 		return fmt.Errorf("write workflow: %w", err)
 	}
 
@@ -443,7 +443,7 @@ func (s *DeployService) ReapplyWorkflow(ctx context.Context, t Token, owner, rep
 		HooksVersion:  HooksVersion(dep.Config.Hooks),
 	}
 
-	const msg = "mountabo: sync deploy config for secrets change [skip ci]"
+	const msg = "berth: sync deploy config for secrets change [skip ci]"
 	if err := s.repo.PutFile(ctx, t, owner, repo, dep.Branch, workflow.ScriptPath(cfg), workflow.DeployScript(cfg), msg); err != nil {
 		return fmt.Errorf("update deploy script: %w", err)
 	}
@@ -509,7 +509,7 @@ func buildConfig(in DeployInput) workflow.Config {
 }
 
 // deploySecrets is the full secret set with values: server connection details
-// mountabo manages, the deploy directory, then the operator's env vars (blank
+// berth manages, the deploy directory, then the operator's env vars (blank
 // keys dropped), in a stable order.
 func deploySecrets(server Server, sshKey string, in DeployInput) []NamedSecret {
 	secrets := []NamedSecret{
@@ -542,12 +542,12 @@ func secretMetas(in DeployInput) []SecretMeta {
 	return metas
 }
 
-// managedSecretNames are the server-connection secrets mountabo sets itself
+// managedSecretNames are the server-connection secrets berth sets itself
 // (from the server + vault), in stable order. They are never editable, deletable
 // or revealable through the secrets UI.
 var managedSecretNames = []string{"SERVER_HOST", "SERVER_USER", "SERVER_SSH_KEY", "DEPLOY_DIR"}
 
-// isManagedSecret reports whether a secret name is one mountabo manages itself.
+// isManagedSecret reports whether a secret name is one berth manages itself.
 func isManagedSecret(name string) bool {
 	for _, m := range managedSecretNames {
 		if m == name {

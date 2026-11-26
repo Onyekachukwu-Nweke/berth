@@ -9,7 +9,7 @@ import (
 	nethttp "net/http"
 	"strings"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // Guard puts every route behind a decision. The API is only ever called by the

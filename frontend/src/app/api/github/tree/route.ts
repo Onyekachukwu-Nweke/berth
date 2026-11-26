@@ -15,7 +15,7 @@ export async function GET(request: Request) {
   try {
     resp = await backendFetch(target, { cache: "no-store", signal: AbortSignal.timeout(15_000) });
   } catch {
-    return NextResponse.json({ error: "couldn't reach the mountabo backend" }, { status: 502 });
+    return NextResponse.json({ error: "couldn't reach the berth backend" }, { status: 502 });
   }
   const body = await resp.text();
   return new NextResponse(body, {

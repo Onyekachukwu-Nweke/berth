@@ -6,7 +6,7 @@ const geist = Geist({ variable: "--font-geist", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: { default: "Mountabo", template: "%s · Mountabo" },
+  title: { default: "Berth", template: "%s · Berth" },
   description: "Deployments for every project and environment the team runs.",
 };
 

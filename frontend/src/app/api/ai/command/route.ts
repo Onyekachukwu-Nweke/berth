@@ -20,7 +20,7 @@ export async function POST(request: Request) {
       signal: AbortSignal.timeout(40_000),
     });
   } catch {
-    return NextResponse.json({ error: "couldn't reach the mountabo backend" }, { status: 502 });
+    return NextResponse.json({ error: "couldn't reach the berth backend" }, { status: 502 });
   }
   const text = await resp.text();
   return new NextResponse(text, {

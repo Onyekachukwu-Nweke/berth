@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	nethttp "net/http"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // AuthHandler serves sign-in, the current user, and the deploy-target lookup.

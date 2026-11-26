@@ -1,4 +1,4 @@
-module github.com/goodylili/mountabo
+module github.com/Onyekachukwu-Nweke/berth
 
 go 1.26.0
 

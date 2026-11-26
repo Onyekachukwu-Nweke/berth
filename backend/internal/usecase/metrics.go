@@ -23,7 +23,7 @@ type MetricsInspector interface {
 }
 
 // ServerMetricsService reports a set-up server's live host health, connecting as
-// the mountabo user with its stored key. It only reads.
+// the berth user with its stored key. It only reads.
 type ServerMetricsService struct {
 	servers   ServerStore
 	vault     SecretVault
@@ -36,7 +36,7 @@ func NewServerMetricsService(servers ServerStore, vault SecretVault, inspector M
 }
 
 // Metrics returns the server's current host metrics. The server must be set up
-// (the mountabo key exists). ErrServerNotFound propagates from the store.
+// (the berth key exists). ErrServerNotFound propagates from the store.
 func (s *ServerMetricsService) Metrics(ctx context.Context, id string) (ServerMetrics, error) {
 	server, err := s.servers.Get(id)
 	if err != nil {

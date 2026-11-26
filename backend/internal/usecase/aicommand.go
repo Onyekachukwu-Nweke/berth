@@ -47,7 +47,7 @@ func NewAICommandService(suggester CommandSuggester) *AICommandService {
 
 // notConfiguredHint is returned (with Configured=false) when no API key is set,
 // so the UI can tell the operator exactly what to do.
-const notConfiguredHint = "AI command suggestions are not configured. Set ANTHROPIC_API_KEY in the environment (or .env) and restart mountabo to enable them."
+const notConfiguredHint = "AI command suggestions are not configured. Set ANTHROPIC_API_KEY in the environment (or .env) and restart berth to enable them."
 
 // Suggest returns a command suggestion for prompt. When the suggester has no
 // credentials it returns a structured not-configured result (not an error), so

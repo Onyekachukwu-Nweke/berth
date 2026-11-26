@@ -11,13 +11,16 @@ import (
 )
 
 // testDB returns a freshly migrated database isolated in its own schema, dropped
-// when the test ends. Point MOUNTABO_TEST_DATABASE_URL at any Postgres you can
+// when the test ends. Point BERTH_TEST_DATABASE_URL at any Postgres you can
 // create schemas in; without it, database tests are skipped.
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
-	base := os.Getenv("MOUNTABO_TEST_DATABASE_URL")
+	base := os.Getenv("BERTH_TEST_DATABASE_URL")
 	if base == "" {
-		t.Skip("MOUNTABO_TEST_DATABASE_URL not set; skipping Postgres test")
+		base = os.Getenv("MOUNTABO_TEST_DATABASE_URL")
+	}
+	if base == "" {
+		t.Skip("BERTH_TEST_DATABASE_URL not set; skipping Postgres test")
 	}
 	suffix := make([]byte, 6)
 	_, _ = rand.Read(suffix)
@@ -37,7 +40,7 @@ func testDB(t *testing.T) *sql.DB {
 
 	u, err := url.Parse(base)
 	if err != nil {
-		t.Fatalf("parse MOUNTABO_TEST_DATABASE_URL: %v", err)
+		t.Fatalf("parse BERTH_TEST_DATABASE_URL: %v", err)
 	}
 	q := u.Query()
 	q.Set("search_path", schema)

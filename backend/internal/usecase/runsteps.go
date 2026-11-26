@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/goodylili/mountabo/internal/workflow"
+	"github.com/Onyekachukwu-Nweke/berth/internal/workflow"
 )
 
 // RunStep is one step of a GitHub Actions job in the latest deploy run.

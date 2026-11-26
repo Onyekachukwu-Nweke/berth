@@ -15,7 +15,7 @@ import (
 var ErrToolNotInstalled = errors.New("monitoring tool not installed on this server")
 
 // UptimeKumaAdmin is the operator-facing credential pair for an Uptime Kuma
-// instance mountabo manages. The password is shown to the operator exactly
+// instance berth manages. The password is shown to the operator exactly
 // once (regenerate to get a new one); both are persisted in the vault
 // so a reload of the deployments page still has them.
 type UptimeKumaAdmin struct {

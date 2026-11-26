@@ -39,7 +39,7 @@ type DeploymentLookup interface {
 // AppHealthService reports whether a deployed app is up, by probing it from its
 // own server over SSH: it curls the app on the server's loopback (the recorded
 // published port) or its configured domain, and reports up/down plus the HTTP
-// status. It connects as the mountabo user with the stored key and only reads.
+// status. It connects as the berth user with the stored key and only reads.
 type AppHealthService struct {
 	deployments DeploymentLookup
 	servers     ServerStore
@@ -55,7 +55,7 @@ func NewAppHealthService(deployments DeploymentLookup, servers ServerStore, vaul
 // Health probes the deployment identified by (owner, repo, environment) and
 // reports whether it is up. It resolves the deployment's server and the address to probe
 // (its domain, or its loopback published port), connects to the server as the
-// mountabo user, and curls the app from the box. ErrDeploymentNotFound is
+// berth user, and curls the app from the box. ErrDeploymentNotFound is
 // returned when no deployment matches; ErrServerNotFound propagates from the
 // store. A probe that connects but gets no answer (app down) is NOT an error: it
 // returns an AppHealth with Reachable false so the card can show "unhealthy".

@@ -17,6 +17,6 @@ export async function DELETE(
     );
     return new NextResponse(null, { status: resp.status, headers: { "cache-control": "no-store" } });
   } catch {
-    return NextResponse.json({ error: "couldn't reach the mountabo backend" }, { status: 502 });
+    return NextResponse.json({ error: "couldn't reach the berth backend" }, { status: 502 });
   }
 }

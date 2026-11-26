@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 var _ usecase.ContainerTeardown = (*Client)(nil)

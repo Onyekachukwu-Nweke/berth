@@ -19,7 +19,7 @@ export default async function OverviewPage() {
         title="Overview"
         description={
           user?.isAdmin
-            ? "Every project, environment and server Mountabo runs."
+            ? "Every project, environment and server Berth runs."
             : "The projects you can deploy, where they run, and how they're doing."
         }
       />
@@ -241,7 +241,7 @@ function EmptyState({ hasServers }: { hasServers: boolean }) {
       <h2 className="text-[15px] font-semibold text-cream">Nothing deployed yet</h2>
       <p className="mx-auto mt-1 max-w-md text-[13px] text-muted">
         {hasServers
-          ? "Pick a repository and an environment, and Mountabo sets up the workflow, secrets and server for it."
+          ? "Pick a repository and an environment, and Berth sets up the workflow, secrets and server for it."
           : "There are no servers you can deploy to yet. Ask an admin to add one and set up your project's environments."}
       </p>
       <Link

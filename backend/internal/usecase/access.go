@@ -11,10 +11,10 @@ import (
 
 // Access control has two sources of truth, kept deliberately separate:
 //
-//   - Which repos a person may touch is GitHub's answer. mountabo never keeps
+//   - Which repos a person may touch is GitHub's answer. berth never keeps
 //     its own copy of "who is on which project"; it asks GitHub (through the
 //     App) and caches the answer per user for a few minutes.
-//   - Where code may run is mountabo's policy: clients, the servers each one
+//   - Where code may run is berth's policy: clients, the servers each one
 //     owns, and per-client environment rules. GitHub knows nothing about
 //     servers, so this is the one thing admins configure.
 
@@ -62,7 +62,7 @@ func ParsePermission(s string) Permission {
 // resolves to: the agency's own projects.
 const AgencyClientID = "agency"
 
-// User is a person signed in to mountabo through GitHub.
+// User is a person signed in to berth through GitHub.
 type User struct {
 	ID            int64      `json:"id"`
 	GitHubID      int64      `json:"githubId"`
@@ -268,7 +268,7 @@ type PolicyStore interface {
 	SourceWriter
 }
 
-// Installation is one GitHub account the mountabo App is installed on.
+// Installation is one GitHub account the berth App is installed on.
 type Installation struct {
 	ID      int64  `json:"id"`
 	Account string `json:"account"`

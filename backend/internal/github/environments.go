@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 	gogithub "github.com/google/go-github/v88/github"
 )
 
@@ -20,7 +20,7 @@ var (
 // Dispatch triggers a workflow run via the workflow_dispatch event, by workflow
 // file name on the given ref (branch). Used to redeploy after a secret change so
 // the running container picks up the new value; the workflow must declare
-// `workflow_dispatch:` (mountabo's generated workflows do).
+// `workflow_dispatch:` (berth's generated workflows do).
 func (c *Client) Dispatch(ctx context.Context, t usecase.Token, owner, repo, workflowFile, ref string) error {
 	api, err := gogithub.NewClient(gogithub.WithAuthToken(t.AccessToken))
 	if err != nil {
@@ -54,7 +54,7 @@ func (c *Client) DeleteEnvironment(ctx context.Context, t usecase.Token, owner, 
 
 // EnsureEnvironment creates the named deployment environment on owner/repo, or
 // leaves it as-is if it already exists (the API is upsert). No protection rules
-// are set, mountabo only needs the environment to scope its secrets.
+// are set, berth only needs the environment to scope its secrets.
 func (c *Client) EnsureEnvironment(ctx context.Context, t usecase.Token, owner, repo, name string) error {
 	api, err := gogithub.NewClient(gogithub.WithAuthToken(t.AccessToken))
 	if err != nil {

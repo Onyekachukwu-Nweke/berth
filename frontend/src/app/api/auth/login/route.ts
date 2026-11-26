@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { publicOrigin } from "@/lib/public-url";
 import { OAUTH_STATE_COOKIE } from "@/lib/session-cookie";
 
-// Starts GitHub sign-in through the mountabo GitHub App. A GitHub App asks for
+// Starts GitHub sign-in through the berth GitHub App. A GitHub App asks for
 // no scopes: what it can touch is set by the App's permissions and where it is
 // installed, and what a person can touch is their own access on GitHub.
 export async function GET(request: Request) {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 	gogithub "github.com/google/go-github/v88/github"
 	"golang.org/x/sync/errgroup"
 )
@@ -196,7 +196,7 @@ func containerKind(ctx context.Context, api *gogithub.Client, r usecase.Repo) st
 }
 
 // isComposeName reports whether a root filename is one of the Compose files
-// mountabo recognises (shares the list with port detection).
+// berth recognises (shares the list with port detection).
 func isComposeName(lowerName string) bool {
 	for _, n := range composeNames {
 		if lowerName == n {
@@ -219,7 +219,7 @@ func toRepo(r *gogithub.Repository) usecase.Repo {
 	}
 }
 
-// permissionOf folds GitHub's per-role booleans into mountabo's levels:
+// permissionOf folds GitHub's per-role booleans into berth's levels:
 // admin/maintain -> admin, push -> write, triage/pull -> read.
 func permissionOf(p *gogithub.RepositoryPermissions) usecase.Permission {
 	switch {

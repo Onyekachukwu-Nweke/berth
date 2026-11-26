@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 const (
@@ -26,7 +26,7 @@ const (
 
 	// defaultModel is the model used for command suggestions. Sonnet is the
 	// sensible default for this latency-sensitive, well-scoped task; the most
-	// capable option is an Opus model, swap MOUNTABO_AI_MODEL to use it.
+	// capable option is an Opus model, swap BERTH_AI_MODEL to use it.
 	defaultModel = "claude-sonnet-4-6"
 
 	// maxTokens bounds the reply: a command plus a short explanation is small.
@@ -39,7 +39,7 @@ const (
 // systemPrompt is the instruction block sent with every request. It is marked
 // for prompt caching (see buildRequest): it is large and identical on every
 // call, so caching it cuts input-token cost and latency after the first hit.
-const systemPrompt = `You are a Linux server operations assistant embedded in mountabo, a tool that manages a user's own VPS over SSH. The user describes, in plain English, something they want to do on their server. You reply with the shell command (or a short pipeline) that accomplishes it, plus a one or two sentence explanation of what it does.
+const systemPrompt = `You are a Linux server operations assistant embedded in berth, a tool that manages a user's own VPS over SSH. The user describes, in plain English, something they want to do on their server. You reply with the shell command (or a short pipeline) that accomplishes it, plus a one or two sentence explanation of what it does.
 
 Rules:
 - Target a modern Debian/Ubuntu server. The command runs as a non-root sudo-capable user named "mountabo"; prefix with "sudo" only when root is genuinely required.
@@ -79,7 +79,7 @@ func NewClient(apiKey, model string) *Client {
 // to a structured "AI is not configured" reply rather than calling the API.
 func (c *Client) Configured() bool { return c.apiKey != "" }
 
-// anthropic request/response shapes, only the fields mountabo uses.
+// anthropic request/response shapes, only the fields berth uses.
 type messageRequest struct {
 	Model     string        `json:"model"`
 	MaxTokens int           `json:"max_tokens"`

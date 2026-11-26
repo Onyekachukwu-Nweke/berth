@@ -34,7 +34,7 @@ type SourceWriter interface {
 	DeleteSource(account, pattern string) error
 }
 
-// HomeAccount names the GitHub account that owns the Mountabo App: the agency's
+// HomeAccount names the GitHub account that owns the Berth App: the agency's
 // user or organization. With no sources configured, it is the only one.
 type HomeAccount interface {
 	Owner(ctx context.Context) (string, error)

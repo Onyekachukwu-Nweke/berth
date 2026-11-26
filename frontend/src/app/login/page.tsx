@@ -7,10 +7,10 @@ export const metadata = { title: "Sign in" };
 const ERRORS: Record<string, string> = {
   no_access:
     "Your GitHub account isn't on any repository you're allowed to deploy from here. Ask an admin to add you to your project's repo on GitHub, then sign in again.",
-  removed: "An admin removed your access to Mountabo. Ask them to restore it.",
+  removed: "An admin removed your access to Berth. Ask them to restore it.",
   state: "The sign-in link expired or was opened twice. Start again.",
   exchange: "GitHub didn't accept the sign-in. Start again.",
-  backend: "Couldn't reach the Mountabo API. Try again in a moment.",
+  backend: "Couldn't reach the Berth API. Try again in a moment.",
   config: "Sign-in isn't configured on this install (GITHUB_CLIENT_ID is missing).",
 };
 
@@ -28,7 +28,7 @@ export default async function LoginPage({
       <div className="w-full max-w-[360px]">
         <div className="mb-8 flex items-center gap-2 text-cream">
           <LogoMark className="text-lime" width={26} height={26} />
-          <span className="text-[17px] font-semibold tracking-tight">Mountabo</span>
+          <span className="text-[17px] font-semibold tracking-tight">Berth</span>
         </div>
         <h1 className="text-[22px] font-semibold tracking-tight text-cream">Sign in</h1>
         <p className="mt-1.5 text-[13px] leading-relaxed text-muted">

@@ -1,4 +1,4 @@
-// Command server runs mountabo's local API: it composes the GitHub connection
+// Command server runs berth's local API: it composes the GitHub connection
 // flow and serves it over a loopback HTTP listener.
 package main
 
@@ -12,13 +12,13 @@ import (
 	"os/signal"
 	"syscall"
 
-	httpadapter "github.com/goodylili/mountabo/internal/adapter/http"
-	"github.com/goodylili/mountabo/internal/adapter/repository"
-	"github.com/goodylili/mountabo/internal/ai"
-	"github.com/goodylili/mountabo/internal/config"
-	"github.com/goodylili/mountabo/internal/github"
-	"github.com/goodylili/mountabo/internal/ssh"
-	"github.com/goodylili/mountabo/internal/usecase"
+	httpadapter "github.com/Onyekachukwu-Nweke/berth/internal/adapter/http"
+	"github.com/Onyekachukwu-Nweke/berth/internal/adapter/repository"
+	"github.com/Onyekachukwu-Nweke/berth/internal/ai"
+	"github.com/Onyekachukwu-Nweke/berth/internal/config"
+	"github.com/Onyekachukwu-Nweke/berth/internal/github"
+	"github.com/Onyekachukwu-Nweke/berth/internal/ssh"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 func main() {
@@ -37,7 +37,7 @@ func run() error {
 
 	// All state lives in Postgres: servers, deployments and their release log,
 	// and the vault that seals the platform's own credentials (server SSH keys,
-	// deploy keys, users' GitHub tokens) under MOUNTABO_MASTER_KEY.
+	// deploy keys, users' GitHub tokens) under BERTH_MASTER_KEY.
 	db, err := repository.OpenPostgres(context.Background(), cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
@@ -89,7 +89,7 @@ func run() error {
 	serverPortSvc := usecase.NewServerPortService(serverStore, keyStore, sshClient, deploymentStore)
 	serverMetricsSvc := usecase.NewServerMetricsService(serverStore, keyStore, sshClient)
 	serverLogsSvc := usecase.NewServerLogsService(serverStore, keyStore, sshClient)
-	// Uptime Kuma has no public HTTP setup endpoint, so mountabo generates a
+	// Uptime Kuma has no public HTTP setup endpoint, so berth generates a
 	// fresh admin credential pair, seeds it into UK's SQLite from inside the
 	// container, and persists it in the vault so the dashboard panel can
 	// surface it the next time the page loads.
@@ -98,7 +98,7 @@ func run() error {
 
 	// Compose the deploy flow: commit the workflow + deploy.sh and provision the
 	// environment/secrets (all github), reading the server record (JSON store)
-	// and mountabo's stored key (vault). One github.Client and vault.Store
+	// and berth's stored key (vault). One github.Client and vault.Store
 	// already in hand serve these too.
 	//
 	// Each deploy is tracked in an append-only event log, not just upserted away.
@@ -115,7 +115,7 @@ func run() error {
 	deployHandler := httpadapter.NewDeployHandler(deploySvc, logger)
 
 	// The secrets service manages an environment's GitHub Actions secrets: GitHub
-	// is the single store — mountabo lists the configured names (+ updated times),
+	// is the single store — berth lists the configured names (+ updated times),
 	// sets values (write-only), and deletes secrets, but never reads a value back.
 	// On a change it re-applies the deployment (via deploySvc) so the running
 	// container picks it up.

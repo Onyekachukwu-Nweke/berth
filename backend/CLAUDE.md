@@ -1,6 +1,6 @@
 # Backend conventions
 
-Go module `github.com/goodylili/mountabo`. Hexagonal layout: `usecase` (application
+Go module `github.com/Onyekachukwu-Nweke/berth`. Hexagonal layout: `usecase` (application
 core) depends on `adapter` implementations only through interfaces it defines itself.
 
 ## Primitive: accept interfaces, return structs
@@ -56,4 +56,4 @@ together. Dependency direction always points inward, toward `usecase`.
 ## Build / test
 
 `make build`, `make test`, `make fmt`, `make lint` (run from `backend/`). Store tests need
-`MOUNTABO_TEST_DATABASE_URL` pointing at a Postgres (they skip without it).
+`BERTH_TEST_DATABASE_URL` pointing at a Postgres (they skip without it).

@@ -14,7 +14,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       signal: AbortSignal.timeout(25_000),
     });
   } catch {
-    return NextResponse.json({ error: "couldn't reach the mountabo backend" }, { status: 502 });
+    return NextResponse.json({ error: "couldn't reach the berth backend" }, { status: 502 });
   }
   const body = await resp.text();
   return new NextResponse(body, {

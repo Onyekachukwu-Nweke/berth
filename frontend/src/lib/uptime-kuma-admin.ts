@@ -1,5 +1,5 @@
 
-// UptimeKumaAdmin is the credential pair mountabo generated for a server's
+// UptimeKumaAdmin is the credential pair berth generated for a server's
 // Uptime Kuma instance, seeded directly into UK's SQLite (UK has no setup
 // HTTP route). hasAdmin = false means the operator hasn't run "set up admin"
 // yet, so the panel shows a CTA instead of credentials.

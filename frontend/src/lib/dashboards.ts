@@ -1,4 +1,4 @@
-// The self-hosted monitoring tools Mountabo can surface from a deployment. Each
+// The self-hosted monitoring tools Berth can surface from a deployment. Each
 // binds to the server's loopback; it's opened through a domain on the server
 // (the reverse proxy forwards HTTPS and websockets to the tool's port), the
 // same way an app gets a domain.

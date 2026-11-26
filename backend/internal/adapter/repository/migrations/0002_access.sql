@@ -1,6 +1,6 @@
 -- 0002: who can do what. Identity comes from GitHub (sign-in through the
 -- GitHub App); repo access is GitHub's answer, cached per user; where code may
--- run is mountabo's own policy: clients, the servers they own, and per-client
+-- run is berth's own policy: clients, the servers they own, and per-client
 -- environment rules.
 
 CREATE TABLE users (

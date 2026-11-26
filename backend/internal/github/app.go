@@ -17,11 +17,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 	gogithub "github.com/google/go-github/v88/github"
 )
 
-// App acts as the mountabo GitHub App. Repo operations (deploy keys, Actions
+// App acts as the berth GitHub App. Repo operations (deploy keys, Actions
 // secrets, workflow commits) run on an installation token for the account that
 // owns the repo, so they belong to the platform rather than to whoever clicked.
 type App struct {

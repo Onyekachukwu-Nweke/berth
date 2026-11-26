@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 var _ usecase.AppProber = (*Client)(nil)

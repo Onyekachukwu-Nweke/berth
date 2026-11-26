@@ -6,7 +6,7 @@ import (
 	nethttp "net/http"
 	"strconv"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // AdminHandler manages the placement policy: clients, server ownership, repo

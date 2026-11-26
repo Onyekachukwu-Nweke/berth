@@ -33,7 +33,7 @@ async function forward(request: Request, ctx: { params: Promise<{ path: string[]
       signal: request.signal,
     });
   } catch {
-    return Response.json({ error: "could not reach the mountabo API" }, { status: 502 });
+    return Response.json({ error: "could not reach the berth API" }, { status: 502 });
   }
   const out = new Headers();
   const ct = upstream.headers.get("content-type");

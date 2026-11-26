@@ -30,6 +30,7 @@ type App struct {
 	key  *rsa.PrivateKey
 
 	mu       sync.Mutex
+	owner    string           // the account that owns the App, once read
 	installs map[string]int64 // owner (lowercased) -> installation id
 	tokens   map[int64]usecase.Token
 }
@@ -37,6 +38,7 @@ type App struct {
 var (
 	_ usecase.RepoTokens         = (*App)(nil)
 	_ usecase.InstallationLister = (*App)(nil)
+	_ usecase.HomeAccount        = (*App)(nil)
 )
 
 // NewApp builds the App from its numeric id, slug and PEM private key. The key
@@ -79,6 +81,34 @@ func parseKey(raw string) (*rsa.PrivateKey, error) {
 		return nil, errors.New("GITHUB_APP_PRIVATE_KEY is not an RSA key")
 	}
 	return k, nil
+}
+
+// Owner returns the login of the account that owns the App, read from GitHub
+// once and then cached: an App can't change owner without a transfer, and a
+// restart picks that up. A failed read is not cached.
+func (a *App) Owner(ctx context.Context) (string, error) {
+	a.mu.Lock()
+	cached := a.owner
+	a.mu.Unlock()
+	if cached != "" {
+		return cached, nil
+	}
+	api, err := a.appClient()
+	if err != nil {
+		return "", err
+	}
+	info, _, err := api.Apps.Get(ctx, "")
+	if err != nil {
+		return "", fmt.Errorf("get app: %w", err)
+	}
+	login := info.GetOwner().GetLogin()
+	if login == "" {
+		return "", errors.New("GitHub returned the App without an owner")
+	}
+	a.mu.Lock()
+	a.owner = login
+	a.mu.Unlock()
+	return login, nil
 }
 
 // Slug is the App's URL name, used for its public install link.

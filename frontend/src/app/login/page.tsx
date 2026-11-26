@@ -6,7 +6,7 @@ export const metadata = { title: "Sign in" };
 
 const ERRORS: Record<string, string> = {
   no_access:
-    "Your GitHub account can't reach any repository Mountabo is installed on. Ask an admin to add you to your project's repo on GitHub, then sign in again.",
+    "Your GitHub account isn't invited to any of this team's repositories that Mountabo manages. Ask an admin to add you to your project's repo on GitHub, then sign in again.",
   state: "The sign-in link expired or was opened twice. Start again.",
   exchange: "GitHub didn't accept the sign-in. Start again.",
   backend: "Couldn't reach the Mountabo API. Try again in a moment.",

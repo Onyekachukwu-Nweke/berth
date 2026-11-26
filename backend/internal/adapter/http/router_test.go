@@ -59,7 +59,7 @@ func TestRouter_EveryNonPublicRouteIsGuarded(t *testing.T) {
 // session, before any handler runs (the handlers here are nil and would panic).
 func TestRouter_NonPublicRoutesRequireASession(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	auth := usecase.NewAuthService(nil, nil, nil, nil, nil, nil, nil, log)
+	auth := usecase.NewAuthService(nil, nil, nil, nil, nil, nil, nil, nil, log)
 	g := NewGuard(auth, nil, log)
 	mux := NewRouter(g, &AuthHandler{log: log}, nil, nil, nil, nil, nil, nil, nil, nil)
 

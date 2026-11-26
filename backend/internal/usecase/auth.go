@@ -79,21 +79,23 @@ type AuthService struct {
 	sessions   SessionStore
 	access     RepoAccessWriter
 	vault      SecretVault
+	home       HomeAccount
 	admins     map[string]bool
 	log        *slog.Logger
 	now        func() time.Time
 }
 
 // NewAuthService wires sign-in. admins are GitHub logins that are always
-// admins (MOUNTABO_ADMINS); everyone else is a developer.
-func NewAuthService(authorizer UserAuthorizer, directory UserDirectory, users UserStore, sessions SessionStore, access RepoAccessWriter, vault SecretVault, admins []string, log *slog.Logger) *AuthService {
+// admins (MOUNTABO_ADMINS); everyone else is a developer. home limits access to
+// repos the App's owner account owns; nil keeps every repo the App can reach.
+func NewAuthService(authorizer UserAuthorizer, directory UserDirectory, users UserStore, sessions SessionStore, access RepoAccessWriter, vault SecretVault, home HomeAccount, admins []string, log *slog.Logger) *AuthService {
 	set := map[string]bool{}
 	for _, a := range admins {
 		if a = strings.ToLower(strings.TrimSpace(a)); a != "" {
 			set[a] = true
 		}
 	}
-	return &AuthService{authorizer: authorizer, directory: directory, users: users, sessions: sessions, access: access, vault: vault, admins: set, log: log, now: time.Now}
+	return &AuthService{authorizer: authorizer, directory: directory, users: users, sessions: sessions, access: access, vault: vault, home: home, admins: set, log: log, now: time.Now}
 }
 
 func (s *AuthService) isAdmin(login string) bool { return s.admins[strings.ToLower(login)] }
@@ -113,8 +115,8 @@ type Session struct {
 }
 
 // Login completes GitHub sign-in: identify the person, read the repos they can
-// reach through the App, and open a session. Someone with no reachable repo is
-// refused unless they are an admin.
+// reach through the App, and open a session. Someone with no reachable repo
+// owned by the App's home account is refused unless they are an admin.
 func (s *AuthService) Login(ctx context.Context, code, redirectURI string) (Session, error) {
 	tok, err := s.authorizer.Exchange(ctx, code, redirectURI)
 	if err != nil {
@@ -127,6 +129,9 @@ func (s *AuthService) Login(ctx context.Context, code, redirectURI string) (Sess
 	repos, err := s.directory.UserRepos(ctx, tok)
 	if err != nil {
 		return Session{}, fmt.Errorf("read repositories: %w", err)
+	}
+	if repos, err = homeRepos(ctx, s.home, repos, accessOwner); err != nil {
+		return Session{}, err
 	}
 	admin := s.isAdmin(gh.Login)
 	if !admin && !anyReadable(repos) {
@@ -206,6 +211,9 @@ func (s *AuthService) syncRepos(ctx context.Context, user User) error {
 	repos, err := s.directory.UserRepos(ctx, tok)
 	if err != nil {
 		return fmt.Errorf("read repositories: %w", err)
+	}
+	if repos, err = homeRepos(ctx, s.home, repos, accessOwner); err != nil {
+		return err
 	}
 	return s.access.ReplaceRepoAccess(user.ID, repos, s.now())
 }

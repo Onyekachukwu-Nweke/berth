@@ -120,6 +120,7 @@ type GitHubConnector struct {
 	ports  PortDetector
 	tokens RepoTokens
 	users  UserTokens
+	home   HomeAccount
 
 	mu        sync.Mutex // guards the per-user repo cache below
 	repoCache map[int64]cachedRepos
@@ -130,9 +131,10 @@ type cachedRepos struct {
 	at    time.Time
 }
 
-// NewGitHubConnector wires the connector to its ports.
-func NewGitHubConnector(repos RepoLister, ports PortDetector, tokens RepoTokens, users UserTokens) *GitHubConnector {
-	return &GitHubConnector{repos: repos, ports: ports, tokens: tokens, users: users, repoCache: map[int64]cachedRepos{}}
+// NewGitHubConnector wires the connector to its ports. home limits the repo
+// picker to repos the App's owner account owns; nil keeps them all.
+func NewGitHubConnector(repos RepoLister, ports PortDetector, tokens RepoTokens, users UserTokens, home HomeAccount) *GitHubConnector {
+	return &GitHubConnector{repos: repos, ports: ports, tokens: tokens, users: users, home: home, repoCache: map[int64]cachedRepos{}}
 }
 
 // Repositories lists the repos user can reach through the App, with their
@@ -152,6 +154,9 @@ func (c *GitHubConnector) Repositories(ctx context.Context, user User) ([]Repo, 
 	repos, err := c.repos.List(ctx, token)
 	if err != nil {
 		return nil, fmt.Errorf("list repositories: %w", err)
+	}
+	if repos, err = homeRepos(ctx, c.home, repos, repoOwner); err != nil {
+		return nil, err
 	}
 
 	c.mu.Lock()

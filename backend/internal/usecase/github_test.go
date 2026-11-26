@@ -61,7 +61,7 @@ func (f fakeUserTokens) UserToken(_ context.Context, u User) (Token, error) {
 func TestRepositories_UsesEachUsersOwnTokenAndCachesPerUser(t *testing.T) {
 	lister := &fakeRepoLister{repos: []Repo{{FullName: "acme/shop", Permission: PermWrite}}}
 	users := fakeUserTokens{1: {AccessToken: "alice"}, 2: {AccessToken: "bob"}}
-	c := NewGitHubConnector(lister, &fakePortDetector{}, &fakeStore{}, users)
+	c := NewGitHubConnector(lister, &fakePortDetector{}, &fakeStore{}, users, nil)
 
 	for range 2 {
 		if _, err := c.Repositories(context.Background(), User{ID: 1}); err != nil {
@@ -80,7 +80,7 @@ func TestRepositories_UsesEachUsersOwnTokenAndCachesPerUser(t *testing.T) {
 }
 
 func TestRepositories_PropagatesTokenFailure(t *testing.T) {
-	c := NewGitHubConnector(&fakeRepoLister{}, &fakePortDetector{}, &fakeStore{}, fakeUserTokens{})
+	c := NewGitHubConnector(&fakeRepoLister{}, &fakePortDetector{}, &fakeStore{}, fakeUserTokens{}, nil)
 	if _, err := c.Repositories(context.Background(), User{ID: 9}); err == nil {
 		t.Fatal("want an error when the user has no token")
 	}
@@ -90,7 +90,7 @@ func TestRepositories_PropagatesTokenFailure(t *testing.T) {
 func TestDetectPorts_UsesTheOwnersInstallationToken(t *testing.T) {
 	store := &fakeStore{loadTok: Token{AccessToken: "inst"}}
 	ports := &fakePortDetector{ports: []ServicePort{{Container: "3000"}}, strategy: StrategyDocker}
-	c := NewGitHubConnector(&fakeRepoLister{}, ports, store, fakeUserTokens{})
+	c := NewGitHubConnector(&fakeRepoLister{}, ports, store, fakeUserTokens{}, nil)
 
 	got, strategy, err := c.DetectPorts(context.Background(), RepoRef{Owner: "acme", Name: "shop"})
 	if err != nil || len(got) != 1 || strategy != StrategyDocker {
@@ -102,7 +102,7 @@ func TestDetectPorts_UsesTheOwnersInstallationToken(t *testing.T) {
 }
 
 func TestDetectPorts_AppNotInstalled(t *testing.T) {
-	c := NewGitHubConnector(&fakeRepoLister{}, &fakePortDetector{}, &fakeStore{loadErr: ErrNotConnected}, fakeUserTokens{})
+	c := NewGitHubConnector(&fakeRepoLister{}, &fakePortDetector{}, &fakeStore{loadErr: ErrNotConnected}, fakeUserTokens{}, nil)
 	if _, _, err := c.DetectPorts(context.Background(), RepoRef{Owner: "x", Name: "y"}); !errors.Is(err, ErrNotConnected) {
 		t.Fatalf("want ErrNotConnected, got %v", err)
 	}

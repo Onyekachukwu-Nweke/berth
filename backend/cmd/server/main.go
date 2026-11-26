@@ -67,7 +67,7 @@ func run() error {
 
 	// Who may do what: sessions resolve to users; access combines their GitHub
 	// repo permissions with the placement policy (clients, servers, rules).
-	authSvc := usecase.NewAuthService(oauth, ghClient, accessStore, accessStore, accessStore, keyStore, cfg.GitHub.Admins, logger)
+	authSvc := usecase.NewAuthService(oauth, ghClient, accessStore, accessStore, accessStore, keyStore, app, cfg.GitHub.Admins, logger)
 	accessSvc := usecase.NewAccessService(accessStore, serverStore, accessStore, deploymentStore)
 	guard := httpadapter.NewGuard(authSvc, accessSvc, logger)
 	authHandler := httpadapter.NewAuthHandler(authSvc, accessSvc, cfg.GitHub.ClientID, cfg.GitHub.AppSlug, logger)
@@ -75,7 +75,7 @@ func run() error {
 
 	// Repo reads: the person's repo list uses their own token; reads inside one
 	// repo (ports, tree, .env.example, run steps, branches) use the App.
-	connector := usecase.NewGitHubConnector(ghClient, ghClient, app, authSvc)
+	connector := usecase.NewGitHubConnector(ghClient, ghClient, app, authSvc, app)
 	treeSvc := usecase.NewTreeService(app, ghClient)
 	envExampleSvc := usecase.NewEnvExampleService(app, ghClient)
 	runStepsSvc := usecase.NewRunStepsService(app, ghClient)

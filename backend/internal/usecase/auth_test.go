@@ -86,7 +86,7 @@ func (m *memAuthStore) ReplaceRepoAccess(id int64, r []RepoAccess, at time.Time)
 
 func newAuth(dir *fakeDirectory, auth *fakeAuthorizer, store *memAuthStore, admins ...string) (*AuthService, *fakeVault) {
 	vault := newFakeVault()
-	return NewAuthService(auth, dir, store, store, store, vault, admins, slog.New(slog.NewTextHandler(io.Discard, nil))), vault
+	return NewAuthService(auth, dir, store, store, store, vault, nil, admins, slog.New(slog.NewTextHandler(io.Discard, nil))), vault
 }
 
 func TestLogin_OutsideCollaboratorWithRepoAccessGetsIn(t *testing.T) {

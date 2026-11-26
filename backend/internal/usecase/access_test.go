@@ -12,6 +12,17 @@ func (m *memPolicy) SaveClient(c Client) error       { m.p.Clients = append(m.p.
 func (m *memPolicy) DeleteClient(string) error       { return nil }
 func (m *memPolicy) SaveLink(l RepoLink) error       { m.p.Links = append(m.p.Links, l); return nil }
 func (m *memPolicy) DeleteLink(string, string) error { return nil }
+func (m *memPolicy) SaveSource(src Source) error     { m.p.Sources = append(m.p.Sources, src); return nil }
+func (m *memPolicy) DeleteSource(account, pattern string) error {
+	kept := m.p.Sources[:0]
+	for _, src := range m.p.Sources {
+		if src.Account != account || src.Pattern != pattern {
+			kept = append(kept, src)
+		}
+	}
+	m.p.Sources = kept
+	return nil
+}
 func (m *memPolicy) SaveEnvRule(r EnvRule) error {
 	m.p.EnvRules = append(m.p.EnvRules, r)
 	return nil
@@ -52,7 +63,7 @@ func agencyFixture(t *testing.T) (*AccessService, *memServerStore, *fakeDeployme
 		1: {{Owner: "agency", Repo: "acme-site", Permission: PermWrite}, {Owner: "acme-org", Repo: "shop", Permission: PermRead}},
 	}
 	deps := &fakeDeploymentStore{}
-	return NewAccessService(policy, servers, access, deps), servers, deps
+	return NewAccessService(policy, servers, access, deps, nil), servers, deps
 }
 
 var dev = User{ID: 1, Login: "dev"}

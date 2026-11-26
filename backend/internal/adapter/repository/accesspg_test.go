@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -99,5 +100,63 @@ func TestAccessSQL_PolicyRoundTripAndCascade(t *testing.T) {
 	p, _ = s.Policy()
 	if len(p.RepoRules) != 0 {
 		t.Errorf("server delete did not cascade to repo rules: %+v", p.RepoRules)
+	}
+}
+
+// Removal survives a fresh sign-in (upsert keeps revoked_at) and ends every
+// session; deploy sources round-trip lowercased and idempotently.
+func TestAccessSQL_RemovalAndSources(t *testing.T) {
+	s := NewAccessSQL(testDB(t))
+
+	u, err := s.UpsertUser(usecase.User{GitHubID: 7, Login: "contractor", LastLoginAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range [][]byte{[]byte("a"), []byte("b")} {
+		if err := s.CreateSession(h, u.ID, time.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	at := time.Now()
+	if err := s.SetRevoked(u.ID, &at); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteUserSessions(u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SessionUser([]byte("a"), time.Now()); err == nil {
+		t.Error("session survived DeleteUserSessions")
+	}
+	again, err := s.UpsertUser(usecase.User{GitHubID: 7, Login: "contractor", LastLoginAt: time.Now()})
+	if err != nil || again.RevokedAt == nil {
+		t.Fatalf("re-sign-in cleared removal: %+v, %v", again, err)
+	}
+	if err := s.SetRevoked(u.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetUser(u.ID); got.RevokedAt != nil {
+		t.Errorf("restore kept revoked_at: %+v", got)
+	}
+	if err := s.SetRevoked(999999, nil); !errors.Is(err, ErrUserNotFound) {
+		t.Errorf("SetRevoked(unknown) = %v, want ErrUserNotFound", err)
+	}
+
+	for range 2 {
+		if err := s.SaveSource(usecase.Source{Account: "Acme-Org", Pattern: "Shop-*"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := s.Policy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Sources) != 1 || p.Sources[0] != (usecase.Source{Account: "acme-org", Pattern: "shop-*"}) {
+		t.Fatalf("sources = %+v, want one acme-org/shop-*", p.Sources)
+	}
+	if err := s.DeleteSource("ACME-ORG", "shop-*"); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := s.Policy(); len(p.Sources) != 0 {
+		t.Errorf("sources after delete = %+v", p.Sources)
 	}
 }

@@ -100,6 +100,10 @@ func NewRouter(g *Guard, au *AuthHandler, ad *AdminHandler, gh *GitHubHandler, s
 	mux.HandleFunc("DELETE /api/admin/repo-rules/{owner}/{repo}/{environment}", g.Admin(ad.DeleteRepoRule))
 	mux.HandleFunc("PUT /api/admin/servers/{id}/client", g.Admin(ad.SetServerClient))
 	mux.HandleFunc("GET /api/admin/users", g.Admin(ad.Users))
+	mux.HandleFunc("POST /api/admin/users/{id}/remove", g.Admin(ad.RemoveUser))
+	mux.HandleFunc("POST /api/admin/users/{id}/restore", g.Admin(ad.RestoreUser))
+	mux.HandleFunc("PUT /api/admin/sources", g.Admin(ad.SaveSource))
+	mux.HandleFunc("DELETE /api/admin/sources", g.Admin(ad.DeleteSource))
 	mux.HandleFunc("GET /api/admin/installations", g.Admin(ad.Installations))
 	return mux
 }

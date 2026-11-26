@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	nethttp "net/http"
+	"strconv"
 
 	"github.com/goodylili/mountabo/internal/usecase"
 )
@@ -41,17 +42,23 @@ type policyResponse struct {
 	Links     []usecase.RepoLink `json:"links"`
 	EnvRules  []usecase.EnvRule  `json:"envRules"`
 	RepoRules []usecase.RepoRule `json:"repoRules"`
+	Sources   []usecase.Source   `json:"sources"`
+	// HomeAccount is where developers deploy from while Sources is empty.
+	HomeAccount string `json:"homeAccount"`
 }
 
 // Policy returns the whole placement policy.
-func (h *AdminHandler) Policy(w nethttp.ResponseWriter, _ *nethttp.Request) {
+func (h *AdminHandler) Policy(w nethttp.ResponseWriter, r *nethttp.Request) {
 	p, err := h.access.Policy()
 	if err != nil {
 		h.log.Error("read policy failed", "err", err)
 		writeErrorTo(w, h.log, nethttp.StatusInternalServerError, "could not read policy")
 		return
 	}
-	out := policyResponse{Clients: p.Clients, Links: p.Links, EnvRules: p.EnvRules, RepoRules: p.RepoRules}
+	out := policyResponse{Clients: p.Clients, Links: p.Links, EnvRules: p.EnvRules, RepoRules: p.RepoRules, Sources: p.Sources, HomeAccount: h.access.HomeOwner(r.Context())}
+	if out.Sources == nil {
+		out.Sources = []usecase.Source{}
+	}
 	if out.Clients == nil {
 		out.Clients = []usecase.Client{}
 	}
@@ -166,4 +173,53 @@ func (h *AdminHandler) Installations(w nethttp.ResponseWriter, r *nethttp.Reques
 		return
 	}
 	writeJSONTo(w, h.log, nethttp.StatusOK, list)
+}
+
+// SaveSource adds a place developers may deploy from:
+// PUT /api/admin/sources {account, pattern}.
+func (h *AdminHandler) SaveSource(w nethttp.ResponseWriter, r *nethttp.Request) {
+	var req usecase.Source
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeErrorTo(w, h.log, nethttp.StatusBadRequest, "invalid request body")
+		return
+	}
+	h.done(w, h.access.SaveSource(req))
+}
+
+// DeleteSource removes one: DELETE /api/admin/sources?account=&pattern=. The
+// pattern rides in the query string because it may hold a "*".
+func (h *AdminHandler) DeleteSource(w nethttp.ResponseWriter, r *nethttp.Request) {
+	q := r.URL.Query()
+	h.done(w, h.access.DeleteSource(q.Get("account"), q.Get("pattern")))
+}
+
+// RemoveUser signs someone out everywhere and keeps them out:
+// POST /api/admin/users/{id}/remove.
+func (h *AdminHandler) RemoveUser(w nethttp.ResponseWriter, r *nethttp.Request) {
+	id, ok := h.userID(w, r)
+	if !ok {
+		return
+	}
+	actor, _ := usecase.UserFrom(r.Context())
+	h.done(w, h.auth.Remove(actor, id))
+}
+
+// RestoreUser lets a removed person sign in again:
+// POST /api/admin/users/{id}/restore.
+func (h *AdminHandler) RestoreUser(w nethttp.ResponseWriter, r *nethttp.Request) {
+	id, ok := h.userID(w, r)
+	if !ok {
+		return
+	}
+	actor, _ := usecase.UserFrom(r.Context())
+	h.done(w, h.auth.Restore(actor, id))
+}
+
+func (h *AdminHandler) userID(w nethttp.ResponseWriter, r *nethttp.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeErrorTo(w, h.log, nethttp.StatusBadRequest, "invalid user id")
+		return 0, false
+	}
+	return id, true
 }

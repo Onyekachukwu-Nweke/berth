@@ -34,7 +34,9 @@ export async function GET(request: Request) {
     return NextResponse.redirect(`${origin}/login?error=backend`);
   }
   if (resp.status === 403) {
-    return NextResponse.redirect(`${origin}/login?error=no_access`);
+    const body = (await resp.json().catch(() => ({}))) as { error?: string };
+    const reason = body.error === "removed" ? "removed" : "no_access";
+    return NextResponse.redirect(`${origin}/login?error=${reason}`);
   }
   if (!resp.ok) {
     return NextResponse.redirect(`${origin}/login?error=exchange`);

@@ -48,6 +48,10 @@ func (h *AuthHandler) Login(w nethttp.ResponseWriter, r *nethttp.Request) {
 		writeErrorTo(w, h.log, nethttp.StatusForbidden, "no_access")
 		return
 	}
+	if errors.Is(err, usecase.ErrRevoked) {
+		writeErrorTo(w, h.log, nethttp.StatusForbidden, "removed")
+		return
+	}
 	if err != nil {
 		h.log.Error("sign-in failed", "err", err)
 		writeErrorTo(w, h.log, nethttp.StatusBadGateway, "could not complete sign-in with GitHub")

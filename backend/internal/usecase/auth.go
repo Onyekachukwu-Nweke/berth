@@ -29,6 +29,9 @@ const (
 // is installed on and is not an admin.
 var ErrNoAccess = errors.New("no repositories available")
 
+// ErrRevoked is returned at sign-in for someone an admin removed.
+var ErrRevoked = errors.New("access removed by an admin")
+
 // GitHubUser is the identity GitHub reports for a user token.
 type GitHubUser struct {
 	ID        int64
@@ -56,6 +59,7 @@ type UserStore interface {
 	UpsertUser(u User) (User, error)
 	GetUser(id int64) (User, error)
 	ListUsers() ([]User, error)
+	SetRevoked(userID int64, at *time.Time) error
 }
 
 // SessionStore persists sessions by the hash of their token.
@@ -63,6 +67,7 @@ type SessionStore interface {
 	CreateSession(hash []byte, userID int64, expires time.Time) error
 	SessionUser(hash []byte, now time.Time) (int64, error)
 	DeleteSession(hash []byte) error
+	DeleteUserSessions(userID int64) error
 }
 
 // RepoAccessWriter replaces a user's cached repo access.
@@ -79,23 +84,23 @@ type AuthService struct {
 	sessions   SessionStore
 	access     RepoAccessWriter
 	vault      SecretVault
-	home       HomeAccount
+	gate       RepoGate
 	admins     map[string]bool
 	log        *slog.Logger
 	now        func() time.Time
 }
 
 // NewAuthService wires sign-in. admins are GitHub logins that are always
-// admins (MOUNTABO_ADMINS); everyone else is a developer. home limits access to
-// repos the App's owner account owns; nil keeps every repo the App can reach.
-func NewAuthService(authorizer UserAuthorizer, directory UserDirectory, users UserStore, sessions SessionStore, access RepoAccessWriter, vault SecretVault, home HomeAccount, admins []string, log *slog.Logger) *AuthService {
+// admins (MOUNTABO_ADMINS); everyone else is a developer, who may sign in only
+// with a repo the gate allows (nil allows any).
+func NewAuthService(authorizer UserAuthorizer, directory UserDirectory, users UserStore, sessions SessionStore, access RepoAccessWriter, vault SecretVault, gate RepoGate, admins []string, log *slog.Logger) *AuthService {
 	set := map[string]bool{}
 	for _, a := range admins {
 		if a = strings.ToLower(strings.TrimSpace(a)); a != "" {
 			set[a] = true
 		}
 	}
-	return &AuthService{authorizer: authorizer, directory: directory, users: users, sessions: sessions, access: access, vault: vault, home: home, admins: set, log: log, now: time.Now}
+	return &AuthService{authorizer: authorizer, directory: directory, users: users, sessions: sessions, access: access, vault: vault, gate: gate, admins: set, log: log, now: time.Now}
 }
 
 func (s *AuthService) isAdmin(login string) bool { return s.admins[strings.ToLower(login)] }
@@ -115,8 +120,9 @@ type Session struct {
 }
 
 // Login completes GitHub sign-in: identify the person, read the repos they can
-// reach through the App, and open a session. Someone with no reachable repo
-// owned by the App's home account is refused unless they are an admin.
+// reach through the App, and open a session. A developer needs a repo inside the
+// deploy sources, and must not have been removed; admins always get in. Every
+// repo GitHub reports is stored, so a change to the sources applies at once.
 func (s *AuthService) Login(ctx context.Context, code, redirectURI string) (Session, error) {
 	tok, err := s.authorizer.Exchange(ctx, code, redirectURI)
 	if err != nil {
@@ -130,12 +136,15 @@ func (s *AuthService) Login(ctx context.Context, code, redirectURI string) (Sess
 	if err != nil {
 		return Session{}, fmt.Errorf("read repositories: %w", err)
 	}
-	if repos, err = homeRepos(ctx, s.home, repos, accessOwner); err != nil {
-		return Session{}, err
-	}
 	admin := s.isAdmin(gh.Login)
-	if !admin && !anyReadable(repos) {
-		return Session{}, ErrNoAccess
+	if !admin {
+		allowed, err := s.allowed(ctx, repos)
+		if err != nil {
+			return Session{}, err
+		}
+		if !anyReadable(allowed) {
+			return Session{}, ErrNoAccess
+		}
 	}
 
 	now := s.now()
@@ -145,6 +154,9 @@ func (s *AuthService) Login(ctx context.Context, code, redirectURI string) (Sess
 	})
 	if err != nil {
 		return Session{}, fmt.Errorf("save user: %w", err)
+	}
+	if user.RevokedAt != nil && !admin {
+		return Session{}, ErrRevoked
 	}
 	if err := s.access.ReplaceRepoAccess(user.ID, repos, now); err != nil {
 		return Session{}, fmt.Errorf("save repo access: %w", err)
@@ -163,6 +175,24 @@ func (s *AuthService) Login(ctx context.Context, code, redirectURI string) (Sess
 		return Session{}, fmt.Errorf("save session: %w", err)
 	}
 	return Session{Token: token, ExpiresAt: expires, User: user}, nil
+}
+
+// allowed keeps the repos the gate lets developers use.
+func (s *AuthService) allowed(ctx context.Context, repos []RepoAccess) ([]RepoAccess, error) {
+	if s.gate == nil {
+		return repos, nil
+	}
+	allow, err := s.gate.DeployGate(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RepoAccess, 0, len(repos))
+	for _, r := range repos {
+		if allow(r.Owner, r.Repo) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 func anyReadable(repos []RepoAccess) bool {
@@ -190,6 +220,9 @@ func (s *AuthService) Authenticate(ctx context.Context, token string) (User, err
 		return User{}, ErrUnauthenticated
 	}
 	user.IsAdmin = s.isAdmin(user.Login)
+	if user.RevokedAt != nil && !user.IsAdmin {
+		return User{}, ErrUnauthenticated
+	}
 
 	if s.now().Sub(user.ReposSyncedAt) > repoSyncInterval {
 		if err := s.syncRepos(ctx, user); err != nil {
@@ -211,9 +244,6 @@ func (s *AuthService) syncRepos(ctx context.Context, user User) error {
 	repos, err := s.directory.UserRepos(ctx, tok)
 	if err != nil {
 		return fmt.Errorf("read repositories: %w", err)
-	}
-	if repos, err = homeRepos(ctx, s.home, repos, accessOwner); err != nil {
-		return err
 	}
 	return s.access.ReplaceRepoAccess(user.ID, repos, s.now())
 }
@@ -271,4 +301,49 @@ func (s *AuthService) Users() ([]User, error) {
 		users[i].IsAdmin = s.isAdmin(users[i].Login)
 	}
 	return users, nil
+}
+
+// Remove signs someone out everywhere, forgets their GitHub token and repo
+// access, and stops them signing in until an admin restores them. Admins in
+// MOUNTABO_ADMINS can't be removed here, and nobody can remove themselves.
+func (s *AuthService) Remove(actor User, userID int64) error {
+	if actor.ID == userID {
+		return forbidden("you can't remove yourself")
+	}
+	target, err := s.users.GetUser(userID)
+	if err != nil {
+		return forbidden("no such person")
+	}
+	if s.isAdmin(target.Login) {
+		return forbidden("%s is an admin through MOUNTABO_ADMINS; take them out of it first", target.Login)
+	}
+	now := s.now()
+	if err := s.users.SetRevoked(userID, &now); err != nil {
+		return fmt.Errorf("mark removed: %w", err)
+	}
+	if err := s.sessions.DeleteUserSessions(userID); err != nil {
+		return fmt.Errorf("end sessions: %w", err)
+	}
+	if err := s.vault.DeleteSecret(userTokenKey(userID)); err != nil {
+		s.log.Warn("could not delete a removed user's GitHub token", "user", target.Login, "err", err)
+	}
+	if err := s.access.ReplaceRepoAccess(userID, nil, now); err != nil {
+		return fmt.Errorf("clear repo access: %w", err)
+	}
+	s.log.Info("user removed", "user", target.Login, "by", actor.Login)
+	return nil
+}
+
+// Restore lets a removed person sign in again. Their repo access is read
+// fresh from GitHub when they do.
+func (s *AuthService) Restore(actor User, userID int64) error {
+	target, err := s.users.GetUser(userID)
+	if err != nil {
+		return forbidden("no such person")
+	}
+	if err := s.users.SetRevoked(userID, nil); err != nil {
+		return fmt.Errorf("restore user: %w", err)
+	}
+	s.log.Info("user restored", "user", target.Login, "by", actor.Login)
+	return nil
 }

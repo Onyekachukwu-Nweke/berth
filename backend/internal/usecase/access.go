@@ -64,14 +64,15 @@ const AgencyClientID = "agency"
 
 // User is a person signed in to mountabo through GitHub.
 type User struct {
-	ID            int64     `json:"id"`
-	GitHubID      int64     `json:"githubId"`
-	Login         string    `json:"login"`
-	Name          string    `json:"name"`
-	AvatarURL     string    `json:"avatarUrl"`
-	IsAdmin       bool      `json:"isAdmin"`
-	ReposSyncedAt time.Time `json:"-"`
-	LastLoginAt   time.Time `json:"lastLoginAt"`
+	ID            int64      `json:"id"`
+	GitHubID      int64      `json:"githubId"`
+	Login         string     `json:"login"`
+	Name          string     `json:"name"`
+	AvatarURL     string     `json:"avatarUrl"`
+	IsAdmin       bool       `json:"isAdmin"`
+	ReposSyncedAt time.Time  `json:"-"`
+	LastLoginAt   time.Time  `json:"lastLoginAt"`
+	RevokedAt     *time.Time `json:"revokedAt,omitempty"` // removed by an admin
 }
 
 // RepoAccess is one repo a user can reach and their permission on it.
@@ -118,6 +119,7 @@ type Policy struct {
 	Links     []RepoLink
 	EnvRules  []EnvRule
 	RepoRules []RepoRule
+	Sources   []Source
 }
 
 // ClientFor resolves the client a repo belongs to: an exact link, then an
@@ -263,6 +265,7 @@ type PolicyStore interface {
 	LinkWriter
 	EnvRuleWriter
 	RepoRuleWriter
+	SourceWriter
 }
 
 // Installation is one GitHub account the mountabo App is installed on.
@@ -289,21 +292,24 @@ type AccessService struct {
 	servers     ServerStore
 	repos       RepoAccessReader
 	deployments DeploymentStore
+	home        HomeAccount
 }
 
-// NewAccessService wires the access policy to its stores.
-func NewAccessService(policy PolicyStore, servers ServerStore, repos RepoAccessReader, deployments DeploymentStore) *AccessService {
-	return &AccessService{policy: policy, servers: servers, repos: repos, deployments: deployments}
+// NewAccessService wires the access policy to its stores. home is the account
+// developers deploy from when no sources are configured; nil allows any.
+func NewAccessService(policy PolicyStore, servers ServerStore, repos RepoAccessReader, deployments DeploymentStore, home HomeAccount) *AccessService {
+	return &AccessService{policy: policy, servers: servers, repos: repos, deployments: deployments, home: home}
 }
 
-// Permission is u's permission on owner/repo. Admins hold every permission.
+// Permission is u's permission on owner/repo. Admins hold every permission;
+// a developer has none on repos outside the deploy sources.
 func (a *AccessService) Permission(u User, owner, repo string) (Permission, error) {
 	if u.IsAdmin {
 		return PermAdmin, nil
 	}
-	list, err := a.repos.RepoAccessFor(u.ID)
+	list, err := a.reachable(u)
 	if err != nil {
-		return PermNone, fmt.Errorf("read repo access: %w", err)
+		return PermNone, err
 	}
 	for _, r := range list {
 		if strings.EqualFold(r.Owner, owner) && strings.EqualFold(r.Repo, repo) {
@@ -320,6 +326,9 @@ func (a *AccessService) RequireRepo(u User, owner, repo string, want Permission)
 		return err
 	}
 	if got < want {
+		if a.outsideSources(u, owner, repo) {
+			return forbidden("%s/%s isn't a repo developers may deploy from here; ask an admin to allow it", owner, repo)
+		}
 		if want >= PermWrite {
 			return forbidden("you need write access to %s/%s on GitHub to do this", owner, repo)
 		}
@@ -425,9 +434,9 @@ func (a *AccessService) CanSeeServer(u User, serverID string) (bool, error) {
 }
 
 func (a *AccessService) visibleServerIDs(u User) (map[string]bool, error) {
-	repos, err := a.repos.RepoAccessFor(u.ID)
+	repos, err := a.reachable(u)
 	if err != nil {
-		return nil, fmt.Errorf("read repo access: %w", err)
+		return nil, err
 	}
 	policy, err := a.policy.Policy()
 	if err != nil {
@@ -457,9 +466,9 @@ func (a *AccessService) RepoFilter(u User) (func(owner, repo string) bool, error
 	if u.IsAdmin {
 		return func(string, string) bool { return true }, nil
 	}
-	repos, err := a.repos.RepoAccessFor(u.ID)
+	repos, err := a.reachable(u)
 	if err != nil {
-		return nil, fmt.Errorf("read repo access: %w", err)
+		return nil, err
 	}
 	set := map[string]bool{}
 	for _, r := range repos {

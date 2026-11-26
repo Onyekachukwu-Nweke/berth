@@ -8,15 +8,24 @@ type RepoLink = { owner: string; repo: string; clientId: string };
 type EnvRule = { clientId: string; environment: string; serverId: string };
 type RepoRule = { owner: string; repo: string; environment: string; serverId: string };
 type ServerLite = { id: string; name: string; ip: string; clientId?: string };
-type UserRow = { id: number; login: string; name: string; isAdmin: boolean; lastLoginAt: string };
+type UserRow = { id: number; login: string; name: string; isAdmin: boolean; lastLoginAt: string; revokedAt?: string };
+type Source = { account: string; pattern: string };
 type Installation = { id: number; account: string; type: string };
 
 export type AdminData = {
-  policy: { clients: Client[]; links: RepoLink[]; envRules: EnvRule[]; repoRules: RepoRule[] };
+  policy: {
+    clients: Client[];
+    links: RepoLink[];
+    envRules: EnvRule[];
+    repoRules: RepoRule[];
+    sources: Source[];
+    homeAccount: string;
+  };
   servers: ServerLite[];
   users: UserRow[];
   installations: Installation[] | null;
   installUrl: string;
+  me: string;
 };
 
 const input =
@@ -39,7 +48,7 @@ function Card({ title, hint, children }: { title: string; hint?: string; childre
 
 export function AdminView({ initial }: { initial: AdminData }) {
   const router = useRouter();
-  const { policy, servers, users, installations, installUrl } = initial;
+  const { policy, servers, users, installations, installUrl, me } = initial;
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -76,6 +85,7 @@ export function AdminView({ initial }: { initial: AdminData }) {
   const [newLink, setNewLink] = useState({ owner: "", repo: "*", clientId: "" });
   const [newRule, setNewRule] = useState({ clientId: "", environment: "", serverId: "" });
   const [newOverride, setNewOverride] = useState({ owner: "", repo: "", environment: "", serverId: "" });
+  const [newSource, setNewSource] = useState({ account: "", pattern: "" });
 
   // A rule may only point at a shared server or one the client owns.
   const serversFor = (clientId: string) =>
@@ -91,7 +101,7 @@ export function AdminView({ initial }: { initial: AdminData }) {
 
       <Card
         title="github app"
-        hint="people see the repos they can reach on GitHub, but only where the mountabo app is installed. install it on your org and on each client's org."
+        hint="people see the repos they can reach on GitHub, but only where the mountabo app is installed, and developers only those inside “deploy from” below."
       >
         <div className="flex flex-wrap items-center gap-2 text-[13px]">
           {installations === null ? (
@@ -111,6 +121,71 @@ export function AdminView({ initial }: { initial: AdminData }) {
             </a>
           )}
         </div>
+      </Card>
+
+      <Card
+        title="deploy from"
+        hint="where developers may deploy from: an account, and optionally a repo-name pattern with * as a wildcard. admins can deploy from any repo the app reaches, including their own."
+      >
+        {policy.sources.length === 0 ? (
+          <p className="mb-4 text-[13px] text-muted">
+            {policy.homeAccount ? (
+              <>
+                no rules yet, so developers deploy from every repo of <span className="text-cream">{policy.homeAccount}</span>, the
+                account that owns the app. add a rule to change that.
+              </>
+            ) : (
+              "no rules yet, and the app's owner couldn't be read, so developers can't deploy until you add one."
+            )}
+          </p>
+        ) : (
+          <ul className="mb-4 divide-y divide-line text-[13px]">
+            {policy.sources.map((src) => (
+              <li key={`${src.account}/${src.pattern}`} className="flex items-center gap-3 py-2">
+                <span className="text-cream">
+                  {src.account}/{src.pattern}
+                </span>
+                <span className="text-faint">{src.pattern === "*" ? "every repo" : "matching repos"}</span>
+                <button
+                  className="ml-auto text-muted hover:text-err"
+                  disabled={busy}
+                  onClick={() =>
+                    call(
+                      "DELETE",
+                      `/api/admin/sources?account=${encodeURIComponent(src.account)}&pattern=${encodeURIComponent(src.pattern)}`,
+                    )
+                  }
+                >
+                  remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <form
+          className="flex flex-wrap gap-2"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (await call("PUT", "/api/admin/sources", { account: newSource.account, pattern: newSource.pattern || "*" }))
+              setNewSource({ account: "", pattern: "" });
+          }}
+        >
+          <input
+            className={input}
+            placeholder={policy.homeAccount || "account or org"}
+            value={newSource.account}
+            onChange={(e) => setNewSource({ ...newSource, account: e.target.value })}
+          />
+          <input
+            className={input}
+            placeholder="repos (* or e.g. meals-*)"
+            value={newSource.pattern}
+            onChange={(e) => setNewSource({ ...newSource, pattern: e.target.value })}
+          />
+          <button className={button} disabled={busy || !newSource.account}>
+            add
+          </button>
+        </form>
       </Card>
 
       <Card title="clients" hint="each client's servers only ever run that client's repos.">
@@ -266,14 +341,35 @@ export function AdminView({ initial }: { initial: AdminData }) {
         </form>
       </Card>
 
-      <Card title="people" hint="everyone who has signed in. admins come from MOUNTABO_ADMINS; everyone else's access is their access on GitHub.">
+      <Card
+        title="people"
+        hint="everyone who has signed in. admins come from MOUNTABO_ADMINS; everyone else's access is their access on GitHub. remove signs someone out at once and keeps them out until you restore them."
+      >
         <ul className="divide-y divide-line text-[13px]">
           {users.map((u) => (
             <li key={u.id} className="flex items-center gap-3 py-2">
-              <span className="text-cream">{u.login}</span>
+              <span className={u.revokedAt ? "text-muted line-through" : "text-cream"}>{u.login}</span>
               {u.name && <span className="text-muted">{u.name}</span>}
               {u.isAdmin && <span className="rounded border border-line px-1.5 text-[11px] text-cream">admin</span>}
+              {u.revokedAt && <span className="rounded border border-err/40 px-1.5 text-[11px] text-err">removed</span>}
               <span className="ml-auto text-faint">last in {new Date(u.lastLoginAt).toLocaleDateString()}</span>
+              {!u.isAdmin && u.login !== me &&
+                (u.revokedAt ? (
+                  <button className="text-muted hover:text-cream" disabled={busy} onClick={() => call("POST", `/api/admin/users/${u.id}/restore`)}>
+                    restore
+                  </button>
+                ) : (
+                  <button
+                    className="text-muted hover:text-err"
+                    disabled={busy}
+                    onClick={() =>
+                      confirm(`remove ${u.login}? they're signed out now and can't sign in again until you restore them.`) &&
+                      call("POST", `/api/admin/users/${u.id}/remove`)
+                    }
+                  >
+                    remove
+                  </button>
+                ))}
             </li>
           ))}
         </ul>

@@ -22,7 +22,14 @@ export default async function AdminPage() {
   if (!user?.isAdmin) redirect("/");
 
   const [policy, servers, users, installations, config] = await Promise.all([
-    load<AdminData["policy"]>("/api/admin/policy", { clients: [], links: [], envRules: [], repoRules: [] }),
+    load<AdminData["policy"]>("/api/admin/policy", {
+      clients: [],
+      links: [],
+      envRules: [],
+      repoRules: [],
+      sources: [],
+      homeAccount: "",
+    }),
     load<AdminData["servers"]>("/api/servers", []),
     load<AdminData["users"]>("/api/admin/users", []),
     load<AdminData["installations"] | null>("/api/admin/installations", null),
@@ -33,9 +40,9 @@ export default async function AdminPage() {
     <Page>
       <PageHeader
         title="Access"
-        description="Clients, which servers they own, which repos belong to them, and where each environment deploys."
+        description="Where developers deploy from, who can sign in, which client owns which servers and repos, and where each environment deploys."
       />
-      <AdminView initial={{ policy, servers, users, installations, installUrl: config.installUrl }} />
+      <AdminView initial={{ policy, servers, users, installations, installUrl: config.installUrl, me: user.login }} />
     </Page>
   );
 }

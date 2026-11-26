@@ -47,7 +47,7 @@ func newMemAuthStore() *memAuthStore {
 func (m *memAuthStore) UpsertUser(u User) (User, error) {
 	for id, existing := range m.users {
 		if existing.GitHubID == u.GitHubID {
-			u.ID, u.ReposSyncedAt = id, existing.ReposSyncedAt
+			u.ID, u.ReposSyncedAt, u.RevokedAt = id, existing.ReposSyncedAt, existing.RevokedAt
 			m.users[id] = u
 			return u, nil
 		}
@@ -76,6 +76,23 @@ func (m *memAuthStore) SessionUser(h []byte, _ time.Time) (int64, error) {
 	return id, nil
 }
 func (m *memAuthStore) DeleteSession(h []byte) error { delete(m.sessions, string(h)); return nil }
+func (m *memAuthStore) DeleteUserSessions(id int64) error {
+	for h, uid := range m.sessions {
+		if uid == id {
+			delete(m.sessions, h)
+		}
+	}
+	return nil
+}
+func (m *memAuthStore) SetRevoked(id int64, at *time.Time) error {
+	u, ok := m.users[id]
+	if !ok {
+		return errors.New("no user")
+	}
+	u.RevokedAt = at
+	m.users[id] = u
+	return nil
+}
 func (m *memAuthStore) ReplaceRepoAccess(id int64, r []RepoAccess, at time.Time) error {
 	m.access[id] = r
 	u := m.users[id]

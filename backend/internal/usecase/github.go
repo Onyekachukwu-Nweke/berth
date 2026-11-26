@@ -120,7 +120,7 @@ type GitHubConnector struct {
 	ports  PortDetector
 	tokens RepoTokens
 	users  UserTokens
-	home   HomeAccount
+	gate   RepoGate
 
 	mu        sync.Mutex // guards the per-user repo cache below
 	repoCache map[int64]cachedRepos
@@ -131,10 +131,10 @@ type cachedRepos struct {
 	at    time.Time
 }
 
-// NewGitHubConnector wires the connector to its ports. home limits the repo
-// picker to repos the App's owner account owns; nil keeps them all.
-func NewGitHubConnector(repos RepoLister, ports PortDetector, tokens RepoTokens, users UserTokens, home HomeAccount) *GitHubConnector {
-	return &GitHubConnector{repos: repos, ports: ports, tokens: tokens, users: users, home: home, repoCache: map[int64]cachedRepos{}}
+// NewGitHubConnector wires the connector to its ports. gate limits developers'
+// repo picker to the deploy sources; nil keeps every repo.
+func NewGitHubConnector(repos RepoLister, ports PortDetector, tokens RepoTokens, users UserTokens, gate RepoGate) *GitHubConnector {
+	return &GitHubConnector{repos: repos, ports: ports, tokens: tokens, users: users, gate: gate, repoCache: map[int64]cachedRepos{}}
 }
 
 // Repositories lists the repos user can reach through the App, with their
@@ -143,7 +143,7 @@ func (c *GitHubConnector) Repositories(ctx context.Context, user User) ([]Repo, 
 	c.mu.Lock()
 	if hit, ok := c.repoCache[user.ID]; ok && time.Since(hit.at) < repoCacheTTL {
 		c.mu.Unlock()
-		return hit.repos, nil
+		return c.forUser(ctx, user, hit.repos)
 	}
 	c.mu.Unlock()
 
@@ -155,14 +155,30 @@ func (c *GitHubConnector) Repositories(ctx context.Context, user User) ([]Repo, 
 	if err != nil {
 		return nil, fmt.Errorf("list repositories: %w", err)
 	}
-	if repos, err = homeRepos(ctx, c.home, repos, repoOwner); err != nil {
-		return nil, err
-	}
 
 	c.mu.Lock()
 	c.repoCache[user.ID] = cachedRepos{repos: repos, at: time.Now()}
 	c.mu.Unlock()
-	return repos, nil
+	return c.forUser(ctx, user, repos)
+}
+
+// forUser limits a developer's repos to the deploy sources. The cache holds
+// GitHub's full answer, so a change to the sources shows at once.
+func (c *GitHubConnector) forUser(ctx context.Context, user User, repos []Repo) ([]Repo, error) {
+	if user.IsAdmin || c.gate == nil {
+		return repos, nil
+	}
+	allow, err := c.gate.DeployGate(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Repo, 0, len(repos))
+	for _, r := range repos {
+		if allow(r.Owner, r.Name) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 // DetectPorts reads the published ports declared in a repo's container config,

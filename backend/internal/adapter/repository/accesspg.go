@@ -35,16 +35,20 @@ var ErrUserNotFound = errors.New("user not found")
 
 // --- users -----------------------------------------------------------------
 
-const userColumns = `id, github_id, login, name, avatar_url, is_admin, repos_synced_at, last_login_at`
+const userColumns = `id, github_id, login, name, avatar_url, is_admin, repos_synced_at, last_login_at, revoked_at`
 
 func scanUser(row interface{ Scan(...any) error }) (usecase.User, error) {
 	var u usecase.User
-	var synced sql.NullTime
-	if err := row.Scan(&u.ID, &u.GitHubID, &u.Login, &u.Name, &u.AvatarURL, &u.IsAdmin, &synced, &u.LastLoginAt); err != nil {
+	var synced, revoked sql.NullTime
+	if err := row.Scan(&u.ID, &u.GitHubID, &u.Login, &u.Name, &u.AvatarURL, &u.IsAdmin, &synced, &u.LastLoginAt, &revoked); err != nil {
 		return usecase.User{}, err
 	}
 	if synced.Valid {
 		u.ReposSyncedAt = synced.Time
+	}
+	if revoked.Valid {
+		t := revoked.Time
+		u.RevokedAt = &t
 	}
 	return u, nil
 }
@@ -76,6 +80,18 @@ func (s *AccessSQL) GetUser(id int64) (usecase.User, error) {
 		return usecase.User{}, fmt.Errorf("get user: %w", err)
 	}
 	return u, nil
+}
+
+// SetRevoked marks a user removed (at) or restores them (nil).
+func (s *AccessSQL) SetRevoked(userID int64, at *time.Time) error {
+	res, err := s.db.Exec(`UPDATE users SET revoked_at = $2 WHERE id = $1`, userID, at)
+	if err != nil {
+		return fmt.Errorf("set revoked: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrUserNotFound
+	}
+	return nil
 }
 
 // ListUsers returns everyone who has signed in, most recent first.
@@ -125,6 +141,14 @@ func (s *AccessSQL) SessionUser(hash []byte, now time.Time) (int64, error) {
 func (s *AccessSQL) DeleteSession(hash []byte) error {
 	if _, err := s.db.Exec(`DELETE FROM sessions WHERE token_hash = $1`, hash); err != nil {
 		return fmt.Errorf("delete session: %w", err)
+	}
+	return nil
+}
+
+// DeleteUserSessions ends every session a user has. It is idempotent.
+func (s *AccessSQL) DeleteUserSessions(userID int64) error {
+	if _, err := s.db.Exec(`DELETE FROM sessions WHERE user_id = $1`, userID); err != nil {
+		return fmt.Errorf("delete user sessions: %w", err)
 	}
 	return nil
 }
@@ -230,15 +254,46 @@ func (s *AccessSQL) Policy() (usecase.Policy, error) {
 	if err != nil {
 		return p, fmt.Errorf("query repo rules: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var r usecase.RepoRule
 		if err := rows.Scan(&r.Owner, &r.Repo, &r.Environment, &r.ServerID); err != nil {
+			_ = rows.Close()
 			return p, fmt.Errorf("scan repo rule: %w", err)
 		}
 		p.RepoRules = append(p.RepoRules, r)
 	}
+	_ = rows.Close()
+
+	rows, err = s.db.Query(`SELECT account, pattern FROM deploy_sources ORDER BY account, pattern`)
+	if err != nil {
+		return p, fmt.Errorf("query deploy sources: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var src usecase.Source
+		if err := rows.Scan(&src.Account, &src.Pattern); err != nil {
+			return p, fmt.Errorf("scan deploy source: %w", err)
+		}
+		p.Sources = append(p.Sources, src)
+	}
 	return p, rows.Err()
+}
+
+// SaveSource adds a place developers may deploy from. It is idempotent.
+func (s *AccessSQL) SaveSource(src usecase.Source) error {
+	if _, err := s.db.Exec(`INSERT INTO deploy_sources (account, pattern) VALUES ($1, $2)
+		ON CONFLICT (account, pattern) DO NOTHING`, strings.ToLower(src.Account), strings.ToLower(src.Pattern)); err != nil {
+		return fmt.Errorf("save deploy source: %w", err)
+	}
+	return nil
+}
+
+// DeleteSource removes a place developers may deploy from. It is idempotent.
+func (s *AccessSQL) DeleteSource(account, pattern string) error {
+	if _, err := s.db.Exec(`DELETE FROM deploy_sources WHERE account = $1 AND pattern = $2`, strings.ToLower(account), strings.ToLower(pattern)); err != nil {
+		return fmt.Errorf("delete deploy source: %w", err)
+	}
+	return nil
 }
 
 // SaveClient creates or renames a client.

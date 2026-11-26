@@ -1,6 +1,5 @@
-import { backendURL } from "@/lib/servers";
 
-// UptimeKumaAdmin is the credential pair mountabo generated for a server's
+// UptimeKumaAdmin is the credential pair berth generated for a server's
 // Uptime Kuma instance, seeded directly into UK's SQLite (UK has no setup
 // HTTP route). hasAdmin = false means the operator hasn't run "set up admin"
 // yet, so the panel shows a CTA instead of credentials.
@@ -17,7 +16,7 @@ export async function fetchUptimeKumaAdmin(
 ): Promise<UptimeKumaAdmin> {
   try {
     const resp = await fetch(
-      `${backendURL()}/api/servers/${encodeURIComponent(serverId)}/dashboard/uptime-kuma/admin`,
+      `/api/servers/${encodeURIComponent(serverId)}/dashboard/uptime-kuma/admin`,
       { signal, cache: "no-store" },
     );
     if (!resp.ok) return { hasAdmin: false };
@@ -35,7 +34,7 @@ export async function resetUptimeKumaAdmin(
 ): Promise<UptimeKumaAdmin | null> {
   try {
     const resp = await fetch(
-      `${backendURL()}/api/servers/${encodeURIComponent(serverId)}/dashboard/uptime-kuma/admin/reset`,
+      `/api/servers/${encodeURIComponent(serverId)}/dashboard/uptime-kuma/admin/reset`,
       { method: "POST" },
     );
     if (!resp.ok) return null;

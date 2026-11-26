@@ -6,7 +6,7 @@
     "dev": "next dev -p 4321",
     "build": "next build",
     "start": "next start -p 4321",
-    "lint": "eslint"
+    "lint": "eslint && node scripts/check-jsx-space.mjs"
   },
   "dependencies": {
     "next": "16.2.6",

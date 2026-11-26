@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown } from "@/components/icons";
+import { formatDayTime } from "@/lib/dates";
 import type { OptionParam, ServerView, SetupOption } from "@/lib/servers";
 
 const CATEGORY_ORDER = ["Network", "SSH", "TLS", "Monitoring", "System", "Audit"];
@@ -80,7 +81,7 @@ export function ServerOptions({
     <div className="border-t border-line px-4 py-5">
       <p className="text-[13px] leading-6 text-body">
         hardening settings: tick to add, untick to remove. changes are applied over SSH (as
-        mountabo, with sudo) only after you confirm.
+        berth, with sudo) only after you confirm.
       </p>
 
       <div className="mt-4 space-y-2">
@@ -105,8 +106,8 @@ export function ServerOptions({
                   </span>
                 </span>
                 {onCount > 0 && (
-                  <span className="rounded bg-lime/15 px-2 py-0.5 text-[12px] font-medium text-lime">
-                    {onCount} on
+                  <span className="rounded bg-surface-hover px-2 py-0.5 text-[12px] font-medium text-cream">
+                    {onCount}{" "}on
                   </span>
                 )}
               </button>
@@ -125,7 +126,7 @@ export function ServerOptions({
                         <span className="min-w-0">
                           <span className="flex items-center gap-2 text-[14px] font-medium text-cream">
                             {o.name}
-                            {current.has(o.id) && <span className="text-[12px] text-blue">applied</span>}
+                            {current.has(o.id) && <span className="text-[12px] text-ok">applied</span>}
                           </span>
                           <span className="mt-1 block text-[13px] leading-6 text-body">{o.description}</span>
                         </span>
@@ -142,7 +143,7 @@ export function ServerOptions({
                                 onChange={(e) => setParam(o.id, p.key, e.target.value)}
                                 placeholder={p.placeholder}
                                 className={`w-full rounded-md border bg-surface px-2.5 py-2 text-[13px] text-cream placeholder:text-muted focus:outline-none ${
-                                  paramVal(o.id, p).trim() ? "border-line focus:border-line-strong" : "border-red-500/40"
+                                  paramVal(o.id, p).trim() ? "border-line focus:border-line-strong" : "border-err/40"
                                 }`}
                               />
                             </label>
@@ -161,7 +162,7 @@ export function ServerOptions({
       <button
         onClick={apply}
         disabled={!canApply}
-        className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-lime/50 bg-lime/[0.06] px-4 py-2.5 text-[12.5px] font-medium text-lime transition-colors hover:bg-lime/[0.12] disabled:cursor-not-allowed disabled:opacity-40"
+        className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-line-strong bg-surface-hover px-4 py-2.5 text-[12.5px] font-medium text-cream transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
       >
         {changed === 0
           ? "no changes to apply"
@@ -173,9 +174,9 @@ export function ServerOptions({
       {(server.options?.length ?? 0) > 0 && (
         <button
           onClick={() => onApply([], {})}
-          className="mt-2 w-full rounded-lg border border-line px-4 py-2 text-[12px] text-muted transition-colors hover:border-red-400/50 hover:text-red-300"
+          className="mt-2 w-full rounded-lg border border-line px-4 py-2 text-[12px] text-muted transition-colors hover:border-err/50 hover:text-err"
         >
-          revert all hardening ({server.options?.length} applied)
+          revert all hardening ({server.options?.length}{" "}applied)
         </button>
       )}
 
@@ -204,10 +205,10 @@ function ChangeHistory({
           const reversible = ev.status === "applied" && ((ev.added?.length ?? 0) + (ev.removed?.length ?? 0)) > 0;
           return (
             <li key={i} className="flex items-center gap-3 text-[12px]">
-              <span className="w-28 shrink-0 text-faint">{new Date(ev.at).toLocaleString()}</span>
+              <span className="w-28 shrink-0 text-faint">{formatDayTime(ev.at)}</span>
               <span className="min-w-0 flex-1 truncate">
                 {(ev.added ?? []).map((id) => (
-                  <span key={id} className="text-lime">
+                  <span key={id} className="text-cream">
                     +{nameOf(id)}{" "}
                   </span>
                 ))}
@@ -217,11 +218,11 @@ function ChangeHistory({
                   </span>
                 ))}
               </span>
-              {ev.status === "failed" && <span className="text-[11px] text-red-300">failed</span>}
+              {ev.status === "failed" && <span className="text-[11px] text-err">failed</span>}
               {reversible && (
                 <button
                   onClick={() => onUndo(ev)}
-                  className="shrink-0 rounded border border-line px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-lime/50 hover:text-lime"
+                  className="shrink-0 rounded border border-line px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-line-strong hover:text-cream"
                 >
                   undo
                 </button>

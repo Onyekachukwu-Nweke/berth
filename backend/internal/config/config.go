@@ -1,72 +1,124 @@
-// Package config loads mountabo's runtime configuration from the environment
+// Package config loads Berth's runtime configuration from the environment
 // (12-factor style) and returns a concrete *Config. Secrets such as the GitHub
 // client secret are read here and passed inward; they are never logged.
 package config
 
 import (
+	"encoding/base64"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
 )
 
-// Config is mountabo's resolved runtime configuration.
+// Config is Berth's resolved runtime configuration.
 type Config struct {
-	// HTTPAddr is the local address the API listens on. It binds to loopback by
-	// default: mountabo is a local-first tool and must not be reachable off-box.
+	// HTTPAddr is the address the API listens on. It defaults to loopback; a
+	// hosted install sets it (e.g. ":7778") and puts the API behind its proxy.
 	HTTPAddr        string
 	ShutdownTimeout time.Duration
 	GitHub          GitHubConfig
 	AI              AIConfig
-	// DataDir is where mountabo keeps local state (e.g. servers.json). Defaults
-	// to ~/.mountabo.
-	DataDir string
+	// DatabaseURL is the Postgres connection string (DATABASE_URL).
+	DatabaseURL string
+	// MasterKey seals the platform's own credentials (server SSH keys, deploy
+	// keys) in the database. 32 bytes, from base64 BERTH_MASTER_KEY. Losing
+	// it makes every sealed credential unreadable; rotate it deliberately.
+	MasterKey []byte
+}
+
+// Validate reports the first required setting that is missing or malformed, so
+// the server refuses to start rather than failing on its first request.
+func (c *Config) Validate() error {
+	if c.DatabaseURL == "" {
+		return errors.New("DATABASE_URL is required (e.g. postgres://berth:pass@localhost:5432/berth)")
+	}
+	if len(c.MasterKey) != 32 {
+		return errors.New("BERTH_MASTER_KEY must be 32 random bytes, base64-encoded; generate one with: openssl rand -base64 32")
+	}
+	if c.GitHub.AppID == 0 || c.GitHub.AppPrivateKey == "" {
+		return errors.New("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY are required (from your GitHub App's settings page)")
+	}
+	if c.GitHub.ClientID == "" || c.GitHub.ClientSecret == "" {
+		return errors.New("GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are required (the GitHub App's client id and a generated client secret)")
+	}
+	if len(c.GitHub.Admins) == 0 {
+		return errors.New("BERTH_ADMINS must name at least one GitHub login, or nobody can manage servers")
+	}
+	return nil
 }
 
 // AIConfig holds the Anthropic credentials for the AI command helper. APIKey is
 // optional: when empty, the helper reports "not configured" rather than failing,
-// so mountabo runs fine without it. Model overrides the default Claude model.
+// so Berth runs fine without it. Model overrides the default Claude model.
 type AIConfig struct {
 	APIKey string
 	Model  string
 }
 
-// GitHubConfig holds the OAuth App credentials used to exchange authorization
-// codes for access tokens.
+// GitHubConfig holds the Berth GitHub App: its id, slug and private key
+// (to act as the App on installations) and its client id/secret (for user
+// sign-in). Admins are GitHub logins with full control (BERTH_ADMINS).
 type GitHubConfig struct {
-	ClientID     string
-	ClientSecret string
+	AppID         int64
+	AppSlug       string
+	AppPrivateKey string
+	ClientID      string
+	ClientSecret  string
+	Admins        []string
 }
 
-// Load reads configuration from the environment, applying local-first defaults.
+// Load reads configuration from the environment, applying defaults. Call
+// Validate before using it.
 // It first loads the repository-root .env (shared with the frontend) if present.
 func Load() *Config {
 	loadDotenv()
 	return &Config{
-		HTTPAddr:        env("MOUNTABO_HTTP_ADDR", "127.0.0.1:7778"),
+		HTTPAddr:        env("BERTH_HTTP_ADDR", "127.0.0.1:7778"),
 		ShutdownTimeout: 10 * time.Second,
 		GitHub: GitHubConfig{
-			ClientID:     os.Getenv("GITHUB_CLIENT_ID"),
-			ClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
+			AppID:         appID(os.Getenv("GITHUB_APP_ID")),
+			AppSlug:       os.Getenv("GITHUB_APP_SLUG"),
+			AppPrivateKey: os.Getenv("GITHUB_APP_PRIVATE_KEY"),
+			ClientID:      os.Getenv("GITHUB_CLIENT_ID"),
+			ClientSecret:  os.Getenv("GITHUB_CLIENT_SECRET"),
+			Admins:        splitList(env("BERTH_ADMINS", "")),
 		},
 		AI: AIConfig{
 			APIKey: os.Getenv("ANTHROPIC_API_KEY"),
-			Model:  os.Getenv("MOUNTABO_AI_MODEL"),
+			Model:  env("BERTH_AI_MODEL", ""),
 		},
-		DataDir: env("MOUNTABO_DATA_DIR", defaultDataDir()),
+		DatabaseURL: os.Getenv("DATABASE_URL"),
+		MasterKey:   decodeKey(env("BERTH_MASTER_KEY", "")),
 	}
 }
 
-// defaultDataDir is ~/.mountabo, falling back to ./.mountabo if the home dir
-// can't be resolved.
-func defaultDataDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".mountabo"
+func appID(v string) int64 {
+	id, _ := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	return id
+}
+
+// splitList parses a comma- or whitespace-separated list.
+func splitList(v string) []string {
+	return strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' || r == '\t' })
+}
+
+// decodeKey decodes a base64 master key, returning nil when it is unset or not
+// valid base64 (Validate then reports it).
+func decodeKey(v string) []byte {
+	if v == "" {
+		return nil
 	}
-	return filepath.Join(home, ".mountabo")
+	b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(v))
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // loadDotenv loads the repository-root .env if one exists, searching upward from
@@ -96,9 +148,16 @@ func loadDotenv() {
 }
 
 // env returns the value of key, or fallback when key is unset or empty.
+// env reads a BERTH_* setting, falling back to its old BERTH_* name so an
+// install configured before the rename keeps working.
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	if old, ok := strings.CutPrefix(key, "BERTH_"); ok {
+		if v := os.Getenv("MOUNTABO_" + old); v != "" {
+			return v
+		}
 	}
 	return fallback
 }

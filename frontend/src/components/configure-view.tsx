@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/badge";
@@ -10,10 +12,11 @@ import { ConfirmAction } from "@/components/confirm-action";
 import { GithubMark, Plus, Branch as BranchIcon } from "@/components/icons";
 import type { Server, Source } from "@/lib/data";
 import { type DetectedPort, fetchDetectedPorts, normalizeDir } from "@/lib/ports";
-import { fetchListeningPorts } from "@/lib/server-ports";
+import { assignPorts, fetchServerPorts, type ServerPorts } from "@/lib/server-ports";
 import { type DeployPreview, type PreviewPort, type PreviewRequest, fetchPreview } from "@/lib/deploy-preview";
 import { addEnvKeys, type EnvVar, mergeEnv, parseEnvFile } from "@/lib/deploy-template";
 import { fetchEnvExampleKeys } from "@/lib/env-example";
+import { setDeploymentPort } from "@/lib/app-health";
 
 type Tab = "workflow" | "script" | "secrets";
 
@@ -22,14 +25,25 @@ export function ConfigureView({
   server,
   branch,
   account,
+  environment: environmentParam,
+  isAdmin = false,
 }: {
   source: Source;
   server: Server;
   branch: string;
   account: string | null;
+  // Admins may place a deploy on any server client isolation allows; developers
+  // deploy where the environment's rule points.
+  isAdmin?: boolean;
+  // Prefilled environment name when arriving from a repo card's "+ environment"
+  // (environment-first flow); defaults to "production" for a fresh deploy.
+  environment?: string;
 }) {
   const router = useRouter();
   const [app, setApp] = useState(source.name);
+  // The first-class environment this deployment targets. Free-text so agencies
+  // can name it (client-staging, qa, ...); production/staging are the suggestions.
+  const [environment, setEnvironment] = useState(environmentParam?.trim() || "production");
   const [rootDir, setRootDir] = useState("./");
   const [deployDir, setDeployDir] = useState(`/opt/${source.name}`);
   // Ports are detected from the repo's own compose file / Dockerfile, never
@@ -58,10 +72,17 @@ export function ConfigureView({
   const [exampleKeys, setExampleKeys] = useState<string[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Ports already listening on the selected server. A host port in this set is
-  // flagged as a collision in the form (but never changed, the operator decides).
-  const [busyPorts, setBusyPorts] = useState<{ id: string; ports: Set<number> } | null>(null);
-  const busy = busyPorts && busyPorts.id === server.id ? busyPorts.ports : null;
+  // The server's ports for this deployment: taken (listening, or claimed by
+  // another berth deployment there) and this deployment's current port.
+  // Keyed so a stale answer for another server or environment reads as null.
+  const portsTarget = `${server.id}|${source.owner}/${source.name}|${environment.trim() || branch}`;
+  const [serverPortsState, setServerPortsState] = useState<{ key: string; data: ServerPorts } | null>(null);
+  const serverPorts = serverPortsState && serverPortsState.key === portsTarget ? serverPortsState.data : null;
+  const busy = serverPorts ? serverPorts.taken : null;
+  // Host ports the operator typed. Every other editable port is assigned by
+  // berth: its current port on a redeploy, else the compose default when it
+  // is free, else the first free port in 3000-9999.
+  const [touchedPorts, setTouchedPorts] = useState<Set<string>>(() => new Set());
 
   function importEnv(text: string) {
     const parsed = parseEnvFile(text);
@@ -113,33 +134,51 @@ export function ConfigureView({
     return () => ctrl.abort();
   }, [source.owner, source.name, branch, rootDir]);
 
-  // Load the ports already in use on the selected server so the form can flag a
-  // host port that would collide. Keyed to the server id so a stale set reads
-  // back as null until the new server's ports load.
+  // Load the server's ports for this deployment, so host ports are picked free
+  // and a collision is caught before deploying.
   useEffect(() => {
     const ctrl = new AbortController();
-    fetchListeningPorts(server.id, ctrl.signal)
-      .then((ports) => setBusyPorts({ id: server.id, ports: new Set(ports) }))
-      .catch(() => setBusyPorts({ id: server.id, ports: new Set() }));
+    const env = environment.trim() || branch;
+    fetchServerPorts(server.id, { owner: source.owner, repo: source.name, environment: env }, ctrl.signal).then((data) =>
+      setServerPortsState({ key: portsTarget, data }),
+    );
     return () => ctrl.abort();
-  }, [server.id]);
+  }, [server.id, source.owner, source.name, environment, branch, portsTarget]);
 
-  // The ports mountabo will set, in the shape the backend expects. In docker
+  // autoPorts assigns every editable port the operator hasn't typed: the
+  // deployment's current port on a redeploy (first port), else its default if
+  // free, else the first free port in 3000-9999. Fixed ports and typed ports
+  // count as used, so two ports never get the same number.
+  const autoPorts = useMemo(
+    () => (detected && serverPorts ? assignPorts(detected, serverPorts, isDocker, touchedPorts, portValues) : {}),
+    [detected, serverPorts, isDocker, touchedPorts, portValues],
+  );
+
+  // The host port in effect for a port key: what the operator typed, else the
+  // auto-assigned one, else the detected default.
+  const portValueFor = (key: string, fallback: string) =>
+    touchedPorts.has(key) ? (portValues[key] ?? fallback) : (autoPorts[key]?.value ?? portValues[key] ?? fallback);
+
+  // The ports berth will set, in the shape the backend expects. In docker
   // mode every EXPOSE'd port gets an editable host port (default = container
-  // port); in compose mode only env-var-backed ports are mountabo's to set.
+  // port). In compose mode env-var-backed ports are berth's to set; a port
+  // fixed in the compose file is sent with no variable so the health check,
+  // the deployment record and a domain still know the app's port.
   const configuredPorts: PreviewPort[] = useMemo(() => {
     const ports = detected ?? [];
     if (isDocker) {
-      return ports.map((p) => ({
-        envVar: "",
-        value: portValues[p.container] ?? p.host ?? p.container,
-        container: p.container,
-      }));
+      return ports.map((p) => ({ envVar: "", value: portValueFor(p.container, p.host || p.container), container: p.container }));
     }
     return ports
-      .filter((p) => p.editable)
-      .map((p) => ({ envVar: p.envVar, value: portValues[p.envVar] ?? p.host, container: p.container }));
-  }, [detected, isDocker, portValues]);
+      .filter((p) => p.editable || p.host)
+      .map((p) =>
+        p.editable
+          ? { envVar: p.envVar, value: portValueFor(p.envVar, p.host), container: p.container }
+          : { envVar: "", value: p.host, container: p.container },
+      );
+    // portValueFor is derived from these
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detected, isDocker, portValues, autoPorts, touchedPorts]);
 
   // The preview (workflow + deploy.sh + secrets) is generated by the backend,
   // the single source of truth, so it always matches what a deploy commits. The
@@ -151,22 +190,34 @@ export function ConfigureView({
   const [deployBody, setDeployBody] = useState<PreviewRequest | null>(null);
   const [deployed, setDeployed] = useState(false);
   // Optional custom domain captured on this same page (Vercel-style: one place
-  // for env vars + domain setup). When the operator fills it in, mountabo
+  // for env vars + domain setup). When the operator fills it in, berth
   // applies it via the same SSE add-domain flow right after the deploy stream
   // finishes successfully. The port is taken from the first configured port,
   // so the operator never picks it twice.
   const [domainHost, setDomainHost] = useState("");
   const [domainWww, setDomainWww] = useState(true);
+  // The port nginx proxies the domain to. It defaults to the app's first
+  // configured port (below) but is an explicit, editable field: a domain needs a
+  // published port to reach, and detection can come up empty (e.g. a compose
+  // stack that publishes no host port), so we never silently drop the domain for
+  // want of a port.
+  const [domainPort, setDomainPort] = useState("");
+  // Set when a deploy fails while a custom domain was entered, so the form can
+  // tell the operator the domain was NOT set up (rather than silently skipping).
+  const [domainSkipped, setDomainSkipped] = useState(false);
   // Chained domain stream: set after a successful deploy when domainHost is
   // non-empty, which triggers a second StreamLog. null otherwise.
   const [domainStream, setDomainStream] = useState<{ host: string; upstream: string; aliases: string[] } | null>(null);
+  // Set when a domain went live but recording its port on the deployment failed,
+  // so the domain won't associate — surfaced instead of navigating as if fine.
+  const [domainLinkError, setDomainLinkError] = useState<string | null>(null);
   // Set when the operator clicks deploy: opens the confirmation gate first. The
   // deploy only runs (deployBody is set) once they confirm, so nothing reaches
   // the repository or server unseen.
   const [confirmDeploy, setConfirmDeploy] = useState<PreviewRequest | null>(null);
 
   // The operator only sees their own secrets. The server connection secrets
-  // (SERVER_HOST, SERVER_SSH_KEY, SERVER_USER, DEPLOY_DIR) are managed: mountabo
+  // (SERVER_HOST, SERVER_SSH_KEY, SERVER_USER, DEPLOY_DIR) are managed: berth
   // sets them on the repo automatically, so they are abstracted away here and
   // never listed, only summarised as "set automatically".
   const userSecrets = preview?.secrets.filter((s) => !s.managed) ?? [];
@@ -178,12 +229,58 @@ export function ConfigureView({
     return k !== "" && !envNamePattern.test(k);
   });
 
+  // The environment names the deployment and becomes a URL path segment in the
+  // deployment API, so it must be path-safe (letters, numbers, dot, dash,
+  // underscore — no slashes/spaces). It defaults to the branch, which can contain
+  // a slash; that must be caught here too.
+  const effectiveEnvironment = environment.trim() || branch;
+  const environmentInvalid = !/^[A-Za-z0-9._-]+$/.test(effectiveEnvironment);
+
+  // Where this repo's environments deploy, per the access settings. The API
+  // enforces it; this only explains it before anyone presses deploy.
+  const [targets, setTargets] = useState<RepoTargets | null>(null);
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.name)}/targets`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((t: RepoTargets | null) => {
+        if (live) setTargets(t);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [source.owner, source.name]);
+  const placement = targets?.targets.find((t) => t.environment.toLowerCase() === effectiveEnvironment.toLowerCase());
+  const placementBlocked =
+    !isAdmin && targets !== null && (!placement || placement.serverId !== server.id);
+  const placementReason = !targets
+    ? null
+    : !placement
+      ? isAdmin
+        ? `no rule for "${effectiveEnvironment}" yet: as an admin you can still deploy here, or add the rule in access settings.`
+        : `no server is set up for "${effectiveEnvironment}" on ${targets.clientName || "this project"} yet. ask an admin to add it.`
+      : placement.serverId !== server.id
+        ? `"${effectiveEnvironment}" deploys to a different server.`
+        : `"${effectiveEnvironment}" deploys to this server.`;
+
+  // The domain's upstream port: the operator's explicit value, else the app's
+  // first configured port. A domain with no resolvable port is invalid and
+  // blocks deploy, so the domain is never silently dropped for want of a port.
+  const detectedPort = configuredPorts[0]?.value?.trim() ?? "";
+  const effectiveDomainPort = domainPort.trim() || detectedPort;
+  const validPort = /^\d+$/.test(effectiveDomainPort) && Number(effectiveDomainPort) >= 1 && Number(effectiveDomainPort) <= 65535;
+  const domainInvalid = domainHost.trim() !== "" && !validPort;
+
   const previewReq: PreviewRequest = useMemo(
     () => ({
       app: app.trim() || source.name,
       owner: source.owner,
       repo: source.name,
       branch,
+      // The first-class environment this deploy targets; defaults to the branch
+      // when left blank (back-compat with pre-environment deploys).
+      environment: environment.trim() || branch,
       strategy: strategy || "compose",
       rootDir,
       deployDir,
@@ -195,7 +292,7 @@ export function ConfigureView({
         return k !== "" && envNamePattern.test(k);
       }),
     }),
-    [app, source.owner, source.name, branch, strategy, rootDir, deployDir, configuredPorts, envVars],
+    [app, source.owner, source.name, branch, environment, strategy, rootDir, deployDir, configuredPorts, envVars],
   );
 
   useEffect(() => {
@@ -225,17 +322,15 @@ export function ConfigureView({
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-[1480px] flex-1 flex-col gap-10 px-4 py-8 sm:px-6 lg:flex-row lg:items-start lg:gap-20 lg:px-8 lg:py-10">
+    <main className="mx-auto flex w-full max-w-[1480px] flex-1 flex-col gap-10 px-4 py-6 sm:px-6 lg:flex-row lg:items-start lg:gap-12 lg:px-8 lg:py-8">
       {/* ── left: the walkthrough form. Fixed width and wider than the preview,
           so it keeps its size across viewports rather than stretching. ── */}
-      <div className="rise flex flex-col lg:w-[800px] lg:shrink-0">
-        <p className="label">step 02 / 02 · configure</p>
-        <h1 className="mt-5 text-4xl font-extrabold leading-[1.05] tracking-tight text-cream sm:text-5xl sm:leading-[1.02]">
-          configure your deployment.
-        </h1>
+      <div className="flex flex-col lg:w-[720px] lg:shrink-0">
+        <Link href="/new" className="text-[12px] text-muted hover:text-cream">← New deployment</Link>
+        <h1 className="mt-2 text-[22px] font-semibold tracking-tight text-cream">Configure deployment</h1>
 
         <div className="mt-5 rounded-lg border border-line bg-surface px-4 py-3 text-[13px]">
-          <span className="text-muted">importing from</span>
+          <span className="text-muted">Importing from</span>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-cream">
             <GithubMark />
             {source.owner}/{source.name}
@@ -250,6 +345,67 @@ export function ConfigureView({
 
         <Section label="project name">
           <input value={app} onChange={(e) => setApp(e.target.value)} className={inputCls} placeholder={source.name} />
+        </Section>
+
+        <Section label="environment" hint="production and staging are the usual ones — letters, numbers, dots, dashes and underscores">
+          <input
+            value={environment}
+            onChange={(e) => setEnvironment(e.target.value)}
+            className={inputCls}
+            placeholder="production"
+          />
+          <div className="mt-2 flex gap-2">
+            {(targets && targets.targets.length > 0
+              ? targets.targets.map((t) => t.environment)
+              : ["production", "staging"]
+            ).map((name) => (
+              <button
+                key={name}
+                type="button"
+                onClick={() => {
+                  setEnvironment(name);
+                  // An environment brings its server with it: follow the rule
+                  // instead of leaving the deploy pointed somewhere it can't go.
+                  const t = targets?.targets.find((x) => x.environment === name);
+                  if (t && t.serverId !== server.id) {
+                    router.replace(
+                      `/configure?repo=${encodeURIComponent(`${source.owner}/${source.name}`)}&branch=${encodeURIComponent(branch)}&server=${encodeURIComponent(t.serverId)}&environment=${encodeURIComponent(name)}`,
+                    );
+                  }
+                }}
+                className={`rounded-md border px-2.5 py-1 text-[12px] transition-colors ${
+                  environment === name
+                    ? "border-line-strong bg-surface-hover text-cream"
+                    : "border-line text-muted hover:text-cream"
+                }`}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+          {environmentInvalid && (
+            <p className="mt-2 text-[12px] text-err">
+              use only letters, numbers, dots, dashes or underscores (no slashes or spaces)
+              {environment.trim() === "" ? ` — the branch "${branch}" isn't a valid environment name, so type one` : ""}.
+            </p>
+          )}
+          {placementReason && (
+            <p className={`mt-2 text-[12px] ${placementBlocked ? "text-err" : "text-muted"}`}>
+              {targets?.clientName && <span className="text-cream">{targets.clientName} · </span>}
+              {placementReason}
+              {placement && placement.serverId !== server.id && (
+                <>
+                  {" "}
+                  <a
+                    className="text-cream hover:text-cream"
+                    href={`/configure?repo=${encodeURIComponent(`${source.owner}/${source.name}`)}&branch=${encodeURIComponent(branch)}&server=${encodeURIComponent(placement.serverId)}&environment=${encodeURIComponent(effectiveEnvironment)}`}
+                  >
+                    switch to it →
+                  </a>
+                </>
+              )}
+            </p>
+          )}
         </Section>
 
         <Section label="root directory" hint="where docker-compose.yml lives">
@@ -278,8 +434,9 @@ export function ConfigureView({
                   // Value key: env var (compose) or container port (docker).
                   const key = p.envVar || p.container;
                   const editable = isDocker || p.editable; // docker: every EXPOSE'd port is editable
-                  const value = portValues[key] ?? p.host ?? p.container;
-                  const occupied = editable && !!busy && value.trim() !== "" && busy.has(Number(value));
+                  const value = editable ? portValueFor(key, p.host || p.container) : p.host;
+                  const occupied = !!busy && value.trim() !== "" && busy.has(Number(value)) && (!editable || touchedPorts.has(key));
+                  const auto = autoPorts[key];
                   const label = isDocker
                     ? `host port for :${p.container}`
                     : p.editable
@@ -290,18 +447,22 @@ export function ConfigureView({
                       <span className="mb-1 flex items-center gap-1.5 text-[11px] text-muted">
                         <span className="truncate" title={label}>{label}</span>
                         {occupied && (
-                          <span className="text-red-300" title={`${value} is already in use on ${server.name}`}>
-                            {"\u{1F6AB}"} in use on the server
+                          <span className="text-err" title={`${value} is already in use on ${server.name}`}>
+                            {"\u{1F6AB}"}{" "}in use on the server
                           </span>
                         )}
                       </span>
                       {editable ? (
                         <input
                           value={value}
-                          onChange={(e) => setPortValues((v) => ({ ...v, [key]: e.target.value }))}
+                          onChange={(e) => {
+                            const typed = e.target.value.replace(/[^0-9]/g, "");
+                            setPortValues((v) => ({ ...v, [key]: typed }));
+                            setTouchedPorts((t) => new Set(t).add(key));
+                          }}
                           inputMode="numeric"
                           aria-invalid={occupied}
-                          className={`${inputCls} ${occupied ? "border-red-400/60" : ""}`}
+                          className={`${inputCls} ${occupied ? "border-err/60" : ""}`}
                         />
                       ) : (
                         <div
@@ -311,6 +472,22 @@ export function ConfigureView({
                           <span className="min-w-0 flex-1 truncate font-mono">{p.host || "auto"}</span>
                           <span className="shrink-0 text-[11px] text-faint">fixed</span>
                         </div>
+                      )}
+                      {editable && auto?.current && (
+                        <span className="mt-1 block text-[11px] text-muted">Current port, kept on redeploy.</span>
+                      )}
+                      {editable && auto?.movedFrom && (
+                        <span className="mt-1 block text-[11px] text-muted">
+                          {auto.movedFrom} is taken on {server.name}, so berth picked {auto.value}.
+                        </span>
+                      )}
+                      {editable && !auto && !touchedPorts.has(key) && busy === null && (
+                        <span className="mt-1 block text-[11px] text-faint">Checking which ports are free…</span>
+                      )}
+                      {!editable && occupied && (
+                        <span className="mt-1 block text-[11px] text-err">
+                          {`${p.host} is taken on ${server.name} and is fixed in your compose file. Change it to "\${${(p.service || "APP").toUpperCase().replace(/[^A-Z0-9]/g, "_")}_PORT:-${p.host}}:${p.container}" so berth can pick a free one.`}
+                        </span>
                       )}
                     </label>
                   );
@@ -322,7 +499,7 @@ export function ConfigureView({
 
         <Section label="environment variables" hint="become encrypted repo secrets">
           <p className="mb-3 text-[12px] leading-5 text-muted">
-            your app&apos;s own variables only. mountabo sets the server connection (host, ssh key, deploy
+            your app&apos;s own variables only. berth sets the server connection (host, ssh key, deploy
             directory) for you, so you never add server details like an ip or password here.
           </p>
           {/* Import a whole .env at once: paste it or pick a file. Parsing is
@@ -349,13 +526,13 @@ export function ConfigureView({
             {exampleKeys.length > 0 && (
               <button
                 onClick={() => setEnvVars((rows) => addEnvKeys(rows, exampleKeys))}
-                className="rounded-md border border-lime/40 px-2.5 py-1.5 text-[12px] text-lime transition-colors hover:bg-lime/10"
+                className="rounded-md border border-line-strong px-2.5 py-1.5 text-[12px] text-cream transition-colors hover:bg-surface-hover"
               >
                 use repo .env.example ({exampleKeys.length})
               </button>
             )}
             {imported !== null && (
-              <span className="text-[12px] text-lime">imported {imported}</span>
+              <span className="text-[12px] text-cream">imported {imported}</span>
             )}
             <input
               ref={fileRef}
@@ -388,7 +565,7 @@ export function ConfigureView({
                     setShowPaste(false);
                   }}
                   disabled={!paste.trim()}
-                  className="rounded-md border border-lime/40 px-3 py-1.5 text-[12px] text-lime transition-colors hover:bg-lime/10 disabled:opacity-40"
+                  className="rounded-md border border-line-strong px-3 py-1.5 text-[12px] text-cream transition-colors hover:bg-surface-hover disabled:opacity-40"
                 >
                   parse &amp; add
                 </button>
@@ -420,10 +597,10 @@ export function ConfigureView({
                       spellCheck={false}
                       data-1p-ignore
                       data-lpignore="true"
-                      className={`${inputCls} w-full font-mono ${badKey ? "border-red-400/60" : ""}`}
+                      className={`${inputCls} w-full font-mono ${badKey ? "border-err/60" : ""}`}
                     />
                     {badKey && (
-                      <span className="mt-1 block text-[11px] text-red-300">
+                      <span className="mt-1 block text-[11px] text-err">
                         not a valid name. use letters, digits and underscores, and don&apos;t start with a digit, for
                         example DATABASE_URL or API_KEY.
                       </span>
@@ -448,7 +625,7 @@ export function ConfigureView({
                   />
                   <button
                     onClick={() => setEnvVars((rows) => (rows.length > 1 ? rows.filter((_, idx) => idx !== i) : rows))}
-                    className="shrink-0 rounded-md border border-line px-2.5 py-2 text-[12px] text-muted transition-colors hover:border-red-400/50 hover:text-red-300"
+                    className="shrink-0 rounded-md border border-line px-2.5 py-2 text-[12px] text-muted transition-colors hover:border-err/50 hover:text-err"
                     aria-label="remove"
                   >
                     ×
@@ -458,9 +635,9 @@ export function ConfigureView({
             })}
             <button
               onClick={() => setEnvVars((rows) => [...rows, { key: "", value: "" }])}
-              className="flex items-center gap-1.5 text-[12px] text-lime transition-colors hover:text-cream"
+              className="flex items-center gap-1.5 text-[12px] text-cream transition-colors hover:text-cream"
             >
-              <Plus /> add variable
+              <Plus />{" "}add variable
             </button>
           </div>
         </Section>
@@ -470,8 +647,8 @@ export function ConfigureView({
             after the deploy stream finishes; nothing runs until then. */}
         <Section label="custom domain (optional)" hint="nginx + free https on this server">
           <p className="mb-3 text-[12px] leading-5 text-muted">
-            point your domain&apos;s A record at <span className="text-cream">{server.ip}</span> first.
-            after the deploy stream finishes, mountabo fronts your app on https with a Let&apos;s Encrypt
+            point your domain&apos;s A record at <span className="text-cream">{server.ip}</span>{" "}first.
+            after the deploy stream finishes, berth fronts your app on https with a Let&apos;s Encrypt
             certificate.
           </p>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -495,29 +672,70 @@ export function ConfigureView({
               also serve www.
             </label>
           </div>
+          {domainHost.trim() !== "" && (
+            <div className="mt-3">
+              <label className="mb-1 block text-[12px] text-muted">
+                app port to proxy to{detectedPort ? ` (defaults to ${detectedPort}, the app's port)` : ""}
+              </label>
+              <input
+                value={domainPort}
+                onChange={(e) => setDomainPort(e.target.value.replace(/[^0-9]/g, ""))}
+                placeholder={detectedPort || "e.g. 3000"}
+                inputMode="numeric"
+                className={`${inputCls} sm:max-w-[220px]`}
+              />
+              {domainInvalid && (
+                <p className="mt-1.5 text-[12px] text-err">
+                  {detectedPort
+                    ? "enter the port your app publishes on the server so the server's proxy can reach it."
+                    : "berth didn't detect a published port for this app. a domain proxies to a port, so enter the host port your app publishes (and make sure your compose/Dockerfile actually publishes it), otherwise remove the domain."}
+                </p>
+              )}
+            </div>
+          )}
+          {domainSkipped && (
+            <p className="mt-3 rounded-md border border-err/30 bg-err/[0.04] px-3 py-2 text-[12px] leading-5 text-err">
+              the deploy failed, so <span className="text-cream">{domainHost.trim()}</span>{" "}was not set up.
+              fix the deploy and run it again — the domain is applied only after a successful deploy.
+            </p>
+          )}
+          {domainLinkError && (
+            <p className="mt-3 rounded-md border border-err/30 bg-err/[0.04] px-3 py-2 text-[12px] leading-5 text-err">
+              {domainLinkError}
+            </p>
+          )}
         </Section>
 
         {/* CTA: commit the workflow + deploy.sh and set the secrets, streamed live. */}
         <div className="mt-8">
           <button
-            disabled={!preview || envInvalid}
-            onClick={() => setConfirmDeploy(previewReq)}
-            className="flex w-full items-center justify-center gap-2 rounded-xl border border-lime/40 bg-lime/10 px-6 py-4 font-bold text-lime transition-colors hover:bg-lime/20 disabled:cursor-not-allowed disabled:border-line disabled:bg-surface-2 disabled:text-muted"
+            disabled={!preview || envInvalid || domainInvalid || environmentInvalid || placementBlocked}
+            onClick={() => {
+              setDomainSkipped(false);
+              setConfirmDeploy(previewReq);
+            }}
+            className="flex w-full items-center justify-center gap-2 rounded-md bg-cream px-6 py-3 text-[14px] font-semibold text-bg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:bg-surface-2 disabled:text-muted disabled:opacity-100"
             title={
-              envInvalid
-                ? "fix the invalid environment variable name first"
-                : preview
-                  ? "commit the workflow + deploy.sh and set the Actions secrets"
-                  : "waiting for a valid configuration"
+              environmentInvalid
+                ? "the environment name must be letters, numbers, dots, dashes or underscores (no slashes)"
+                : placementBlocked
+                  ? (placementReason ?? "this environment can't deploy to this server")
+                : envInvalid
+                  ? "fix the invalid environment variable name first"
+                  : domainInvalid
+                    ? "the custom domain needs a valid app port to proxy to"
+                    : preview
+                      ? "commit the workflow + deploy.sh and set the Actions secrets"
+                      : "waiting for a valid configuration"
             }
           >
-            {deployed ? "re-deploy configuration" : "deploy"}
+            {deployed ? "Re-deploy configuration" : "Deploy"}
           </button>
-          <p className="mt-2 text-center text-[11px] text-muted">
+          <p className="mt-2 text-center text-[12px] text-muted first-letter:uppercase">
             commits these files and sets your {userSecrets.length} environment variables as encrypted secrets on{" "}
-            {source.owner}/{source.name}. push to {branch} afterwards to ship.
+            {source.owner}/{source.name}. push to {branch}{" "}afterwards to ship.
           </p>
-          {previewError && <p className="mt-2 text-center text-[11px] text-red-300">{previewError}</p>}
+          {previewError && <p className="mt-2 text-center text-[11px] text-err">{previewError}</p>}
         </div>
       </div>
 
@@ -527,12 +745,12 @@ export function ConfigureView({
           subtitle={`${source.owner}/${source.name} → ${server.name}`}
           summary={
             <>
-              mountabo will commit the workflow and deploy script below to{" "}
+              berth will commit the workflow and deploy script below to{" "}
               <span className="text-cream">
                 {source.owner}/{source.name}
               </span>{" "}
               on the <span className="text-cream">{branch}</span> branch and set your{" "}
-              {userSecrets.length} environment variables as encrypted Actions secrets. the server
+              {userSecrets.length}{" "}environment variables as encrypted Actions secrets. the server
               connection is set automatically. when the workflow runs it connects to{" "}
               <span className="text-cream">{server.name}</span> over SSH and runs the deploy script in{" "}
               <span className="text-cream">{deployDir}</span>. nothing runs until you confirm.
@@ -541,7 +759,7 @@ export function ConfigureView({
           stepsLabel="exact files and script that will be written, then run on the server"
           steps={
             preview
-              ? `# ${preview.workflowPath}\n${preview.workflow}\n\n# deploy.sh\n${preview.deployScript}\n\n# your environment variables, set as encrypted secrets on ${source.owner}/${source.name}\n${userSecrets.map((s) => s.name).join("\n") || "(none)"}\n\n# the server connection is set automatically by mountabo (${managedSecretCount} managed secrets, not shown)`
+              ? `# ${preview.workflowPath}\n${preview.workflow}\n\n# deploy.sh\n${preview.deployScript}\n\n# your environment variables, set as encrypted secrets on ${source.owner}/${source.name}\n${userSecrets.map((s) => s.name).join("\n") || "(none)"}\n\n# the server connection is set automatically by berth (${managedSecretCount} managed secrets, not shown)`
               : undefined
           }
           loading={!preview}
@@ -562,24 +780,30 @@ export function ConfigureView({
           body={deployBody}
           onClose={() => setDeployBody(null)}
           onDone={(ok) => {
-            if (!ok) return;
-            setDeployed(true);
             const host = domainHost.trim();
+            if (!ok) {
+              // The deploy failed. If a domain was entered, it is NOT applied
+              // (the domain step only runs after a successful deploy) — tell the
+              // operator instead of silently navigating away.
+              if (host !== "") setDomainSkipped(true);
+              return;
+            }
+            setDeployed(true);
             // If the operator filled in a custom domain, chain the add-domain
-            // stream right after deploy succeeds. The upstream port is the
-            // first configured port; aliases include www. only for an apex
-            // domain (one dot). Navigation happens after the domain stream
-            // completes so the operator sees both timelines.
-            const upstream = configuredPorts[0]?.value?.trim() || "";
-            if (host !== "" && upstream !== "") {
+            // stream right after deploy succeeds. The upstream is the explicit
+            // domain port (defaulted to the app's first configured port, and
+            // validated non-empty before deploy, so it is always set here);
+            // aliases include www. only for an apex domain (one dot). Navigation
+            // happens after the domain stream completes so the operator sees both.
+            if (host !== "" && effectiveDomainPort !== "") {
               setDomainStream({
                 host,
-                upstream,
+                upstream: effectiveDomainPort,
                 aliases: domainWww && host.split(".").length === 2 ? [`www.${host}`] : [],
               });
               return;
             }
-            router.push(`/deployments?app=${encodeURIComponent(app.trim() || source.name)}`);
+            router.push(`/deployments?owner=${encodeURIComponent(source.owner)}&repo=${encodeURIComponent(source.name)}&environment=${encodeURIComponent(environment.trim() || branch)}`);
           }}
         />
       )}
@@ -596,10 +820,32 @@ export function ConfigureView({
             return `/api/servers/${server.id}/domains/add?${qs.toString()}`;
           })()}
           onClose={() => setDomainStream(null)}
-          onDone={() => {
-            // Always navigate to /deployments after the domain stream resolves,
-            // success or not, so the operator can see the live state of both.
-            router.push(`/deployments?app=${encodeURIComponent(app.trim() || source.name)}`);
+          onDone={async (ok) => {
+            const dest = `/deployments?owner=${encodeURIComponent(source.owner)}&repo=${encodeURIComponent(source.name)}&environment=${encodeURIComponent(environment.trim() || branch)}`;
+            if (!ok) {
+              // The domain stream failed; the deploy already succeeded. Go to the
+              // deployments page so the operator sees the live state and can retry
+              // the domain from the card.
+              router.push(dest);
+              return;
+            }
+            // Record the domain's port as the deployment's port (owner/repo/env is
+            // the identity) so the domain associates with it. If that link fails,
+            // surface it and stay — otherwise the domain silently won't show.
+            const linked = await setDeploymentPort(
+              source.owner,
+              source.name,
+              environment.trim() || branch,
+              Number(domainStream.upstream),
+            );
+            if (!linked) {
+              setDomainStream(null);
+              setDomainLinkError(
+                `${domainStream.host} is live, but linking it to this deployment failed. open the deployment and re-add the domain (or set its app port) so it shows and is reachable.`,
+              );
+              return;
+            }
+            router.push(dest);
           }}
         />
       )}
@@ -620,7 +866,7 @@ export function ConfigureView({
 
         <div className="mt-3 flex-1">
           {!preview ? (
-            <div className="rounded-xl border border-line bg-surface px-4 py-4 text-[12px] text-muted">
+            <div className="rounded-lg border border-line bg-surface px-4 py-4 text-[12px] text-muted">
               {previewError ?? "generating preview..."}
             </div>
           ) : (
@@ -628,7 +874,7 @@ export function ConfigureView({
               {tab === "workflow" && <Code path={preview.workflowPath} body={preview.workflow} />}
               {tab === "script" && <Code path="deploy.sh" body={preview.deployScript} />}
               {tab === "secrets" && (
-                <div className="overflow-hidden rounded-xl border border-line bg-surface">
+                <div className="overflow-hidden rounded-lg border border-line bg-surface">
                   <div className="border-b border-line px-5 py-3 text-[12px] text-muted">
                     your environment variables · encrypted actions secrets
                   </div>
@@ -637,7 +883,7 @@ export function ConfigureView({
                       {userSecrets.map((s) => (
                         <li key={s.name} className="flex items-center justify-between border-b border-line px-5 py-3 text-[13px]">
                           <code className="text-cream">{s.name}</code>
-                          <Badge tone="lime">your value</Badge>
+                          <Badge tone="info">your value</Badge>
                         </li>
                       ))}
                     </ul>
@@ -648,7 +894,7 @@ export function ConfigureView({
                   )}
                   <p className="px-5 py-3 text-[12px] leading-5 text-muted">
                     your values are encrypted (sealed box) before upload; they never leave your machine in
-                    the clear. mountabo also sets the server connection automatically, you do not manage it
+                    the clear. berth also sets the server connection automatically, you do not manage it
                     here.
                   </p>
                 </div>
@@ -673,8 +919,8 @@ function Section({ label, hint, children }: { label: string; hint?: string; chil
   return (
     <div className="mt-8">
       <div className="mb-2.5 flex items-center justify-between">
-        <span className="label">{label}</span>
-        {hint && <span className="text-[11px] text-muted">{hint}</span>}
+        <span className="text-[13px] font-medium text-cream first-letter:uppercase">{label}</span>
+        {hint && <span className="text-[12px] text-muted first-letter:uppercase">{hint}</span>}
       </div>
       {children}
     </div>
@@ -696,10 +942,10 @@ function PreviewTab({ active, onClick, children }: { active: boolean; onClick: (
 
 function Code({ path, body }: { path: string; body: string }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-line bg-surface">
+    <div className="overflow-hidden rounded-lg border border-line bg-surface">
       <div className="flex items-center justify-between border-b border-line px-4 py-2.5 text-[12px]">
         <code className="text-muted">{path}</code>
-        <Badge tone="lime">will write</Badge>
+        <Badge tone="info">will write</Badge>
       </div>
       <pre className="max-h-[68vh] overflow-auto px-4 py-4 text-[12px] leading-[1.7] text-body">
         <code>{body}</code>
@@ -707,3 +953,10 @@ function Code({ path, body }: { path: string; body: string }) {
     </div>
   );
 }
+
+type RepoTargets = {
+  clientId: string;
+  clientName: string;
+  permission: string;
+  targets: { environment: string; serverId: string; source: string }[];
+};

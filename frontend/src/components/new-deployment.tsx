@@ -1,51 +1,54 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Badge } from "@/components/badge";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Badge, type Tone } from "@/components/badge";
 import { ServerAvatar } from "@/components/server-avatar";
 import {
   ArrowRight,
   Branch,
+  ChevronRight,
   Docker,
   GithubMark,
   Lock,
   Plus,
   Refresh,
   Search,
-  Shield,
   Trash,
 } from "@/components/icons";
 import { AddServerForm } from "@/components/add-server-form";
 import { OwnerDropdown } from "@/components/owner-dropdown";
 import { ServerOptions } from "@/components/server-options";
 import { ServerDomains, type DomainFormValue } from "@/components/server-domains";
-import { ServerSelect } from "@/components/server-select";
+import { TargetSelect, type Pick } from "@/components/target-select";
 import { StreamLog } from "@/components/stream-log";
 import { ConfirmAction } from "@/components/confirm-action";
 import type { Source } from "@/lib/data";
 import { clearCachedRepos, fetchRepos, readCachedRepos, writeCachedRepos } from "@/lib/repo-cache";
-import { type DomainPreview, fetchDomainPreview } from "@/lib/domain-preview";
+import { type DomainPreview, fetchDomainPreview, formatDomainPreview } from "@/lib/domain-preview";
 import type { Domain, ServerStatus, ServerView, SetupOption } from "@/lib/servers";
 
-const statusTone: Record<ServerStatus, "blue" | "lime" | "gray" | "red"> = {
-  ready: "blue",
-  setting_up: "lime",
-  probed: "gray",
-  failed: "red",
+const statusTone: Record<ServerStatus, Tone> = {
+  ready: "ok",
+  setting_up: "warn",
+  probed: "neutral",
+  failed: "err",
 };
 
+// NewDeployment is two pages over one body of state: "repos" picks a source and
+// a server to deploy to, "servers" lists the servers and, for admins, manages
+// them (add, set up, harden, domains, remove). Developers only read servers.
 export function NewDeployment({
   servers,
   account,
-  stamp,
+  mode,
+  isAdmin,
 }: {
   servers: ServerView[];
   account: string | null;
-  stamp: string;
+  mode: "repos" | "servers";
+  isAdmin: boolean;
 }) {
-  const router = useRouter();
   // Repositories load in the browser from a 12 hour localStorage cache (keyed by
   // account), falling back to /api/repos on a miss. reposReady gates the empty
   // state so the list shows "loading" instead of "no repositories" while fetching.
@@ -57,8 +60,11 @@ export function NewDeployment({
   const [query, setQuery] = useState("");
   const [source, setSource] = useState<string | null>(null);
   const [server, setServer] = useState<string | null>(null);
+  // Where the picked source deploys: an environment (its server follows from
+  // the access rules) or, for admins, any ready server.
+  const [pick, setPick] = useState<Pick | null>(null);
   const [serverList, setServerList] = useState<ServerView[]>(servers);
-  const [view, setView] = useState<"repos" | "servers">("repos");
+  const view = mode;
   const [ownerFilter, setOwnerFilter] = useState<string | null>(null);
   const [visibility, setVisibility] = useState<"all" | "public" | "private">("all");
   const [container, setContainer] = useState<"all" | "compose" | "docker" | "none">("all");
@@ -96,6 +102,9 @@ export function NewDeployment({
   // Removing a domain needs no preview.
   const [previewState, setPreviewState] = useState<{ host: string; data: DomainPreview | null } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ServerView | null>(null);
+  // Switching a server's reverse proxy: confirm first, then stream the switch.
+  const [confirmProxy, setConfirmProxy] = useState<{ server: ServerView; to: "nginx" | "traefik" } | null>(null);
+  const [proxyTarget, setProxyTarget] = useState<{ server: ServerView; to: "nginx" | "traefik" } | null>(null);
 
   function setServerStatus(id: string, status: ServerStatus) {
     setServerList((prev) => prev.map((s) => (s.id === id ? { ...s, status } : s)));
@@ -148,7 +157,7 @@ export function NewDeployment({
     );
   }
 
-  // Removes the server: destroys its keychain secrets (mountabo key + any
+  // Removes the server: destroys its keychain secrets (berth key + any
   // retained root password) on the backend, then drops it from the list. Only
   // ever called from the confirmation gate. Clears the selection if it was this
   // server so the deploy bar doesn't point at a server that no longer exists.
@@ -259,7 +268,7 @@ export function NewDeployment({
     if (!confirmDomain || confirmDomain.mode !== "add") return;
     const host = confirmDomain.value.host;
     const ctrl = new AbortController();
-    fetchDomainPreview(confirmDomain.value, ctrl.signal)
+    fetchDomainPreview(confirmDomain.value, confirmDomain.server.id, ctrl.signal)
       .then((res) => {
         if (!ctrl.signal.aborted) setPreviewState({ host, data: "error" in res ? null : res });
       })
@@ -275,24 +284,18 @@ export function NewDeployment({
   const domainPreview = addHost !== null && previewState?.host === addHost ? previewState.data : null;
   const domainPreviewLoading = addHost !== null && previewState?.host !== addHost;
 
-  // ⌘K / ctrl-K focuses the palette; Enter continues when both are picked.
+  // ⌘K / ctrl-K or "/" focuses the filter.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      const typing = e.target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+      if (((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") || (e.key === "/" && !typing)) {
         e.preventDefault();
         searchRef.current?.focus();
-      }
-      if (e.key === "Enter" && source && server && document.activeElement !== searchRef.current) {
-        const picked = sources.find((s) => `${s.owner}/${s.name}` === source);
-        const branch = picked?.branch ?? "";
-        router.push(
-          `/configure?repo=${encodeURIComponent(source)}&branch=${encodeURIComponent(branch)}&server=${server}`,
-        );
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [source, server, sources, router]);
+  }, []);
 
   const q = query.trim().toLowerCase();
   // Distinct repo owners (account + organizations) for the owner dropdown.
@@ -320,8 +323,7 @@ export function NewDeployment({
     [serverList, q],
   );
 
-  const readyServers = serverList.filter((s) => s.status === "ready");
-  const ready = Boolean(source && server);
+  const ready = Boolean(source && pick);
   // Branch comes from the picked source so the configure page does not need to
   // fetch the full repo listing again just to find it. Without it the configure
   // page would hit the slowest call in the app on every navigation.
@@ -329,64 +331,36 @@ export function NewDeployment({
     () => sources.find((s) => `${s.owner}/${s.name}` === source)?.branch ?? "",
     [sources, source],
   );
-  const configureHref = ready
-    ? `/configure?repo=${encodeURIComponent(source as string)}&branch=${encodeURIComponent(pickedBranch)}&server=${server}`
-    : "#";
+  const configureHref =
+    ready && pick
+      ? `/configure?repo=${encodeURIComponent(source as string)}&branch=${encodeURIComponent(pickedBranch)}&server=${encodeURIComponent(pick.serverId)}${
+          pick.environment ? `&environment=${encodeURIComponent(pick.environment)}` : ""
+        }`
+      : "#";
 
   return (
     <>
-    <main className="mx-auto flex w-full max-w-[1100px] flex-1 flex-col px-4 pb-10 pt-10 sm:px-6 sm:pt-16 lg:px-8">
-      {/* hero */}
-      <div className="rise">
-        <p className="label">
-          new deployment · {stamp}
-        </p>
-        <h1 className="mt-6 text-4xl font-extrabold leading-[1.02] tracking-tight text-cream sm:text-5xl sm:leading-[0.98] lg:text-6xl">
-          deploy something
-          <br />
-          of your <span className="italic text-lime">own</span> by{" "}
-          <span className="italic text-lime">yourself.</span>
-        </h1>
-        <p className="mt-6 max-w-2xl text-[16px] leading-8 text-body">
-          Vercel Style Frontend for your VPS. pick a source, point it at a server. mountabo writes{" "}
-          <span className="text-cream">.github/workflows/mountabo-deploy.yml</span> (or a local
-          script) and steps out of the way. no middleman, no surprises, nothing leaves your machine.
-        </p>
-      </div>
-
-      {/* command palette */}
-      <div className="rise mt-10" style={{ animationDelay: "70ms" }}>
-        <label className="flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3.5 transition-colors focus-within:border-line-strong">
-          <Search className="text-muted" />
-          <input
-            ref={searchRef}
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setPage(0);
-            }}
-            placeholder="filter sources and servers, or jump anywhere…"
-            className="flex-1 bg-transparent text-[14px] text-cream placeholder:text-muted focus:outline-none"
-          />
-          <kbd className="rounded-md border border-line bg-surface-2 px-2 py-0.5 text-[11px] text-muted">⌘</kbd>
-          <kbd className="rounded-md border border-line bg-surface-2 px-2 py-0.5 text-[11px] text-muted">K</kbd>
-        </label>
-      </div>
-
-      {/* view tabs: repositories / servers, each full-width */}
-      <div className="rise mt-6 flex items-center gap-1" style={{ animationDelay: "120ms" }}>
-        <ViewTab active={view === "repos"} onClick={() => setView("repos")} count={filteredSources.length}>
-          repositories
-        </ViewTab>
-        <ViewTab active={view === "servers"} onClick={() => setView("servers")} count={serverList.length}>
-          servers
-        </ViewTab>
-      </div>
+    <div className="mt-6 flex flex-1 flex-col">
+      {/* filter */}
+      <label className="mb-4 flex items-center gap-2.5 rounded-md border border-line bg-surface px-3 py-2 transition-colors focus-within:border-line-strong">
+        <Search className="text-muted" />
+        <input
+          ref={searchRef}
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setPage(0);
+          }}
+          placeholder={view === "repos" ? "Filter repositories…" : "Filter servers…"}
+          className="flex-1 bg-transparent text-[13px] text-cream placeholder:text-muted focus:outline-none"
+        />
+        <kbd className="rounded border border-line bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted">/</kbd>
+      </label>
 
       {/* active view */}
-      <div className="rise mt-4 flex flex-1 flex-col" style={{ animationDelay: "140ms" }}>
+      <div className="flex flex-1 flex-col">
         {view === "repos" && (
-        <section className="flex flex-col rounded-xl border border-line bg-surface">
+        <section className="flex flex-col rounded-lg border border-line bg-surface">
           <div className="flex items-center justify-between border-b border-line px-5 py-4">
             <span className="flex items-center gap-2">
               <span className="label">sources</span>
@@ -405,7 +379,7 @@ export function NewDeployment({
               <button
                 onClick={refreshRepos}
                 disabled={refreshing || clearing || !account}
-                className="flex items-center gap-1.5 text-[12px] text-lime transition-colors hover:text-cream disabled:opacity-60"
+                className="flex items-center gap-1.5 text-[12px] text-cream transition-colors hover:text-cream disabled:opacity-60"
               >
                 <Refresh className={refreshing ? "animate-spin" : ""} /> {refreshing ? "refreshing…" : "refresh"}
               </button>
@@ -415,7 +389,7 @@ export function NewDeployment({
           <div className="flex items-center justify-between border-b border-line px-5 py-3 text-[13px]">
             <div className="flex items-center gap-2">
               <span className="flex items-center gap-2 rounded-md border border-line bg-surface-2 px-2.5 py-1.5 text-muted">
-                <GithubMark /> github
+                <GithubMark />{" "}github
               </span>
               <span className="text-faint">›</span>
               <OwnerDropdown
@@ -433,7 +407,7 @@ export function NewDeployment({
 
           <div className="flex flex-wrap items-center gap-x-8 gap-y-3 border-b border-line px-5 py-4">
             <span className="flex items-center gap-3">
-              <span className="text-[12px] font-medium uppercase tracking-wide text-muted">visibility</span>
+              <span className="text-[12px] font-medium text-muted">visibility</span>
               <FilterChips
                 value={visibility}
                 onChange={(v) => {
@@ -448,7 +422,7 @@ export function NewDeployment({
               />
             </span>
             <span className="flex items-center gap-3">
-              <span className="text-[12px] font-medium uppercase tracking-wide text-muted">container</span>
+              <span className="text-[12px] font-medium text-muted">container</span>
               <FilterChips
                 value={container}
                 onChange={(v) => {
@@ -473,7 +447,7 @@ export function NewDeployment({
                 <li
                   key={full}
                   className={`flex items-center gap-3 px-5 transition-colors ${
-                    active ? "bg-lime/[0.08]" : "hover:bg-surface-hover"
+                    active ? "bg-surface-hover" : "hover:bg-surface-hover"
                   }`}
                 >
                   <div className="min-w-0 flex-1 py-3.5">
@@ -482,7 +456,7 @@ export function NewDeployment({
                       target="_blank"
                       rel="noopener noreferrer"
                       title={`open ${full} on GitHub`}
-                      className="inline-flex items-center gap-2 text-[15px] font-medium text-cream transition-colors hover:text-lime hover:underline"
+                      className="inline-flex items-center gap-2 text-[15px] font-medium text-cream transition-colors hover:text-cream hover:underline"
                     >
                       {s.name}
                       {s.private && <Lock className="text-muted" />}
@@ -493,8 +467,8 @@ export function NewDeployment({
                       )}
                     </a>
                     <span className="mt-1 flex items-center gap-2 text-[12px] text-muted">
-                      <Branch className={s.branchAccent ? "text-lime" : "text-muted"} />
-                      <span className={s.branchAccent ? "text-lime" : ""}>{s.branch}</span>
+                      <Branch className={s.branchAccent ? "text-cream" : "text-muted"} />
+                      <span className={s.branchAccent ? "text-cream" : ""}>{s.branch}</span>
                       <span className="text-faint">·</span>
                       {s.updated}
                       <span className="text-faint">·</span>
@@ -505,19 +479,33 @@ export function NewDeployment({
                           {s.loc}
                         </>
                       )}
+                      {!s.hasDocker && (
+                        <>
+                          <span className="text-faint">·</span>
+                          <Link
+                            href={`/templates?repo=${encodeURIComponent(full)}&branch=${encodeURIComponent(s.branch)}`}
+                            className="text-blue hover:underline"
+                          >
+                            Add Docker setup
+                          </Link>
+                        </>
+                      )}
                     </span>
                   </div>
                   <button
-                    onClick={() => setSource(full)}
+                    onClick={() => {
+                      setSource(full);
+                      setPick(null);
+                    }}
                     className={`flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-1.5 text-[12px] transition-colors ${
                       active
-                        ? "border-lime/60 bg-lime/[0.08] text-lime"
-                        : "border-line text-muted hover:border-lime/50 hover:text-lime"
+                        ? "border-line-strong bg-surface-hover text-cream"
+                        : "border-line text-muted hover:border-line-strong hover:text-cream"
                     }`}
                   >
                     {active ? (
                       <>
-                        selected <ArrowRight className="text-lime" />
+                        selected <ArrowRight className="text-cream" />
                       </>
                     ) : (
                       "select"
@@ -530,9 +518,9 @@ export function NewDeployment({
               <li className="px-5 py-8 text-center text-[13px] text-muted">
                 {!account ? (
                   <>
-                    connect github to list your repositories.{" "}
-                    <Link href="/connect" className="text-lime hover:text-cream">
-                      connect →
+                    sign in to list your repositories.{" "}
+                    <Link href="/login" className="text-cream hover:text-cream">
+                      sign in →
                     </Link>
                   </>
                 ) : !reposReady ? (
@@ -540,7 +528,10 @@ export function NewDeployment({
                 ) : q ? (
                   <>no sources match “{query}”.</>
                 ) : (
-                  <>no repositories found.</>
+                  <>
+                    no repositories yet. you see the repos you can reach on GitHub that berth is installed on;
+                    ask an admin if one is missing.
+                  </>
                 )}
               </li>
             )}
@@ -571,7 +562,7 @@ export function NewDeployment({
         )}
 
         {view === "servers" && (
-        <section className="flex flex-col rounded-xl border border-line bg-surface">
+        <section className="flex flex-col rounded-lg border border-line bg-surface">
           <div className="flex items-center justify-between border-b border-line px-5 py-4">
             <span className="flex items-center gap-2">
               <span className="label">servers</span>
@@ -589,11 +580,18 @@ export function NewDeployment({
                 <li
                   key={s.id}
                   className={`rounded-lg border bg-surface-2 transition-colors ${
-                    active ? "border-lime/60" : "border-line hover:border-line-strong"
+                    active ? "border-line-strong" : "border-line hover:border-line-strong"
                   }`}
                 >
                   <div className="flex items-center gap-4 px-4 py-3.5">
-                    <button onClick={() => setServer(s.id)} className="flex flex-1 items-center gap-4 text-left">
+                    <button
+                      onClick={() => setServer(active ? null : s.id)}
+                      aria-expanded={active}
+                      className="flex flex-1 items-center gap-4 text-left"
+                    >
+                      <ChevronRight
+                        className={`shrink-0 text-muted transition-transform ${active ? "rotate-90" : ""}`}
+                      />
                       <ServerAvatar seed={s.name} />
                       <div className="flex-1">
                         <span className="flex items-center gap-2.5 text-[15px] font-medium text-cream">
@@ -601,6 +599,7 @@ export function NewDeployment({
                           <Badge tone={statusTone[s.status]} dot>
                             {s.status.replace("_", " ")}
                           </Badge>
+                          {s.proxy === "traefik" && <Badge tone="info">traefik</Badge>}
                         </span>
                         <span className="mt-1 block text-[12px] text-muted">
                           {s.ip} · {s.specs.os || "unknown os"} · {s.specs.cpuCores || "-"} vcpu · {ramGB} ·{" "}
@@ -609,28 +608,33 @@ export function NewDeployment({
                       </div>
                     </button>
                     {s.status === "ready" ? (
-                      <span className="text-[12px] text-blue">✓ ready</span>
+                      <span className="text-[12px] text-ok">Ready</span>
+                    ) : !isAdmin ? (
+                      <span className="text-[12px] text-muted">{s.status === "setting_up" ? "Setting up" : "Not ready"}</span>
                     ) : (
                       <button
                         onClick={() => setConfirmSetup(s)}
                         disabled={s.status === "setting_up"}
-                        className="rounded-md border border-lime/40 px-3 py-1.5 text-[12px] text-lime transition-colors hover:bg-lime/10 disabled:opacity-50"
+                        className="rounded-md border border-line-strong px-3 py-1.5 text-[12px] text-cream transition-colors hover:bg-surface-hover disabled:opacity-50"
                       >
                         {s.status === "failed" ? "retry setup" : s.status === "setting_up" ? "setting up…" : "set up"}
                       </button>
                     )}
+                    {isAdmin && (
                     <button
                       onClick={() => setConfirmDelete(s)}
                       disabled={s.status === "setting_up"}
-                      title={`remove ${s.name} from mountabo`}
+                      title={`remove ${s.name} from berth`}
                       aria-label={`remove ${s.name}`}
-                      className="shrink-0 rounded-md border border-line px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:border-red-400/50 hover:text-red-300 disabled:opacity-50"
+                      className="shrink-0 rounded-md border border-line px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:border-err/50 hover:text-err disabled:opacity-50"
                     >
                       <Trash />
                     </button>
+                    )}
                   </div>
-                  {active && s.status === "ready" && (
+                  {isAdmin && active && s.status === "ready" && (
                     <>
+                      <ProxyPicker server={s} onSwitch={(to) => setConfirmProxy({ server: s, to })} />
                       <ServerDomains
                         key={`dom:${(s.domains ?? []).map((d) => d.host).join(",")}`}
                         server={s}
@@ -652,7 +656,7 @@ export function NewDeployment({
             {/* Adding a server needs its ip + root password (to bootstrap it).
                 Once a server is selected, that's irrelevant, deploys use its SSH
                 key, so the onboarding fields are hidden. */}
-            {!server && (
+            {isAdmin && !server && (
               <li>
                 {showAddServer ? (
                   <AddServerForm
@@ -665,9 +669,9 @@ export function NewDeployment({
                 ) : (
                   <button
                     onClick={() => setShowAddServer(true)}
-                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-line-strong px-4 py-4 text-[13px] text-muted transition-colors hover:border-lime/50 hover:text-cream"
+                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-line-strong px-4 py-4 text-[13px] text-muted transition-colors hover:border-line-strong hover:text-cream"
                   >
-                    <Plus /> add a server (ip + root password)
+                    <Plus />{" "}add a server (ip + root password)
                   </button>
                 )}
               </li>
@@ -679,45 +683,83 @@ export function NewDeployment({
 
       {/* deploy bar: pick a target server, then head to the deployment page */}
       {source && (
-        <div className="rise mt-5 flex flex-col gap-3 rounded-xl border border-lime/50 bg-lime/[0.06] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="sticky bottom-4 mt-5 flex flex-col gap-3 rounded-lg border border-line-strong bg-surface-2 px-4 py-3 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.6)] sm:flex-row sm:items-center sm:justify-between">
           <span className="flex min-w-0 items-center gap-2 text-[14px] text-cream">
-            <span className="shrink-0 text-lime">→ deploy</span>
+            <span className="shrink-0 text-muted">Deploy</span>
             <span className="truncate">{source}</span>
           </span>
           <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center">
-            <ServerSelect servers={readyServers} value={server} onChange={setServer} />
+            <TargetSelect key={source} repo={source} servers={serverList} isAdmin={isAdmin} value={pick} onChange={setPick} />
             <Link
               href={configureHref}
               aria-disabled={!ready}
               tabIndex={ready ? 0 : -1}
-              className={`flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-[13px] font-bold transition-transform sm:py-2 ${
+              className={`flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-[13px] font-semibold transition-opacity sm:py-2 ${
                 ready
-                  ? "cta-glow bg-lime-fill text-black hover:-translate-y-0.5"
+                  ? "bg-cream text-bg hover:opacity-90"
                   : "pointer-events-none border border-line text-muted opacity-50"
               }`}
             >
-              deploy <ArrowRight />
+              Continue <ArrowRight />
             </Link>
           </div>
         </div>
       )}
 
-      {/* footer */}
-      <div className="mt-8 flex flex-col gap-4 border-t border-line pt-5 sm:flex-row sm:items-center sm:justify-between">
-        <p className="flex items-center gap-2 text-[12px] text-muted">
-          <Shield className="text-faint" />
-          this stays on your machine. credentials live in your os keychain.
-        </p>
-        <div className="flex items-center gap-3 text-[12px]">
-          <button className="rounded-md border border-line px-3 py-2 text-muted transition-colors hover:border-line-strong hover:text-cream">
-            view cli command
-          </button>
-          <button className="rounded-md border border-line px-3 py-2 text-muted transition-colors hover:border-line-strong hover:text-cream">
-            import .yml
-          </button>
-        </div>
-      </div>
-    </main>
+    </div>
+
+    {confirmProxy && (
+      <ConfirmAction
+        title={`Switch ${confirmProxy.server.name} to ${confirmProxy.to === "traefik" ? "Traefik" : "nginx"}`}
+        subtitle={confirmProxy.server.ip}
+        summary={
+          <>
+            {confirmProxy.to === "traefik"
+              ? "Traefik replaces nginx in front of this server's domains. It runs as a container on ports 80 and 443 and issues its own Let's Encrypt certificates, so each domain must still point at this server."
+              : "nginx takes over this server's domains again. Traefik is stopped and each domain gets its nginx site and certificate back."}{" "}
+            {(confirmProxy.server.domains ?? []).length > 0
+              ? `${(confirmProxy.server.domains ?? []).length} domain(s) move across; expect a short blip while the proxy changes.`
+              : "The server has no domains yet."}
+          </>
+        }
+        steps={
+          confirmProxy.to === "traefik"
+            ? [
+                "stop and disable nginx so ports 80 and 443 are free",
+                "write /etc/mountabo/traefik/traefik.yml (entry points, Let's Encrypt resolver)",
+                "start the mountabo-traefik container (host network, restarts with the server)",
+                ...(confirmProxy.server.domains ?? []).map((d) => `route ${d.host} to 127.0.0.1:${d.upstream} and wait for its certificate`),
+              ]
+            : [
+                "stop and remove the mountabo-traefik container",
+                "re-enable nginx",
+                ...(confirmProxy.server.domains ?? []).map((d) => `write the nginx site for ${d.host} and obtain its certificate`),
+              ]
+        }
+        confirmLabel={`Switch to ${confirmProxy.to === "traefik" ? "Traefik" : "nginx"}`}
+        onConfirm={() => {
+          setProxyTarget(confirmProxy);
+          setConfirmProxy(null);
+        }}
+        onCancel={() => setConfirmProxy(null)}
+      />
+    )}
+
+    {proxyTarget && (
+      <StreamLog
+        title={`switching ${proxyTarget.server.name} to ${proxyTarget.to}`}
+        subtitle={proxyTarget.server.ip}
+        timezone={proxyTarget.server.timezone}
+        url={`/api/servers/${proxyTarget.server.id}/proxy?to=${proxyTarget.to}`}
+        onDone={(ok) => {
+          if (ok)
+            setServerList((list) =>
+              list.map((x) => (x.id === proxyTarget.server.id ? { ...x, proxy: proxyTarget.to } : x)),
+            );
+        }}
+        onClose={() => setProxyTarget(null)}
+      />
+    )}
 
     {setupTarget && (
       <StreamLog
@@ -772,19 +814,19 @@ export function NewDeployment({
         subtitle={confirmSetup.ip}
         summary={
           <>
-            mountabo will connect to <span className="text-cream">{confirmSetup.ip}</span> as root once
+            berth will connect to <span className="text-cream">{confirmSetup.ip}</span>{" "}as root once
             and prepare it for deployments. it creates an unprivileged{" "}
-            <span className="text-cream">mountabo</span> user, generates and installs a dedicated
-            ed25519 deploy key, and applies the base hardening. you can add or remove hardening later.
+            <span className="text-cream">berth</span>{" "}user, generates and installs a dedicated
+            ed25519 SSH key, and applies the base hardening. you can add or remove hardening later.
             nothing runs until you confirm.
           </>
         }
         steps={[
           "connect to the server as root over SSH using the password you provided",
-          "create the unprivileged mountabo user with sudo and a locked password",
-          "generate an ed25519 deploy key and install its public key for the mountabo user",
-          "store the private key in your OS keychain, never on the server beyond its authorized_keys",
-          "apply the base hardening and confirm mountabo can log in with the new key",
+          "create the unprivileged berth user with sudo and a locked password",
+          "generate an ed25519 SSH key and install its public key for the berth user",
+          "store the private key encrypted in Berth's vault; the server only gets the public half in authorized_keys",
+          "apply the base hardening and confirm berth can log in with the new key",
         ]}
         confirmLabel={confirmSetup.status === "failed" ? "retry setup" : "set up server"}
         onConfirm={() => {
@@ -806,10 +848,10 @@ export function NewDeployment({
           const removed = (confirmApply.server.options ?? []).filter((id) => !desired.has(id));
           return (
             <>
-              mountabo will connect to <span className="text-cream">{confirmApply.server.name}</span> as
-              the mountabo user (with sudo) and change its hardening:{" "}
+              berth will connect to <span className="text-cream">{confirmApply.server.name}</span>{" "}as
+              the berth user (with sudo) and change its hardening:{" "}
               {added.length > 0 && (
-                <span className="text-lime">install {added.map(optionName).join(", ")}</span>
+                <span className="text-cream">install {added.map(optionName).join(", ")}</span>
               )}
               {added.length > 0 && removed.length > 0 && ", "}
               {removed.length > 0 && (
@@ -825,7 +867,7 @@ export function NewDeployment({
           const desired = new Set(confirmApply.desired);
           const added = confirmApply.desired.filter((id) => !prev.has(id));
           const removed = (confirmApply.server.options ?? []).filter((id) => !desired.has(id));
-          const lines = ["connect to the server as the mountabo user over SSH (with sudo)"];
+          const lines = ["connect to the server as the berth user over SSH (with sudo)"];
           for (const id of added) lines.push(`install and enable: ${optionName(id)}`);
           for (const id of removed) lines.push(`disable and remove: ${optionName(id)}`);
           return lines;
@@ -845,10 +887,10 @@ export function NewDeployment({
         subtitle={confirmDomain.server.ip}
         summary={
           <>
-            mountabo will configure <span className="text-cream">{confirmDomain.server.name}</span> to
-            front <span className="text-cream">{confirmDomain.value.host}</span> on https, proxying to
+            berth will configure <span className="text-cream">{confirmDomain.server.name}</span>{" "}to
+            front <span className="text-cream">{confirmDomain.value.host}</span>{" "}on https, proxying to
             your app on port <span className="text-cream">{confirmDomain.value.upstream}</span>. it
-            installs nginx if needed, writes the vhost below, and obtains a Let&apos;s Encrypt
+            {confirmDomain.server.proxy === "traefik" ? "routes it through Traefik, which obtains" : "installs nginx if needed, writes the vhost below, and obtains"}{" "}a Let&apos;s Encrypt
             certificate over http, so the domain must already point at{" "}
             <span className="text-cream">{confirmDomain.server.ip}</span>. nothing runs until you
             confirm.
@@ -857,11 +899,11 @@ export function NewDeployment({
         loading={domainPreviewLoading}
         steps={
           domainPreview
-            ? `# ${domainPreview.sitePath} (http)\n${domainPreview.httpConfig}\n\n# ${domainPreview.sitePath} (https)\n${domainPreview.tlsConfig}\n\n# setup script\n${domainPreview.script}`
+            ? formatDomainPreview(domainPreview)
             : domainPreviewLoading
               ? undefined
               : [
-                  "connect to the server as the mountabo user over SSH (with sudo)",
+                  "connect to the server as the berth user over SSH (with sudo)",
                   "install nginx if it is not already present",
                   `write the nginx vhost for ${confirmDomain.value.host}`,
                   "obtain a Let's Encrypt certificate over http and enable https",
@@ -884,14 +926,14 @@ export function NewDeployment({
         destructive
         summary={
           <>
-            mountabo will stop fronting <span className="text-cream">{confirmDomain.host}</span> on{" "}
+            berth will stop fronting <span className="text-cream">{confirmDomain.host}</span> on{" "}
             <span className="text-cream">{confirmDomain.server.name}</span>: it removes the nginx vhost
             and its certificate, then reloads nginx. your app keeps running on its local port. nothing
             runs until you confirm.
           </>
         }
         steps={[
-          "connect to the server as the mountabo user over SSH (with sudo)",
+          "connect to the server as the berth user over SSH (with sudo)",
           `remove the nginx vhost for ${confirmDomain.host}`,
           "delete the Let's Encrypt certificate for the domain",
           "reload nginx so it stops serving the domain",
@@ -912,15 +954,15 @@ export function NewDeployment({
         destructive
         summary={
           <>
-            mountabo will remove <span className="text-cream">{confirmDelete.name}</span> from mountabo
-            and destroy its stored secrets. this revokes mountabo&apos;s access to the server. it does
+            berth will remove <span className="text-cream">{confirmDelete.name}</span>{" "}from berth
+            and destroy its stored secrets. this revokes berth&apos;s access to the server. it does
             not stop or delete anything already deployed on the server itself. this cannot be undone.
           </>
         }
         steps={[
-          "destroy the server's mountabo deploy key in your OS keychain",
-          "destroy any retained root password for the server in your OS keychain",
-          "delete the server from mountabo's records, along with its domains and history",
+          "delete the server's berth key from the vault",
+          "delete any retained root password for the server from the vault",
+          "delete the server from berth's records, along with its domains and history",
         ]}
         confirmLabel="remove server"
         onConfirm={() => {
@@ -984,7 +1026,7 @@ function FilterChips<T extends string>({
           onClick={() => onChange(o.v)}
           className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-colors ${
             value === o.v
-              ? "bg-lime/15 text-lime"
+              ? "bg-surface-hover text-cream"
               : "text-muted hover:bg-surface-2 hover:text-cream"
           }`}
         >
@@ -995,28 +1037,36 @@ function FilterChips<T extends string>({
   );
 }
 
-function ViewTab({
-  active,
-  onClick,
-  count,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  count: number;
-  children: ReactNode;
-}) {
+// ProxyPicker shows which reverse proxy fronts the server's domains and offers
+// the other one. Switching is confirmed first; it moves every domain across.
+function ProxyPicker({ server, onSwitch }: { server: ServerView; onSwitch: (to: "nginx" | "traefik") => void }) {
+  const current = server.proxy === "traefik" ? "traefik" : "nginx";
+  const options: { id: "nginx" | "traefik"; label: string; hint: string }[] = [
+    { id: "nginx", label: "nginx", hint: "default · certbot" },
+    { id: "traefik", label: "Traefik", hint: "optional · container, auto TLS" },
+  ];
   return (
-    <button
-      onClick={onClick}
-      className={`flex items-center gap-2 rounded-lg px-4 py-2 text-[13px] transition-colors ${
-        active ? "bg-surface-2 text-cream" : "text-muted hover:text-cream"
-      }`}
-    >
-      {children}
-      <span className="rounded border border-line px-1.5 py-0.5 text-[11px] text-muted">
-        {String(count).padStart(2, "0")}
-      </span>
-    </button>
+    <div className="flex flex-col gap-2 border-t border-line px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <p className="text-[13px] font-medium text-cream">Reverse proxy</p>
+        <p className="text-[12px] text-muted">What serves this server&apos;s domains over HTTPS.</p>
+      </div>
+      <div className="inline-flex rounded-md border border-line bg-surface p-0.5">
+        {options.map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            onClick={() => o.id !== current && onSwitch(o.id)}
+            aria-pressed={o.id === current}
+            title={o.hint}
+            className={`rounded px-3 py-1 text-[12px] font-medium transition-colors ${
+              o.id === current ? "bg-surface-hover text-cream" : "text-muted hover:text-cream"
+            }`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }

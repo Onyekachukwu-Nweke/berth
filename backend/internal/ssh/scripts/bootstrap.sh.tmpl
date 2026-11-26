@@ -16,6 +16,25 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 log() { echo "==> $*"; }
+# apt_update tolerates a broken third-party repository (a PPA that renamed
+# itself, a retired mirror): it accepts benign Label/Suite changes and, if some
+# repository still fails, carries on with the lists it could fetch instead of
+# aborting. Package installs below fail loudly on their own if that matters.
+apt_update() {
+  if ! apt-get update -y -o Acquire::AllowReleaseInfoChange::Label=true -o Acquire::AllowReleaseInfoChange::Suite=true; then
+    log "warning: apt-get update reported errors (often a broken or retired third-party repository); continuing with the package lists it could fetch"
+  fi
+}
+
+# A server that already runs services (anything listening besides sshd and the
+# systemd-resolved DNS stub, matched by process so a custom SSH port counts) is set up gently: no system upgrade, which would restart
+# what's serving traffic, and no timezone change, which would shift its cron
+# jobs and logs. A fresh server gets the full treatment.
+IN_USE=0
+if ss -Hltnp 2>/dev/null | grep -vE '"(sshd|systemd-resolve)"' | grep -q .; then
+  IN_USE=1
+  log "this server already runs services; setup will leave them, its packages and its timezone alone"
+fi
 
 log "creating user {{.User}}"
 if ! id -u {{.User}} >/dev/null 2>&1; then
@@ -35,21 +54,72 @@ chown {{.User}}:{{.User}} /home/{{.User}}/.ssh/authorized_keys
 chmod 600 /home/{{.User}}/.ssh/authorized_keys
 
 log "updating package lists"
-apt-get update -y
+apt_update
 
-log "upgrading system (this can take several minutes)"
-apt-get upgrade -y
+if [ "$IN_USE" = 0 ]; then
+  log "upgrading system (this can take several minutes)"
+  apt-get upgrade -y
+else
+  log "skipping the system upgrade (existing services); turn on automatic security updates under hardening if you want them"
+fi
 
 log "installing base packages"
-apt-get install -y curl ca-certificates
+# flock and jq are required, not optional:
+#   flock serializes every operation on a deployment (deploy, rollback, hooks,
+#     teardown) on the box itself. It is the only thing that can serialize a
+#     push-triggered Actions run against an SSH-direct operation mountabo starts,
+#     because those two never see each other's locks. Proceeding without it would
+#     silently drop the guarantee at exactly the moment it matters.
+#   jq reads the deployment's state document, which decides whether a run is
+#     allowed to proceed at all.
+# Both ship in util-linux/jq on Debian and Ubuntu.
+apt-get install -y curl ca-certificates util-linux jq
 
-log "setting timezone to {{.Timezone}}"
-timedatectl set-timezone '{{.Timezone}}'
+if [ "$IN_USE" = 0 ]; then
+  log "setting timezone to {{.Timezone}}"
+  timedatectl set-timezone '{{.Timezone}}'
+else
+  log "keeping the server's timezone ($(timedatectl show -p Timezone --value 2>/dev/null || echo unknown))"
+fi
 
 log "installing docker"
-curl -fsSL https://get.docker.com | sh
+# get.docker.com re-runs its whole install (and can rewrite the apt repo config)
+# even when docker already exists, printing a warning and pausing. On a server
+# that already has docker that is wasted work and a source of repo churn, so only
+# run the installer when docker is actually missing.
+if command -v docker >/dev/null 2>&1; then
+  log "docker already installed ($(docker --version 2>/dev/null || echo 'version unknown')); skipping install"
+else
+  curl -fsSL https://get.docker.com | sh
+fi
+
+# Let {{.User}} reach the docker daemon without sudo. Ensure the group exists
+# first, since a pre-existing docker install might not have created it.
+getent group docker >/dev/null 2>&1 || groupadd docker
 usermod -aG docker {{.User}}
-apt-get install -y docker-compose-plugin
+
+# Ensure the compose v2 plugin ("docker compose") is available; skip when it
+# already works, e.g. a server already moved off the legacy docker-compose v1.
+if docker compose version >/dev/null 2>&1; then
+  log "docker compose plugin already present; skipping"
+else
+  log "installing docker compose plugin"
+  apt-get install -y docker-compose-plugin
+fi
+
+log "verifying required tooling"
+# Fail closed. A server missing either of these cannot run a deploy safely, and
+# finding that out here — with a clear message — beats finding out mid-deploy on
+# a half-applied stack.
+for tool in flock jq; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "ERROR: $tool is required but could not be installed." >&2
+    echo "       mountabo uses flock to serialize deploys and jq to read deployment state." >&2
+    echo "       Install it manually (apt-get install -y util-linux jq) and run setup again." >&2
+    exit 1
+  fi
+done
+log "flock and jq present"
 
 log "verifying docker"
 docker --version

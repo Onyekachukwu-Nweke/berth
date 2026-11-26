@@ -12,32 +12,32 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // ServersHandler serves the add-server, list, live-setup, port-check,
 // host-metrics, app-logs, and monitoring-dashboard endpoints.
 type ServersHandler struct {
-	svc       *usecase.ServerService
-	ports     *usecase.ServerPortService
-	metrics   *usecase.ServerMetricsService
-	logs      *usecase.ServerLogsService
-	dashboard *usecase.ServerDashboardService
-	ukAdmin   *usecase.UptimeKumaAdminService
-	log       *slog.Logger
+	svc     *usecase.ServerService
+	ports   *usecase.ServerPortService
+	metrics *usecase.ServerMetricsService
+	logs    *usecase.ServerLogsService
+	ukAdmin *usecase.UptimeKumaAdminService
+	access  *usecase.AccessService
+	log     *slog.Logger
 }
 
 // NewServersHandler wires the handler to the server service, the port-check,
 // metrics, logs, dashboard-proxy, and uptime kuma admin services, and a logger.
-func NewServersHandler(svc *usecase.ServerService, ports *usecase.ServerPortService, metrics *usecase.ServerMetricsService, logs *usecase.ServerLogsService, dashboard *usecase.ServerDashboardService, ukAdmin *usecase.UptimeKumaAdminService, log *slog.Logger) *ServersHandler {
+func NewServersHandler(svc *usecase.ServerService, ports *usecase.ServerPortService, metrics *usecase.ServerMetricsService, logs *usecase.ServerLogsService, ukAdmin *usecase.UptimeKumaAdminService, access *usecase.AccessService, log *slog.Logger) *ServersHandler {
 	return &ServersHandler{
-		svc:       svc,
-		ports:     ports,
-		metrics:   metrics,
-		logs:      logs,
-		dashboard: dashboard,
-		ukAdmin:   ukAdmin,
-		log:       log,
+		svc:     svc,
+		ports:   ports,
+		metrics: metrics,
+		logs:    logs,
+		ukAdmin: ukAdmin,
+		access:  access,
+		log:     log,
 	}
 }
 
@@ -64,7 +64,7 @@ func (h *ServersHandler) UptimeKumaAdmin(w nethttp.ResponseWriter, r *nethttp.Re
 }
 
 // ResetUptimeKumaAdmin generates a fresh admin user, seeds it into Uptime Kuma's
-// SQLite from inside the container, persists it in the keychain, and returns
+// SQLite from inside the container, persists it in the vault, and returns
 // the credentials so the panel can reveal them.
 func (h *ServersHandler) ResetUptimeKumaAdmin(w nethttp.ResponseWriter, r *nethttp.Request) {
 	id := r.PathValue("id")
@@ -131,44 +131,13 @@ func (h *ServersHandler) Logs(w nethttp.ResponseWriter, r *nethttp.Request) {
 	h.writeJSON(w, nethttp.StatusOK, map[string][]string{"lines": lines})
 }
 
-// OpenDashboard opens an SSH local port-forward tunnel to a server's loopback
-// monitoring dashboard (Uptime Kuma) and returns the local URL the operator's
-// browser loads directly: {"url":"http://127.0.0.1:<port>/"}. The tunnel binds
-// to this machine's loopback only and forwards raw TCP over the server's SSH
-// connection, so the dashboard's HTTP and websockets work and it is served at
-// the root of the local port. Only the known tools are allowed, and only when
-// that tool is in the server's applied options; everything else is 404. A failed
-// SSH tunnel is 502. It is read access only; the tunnel just forwards to the
-// existing tool.
-func (h *ServersHandler) OpenDashboard(w nethttp.ResponseWriter, r *nethttp.Request) {
-	id := r.PathValue("id")
-	tool := r.PathValue("tool")
-
-	url, err := h.dashboard.Open(r.Context(), id, tool)
-	switch {
-	case errors.Is(err, usecase.ErrServerNotFound):
-		h.writeError(w, nethttp.StatusNotFound, "server not found")
-		return
-	case errors.Is(err, usecase.ErrUnknownTool):
-		h.writeError(w, nethttp.StatusNotFound, "unknown monitoring tool")
-		return
-	case errors.Is(err, usecase.ErrToolNotInstalled):
-		h.writeError(w, nethttp.StatusNotFound, "that monitoring tool is not installed on this server")
-		return
-	case err != nil:
-		h.log.Error("open dashboard tunnel failed", "id", id, "tool", tool, "err", err)
-		h.writeError(w, nethttp.StatusBadGateway, "could not open the dashboard tunnel over ssh")
-		return
-	}
-	h.writeJSON(w, nethttp.StatusOK, map[string]string{"url": url})
-}
-
 // Ports reports the ports already listening on a server so the configure UI can
-// flag a deploy port that would collide. The port stays editable; mountabo
+// flag a deploy port that would collide. The port stays editable; berth
 // never changes it.
 func (h *ServersHandler) Ports(w nethttp.ResponseWriter, r *nethttp.Request) {
 	id := r.PathValue("id")
-	ports, err := h.ports.Listening(r.Context(), id)
+	q := r.URL.Query()
+	view, err := h.ports.Ports(r.Context(), id, q.Get("owner"), q.Get("repo"), q.Get("environment"))
 	if errors.Is(err, usecase.ErrServerNotFound) {
 		h.writeError(w, nethttp.StatusNotFound, "server not found")
 		return
@@ -178,7 +147,7 @@ func (h *ServersHandler) Ports(w nethttp.ResponseWriter, r *nethttp.Request) {
 		h.writeError(w, nethttp.StatusBadGateway, "could not check server ports")
 		return
 	}
-	h.writeJSON(w, nethttp.StatusOK, map[string][]int{"listening": ports})
+	h.writeJSON(w, nethttp.StatusOK, view)
 }
 
 type addServerRequest struct {
@@ -191,7 +160,7 @@ type addServerRequest struct {
 }
 
 // Add probes a server over SSH with the root password and records it. The root
-// password is consumed here and stored only in the keychain, never echoed back.
+// password is consumed here and stored only in the vault, never echoed back.
 func (h *ServersHandler) Add(w nethttp.ResponseWriter, r *nethttp.Request) {
 	var req addServerRequest
 	if err := decodeJSON(w, r, &req); err != nil {
@@ -226,8 +195,12 @@ func (h *ServersHandler) Options(w nethttp.ResponseWriter, _ *nethttp.Request) {
 }
 
 // List returns all added servers (without secrets).
-func (h *ServersHandler) List(w nethttp.ResponseWriter, _ *nethttp.Request) {
+func (h *ServersHandler) List(w nethttp.ResponseWriter, r *nethttp.Request) {
 	servers, err := h.svc.List()
+	if err == nil {
+		u, _ := usecase.UserFrom(r.Context())
+		servers, err = h.access.VisibleServers(u, servers)
+	}
 	if err != nil {
 		h.log.Error("list servers failed", "err", err)
 		h.writeError(w, nethttp.StatusInternalServerError, "could not list servers")
@@ -296,10 +269,11 @@ func domainInput(r *nethttp.Request) usecase.DomainInput {
 	return in
 }
 
-// DomainsPreview renders the nginx config and setup script for a domain without
+// DomainsPreview renders the proxy config and setup script for a domain without
 // touching a server, so the UI can show exactly what configuring it would do.
+// ?server= picks which proxy (nginx or Traefik) the preview is for.
 func (h *ServersHandler) DomainsPreview(w nethttp.ResponseWriter, r *nethttp.Request) {
-	artifacts, err := h.svc.PreviewDomain(domainInput(r))
+	artifacts, err := h.svc.PreviewDomain(r.URL.Query().Get("server"), domainInput(r))
 	if err != nil {
 		h.writeError(w, nethttp.StatusBadRequest, err.Error())
 		return
@@ -324,6 +298,16 @@ func (h *ServersHandler) RemoveDomain(w nethttp.ResponseWriter, r *nethttp.Reque
 	host := r.URL.Query().Get("host")
 	streamSSE(w, h.log, "domain removed", func(out io.Writer) error {
 		return h.svc.RemoveDomain(r.Context(), id, host, out)
+	})
+}
+
+// SetProxy moves the server's domains to another reverse proxy (?to=nginx or
+// ?to=traefik), streaming the live log as SSE.
+func (h *ServersHandler) SetProxy(w nethttp.ResponseWriter, r *nethttp.Request) {
+	id := r.PathValue("id")
+	to := r.URL.Query().Get("to")
+	streamSSE(w, h.log, "proxy switched", func(out io.Writer) error {
+		return h.svc.SetProxy(r.Context(), id, to, out)
 	})
 }
 
@@ -361,9 +345,25 @@ func streamSSE(w nethttp.ResponseWriter, log *slog.Logger, successMsg string, ru
 	case errors.Is(err, usecase.ErrServerNotFound):
 		sw.event("error", "server not found")
 	case errors.Is(err, usecase.ErrNotConnected):
-		sw.event("error", "github not connected")
+		sw.event("error", "the berth GitHub App is not installed on this repository's account")
 	case errors.Is(err, usecase.ErrSetupInProgress):
 		sw.event("error", "another setup/apply is already running for this server")
+	case errors.Is(err, usecase.ErrDeployInProgress):
+		sw.event("error", "another deploy is already running for this app")
+	case errors.Is(err, usecase.ErrRunInProgress):
+		sw.event("error", "a deploy run is in flight for this deployment; wait for it or force the rollback")
+	case errors.Is(err, usecase.ErrArtifactNotRetained):
+		sw.event("error", "that release is no longer on the server; berth keeps the active release and the one before it")
+	case errors.Is(err, usecase.ErrNoPreviousRelease):
+		sw.event("error", "there is no earlier retained release to roll back to")
+	case errors.Is(err, usecase.ErrApprovalStale):
+		sw.event("error", "that approval is for a superseded release; review the current one and approve again")
+	case errors.Is(err, usecase.ErrDeploymentBlocked):
+		sw.event("error", "this deployment is blocked on an unresolved migration outcome; resolve it first")
+	case errors.Is(err, usecase.ErrDeploymentNotFound):
+		sw.event("error", "deployment not found")
+	case errors.Is(err, usecase.ErrLegacyDeployment):
+		sw.event("error", "this deployment predates release tracking; deploy once from configure first")
 	default:
 		log.Error("stream operation failed", "err", err)
 		// Surface the (secret-free) reason, then the terminal error event.
@@ -372,7 +372,7 @@ func streamSSE(w nethttp.ResponseWriter, log *slog.Logger, successMsg string, ru
 	}
 }
 
-// Delete removes a server and destroys its keychain secrets.
+// Delete removes a server and destroys its vault secrets.
 func (h *ServersHandler) Delete(w nethttp.ResponseWriter, r *nethttp.Request) {
 	id := r.PathValue("id")
 	if err := h.svc.Remove(id); err != nil {

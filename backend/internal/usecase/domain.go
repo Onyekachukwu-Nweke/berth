@@ -9,7 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goodylili/mountabo/internal/nginx"
+	"github.com/Onyekachukwu-Nweke/berth/internal/nginx"
+	"github.com/Onyekachukwu-Nweke/berth/internal/traefik"
 )
 
 // hostname matches a fully-qualified domain name (at least one dot, valid label
@@ -41,12 +42,16 @@ type DomainInput struct {
 }
 
 // DomainArtifacts is exactly what configuring a domain will write and run on the
-// server: the two nginx vhost configs, the setup script, and where the config
-// lives. Generated purely from a DomainInput so the UI can preview it.
+// server, generated purely from a DomainInput so the UI can preview it. For
+// nginx: the site file path, its HTTP and HTTPS vhosts, and the script. For
+// Traefik: the route file path and contents (HTTPConfig), the static config
+// (TLSConfig, at StaticPath), and the script.
 type DomainArtifacts struct {
+	Proxy      string `json:"proxy"`
 	SitePath   string `json:"sitePath"`
 	HTTPConfig string `json:"httpConfig"`
 	TLSConfig  string `json:"tlsConfig"`
+	StaticPath string `json:"staticPath,omitempty"`
 	Script     string `json:"script"`
 }
 
@@ -106,6 +111,25 @@ func (in DomainInput) config() nginx.Config {
 	}
 }
 
+// traefikConfig maps a normalized DomainInput onto the Traefik generator's config.
+func (in DomainInput) traefikConfig() traefik.Config {
+	return traefik.Config{
+		Domain:   in.Host,
+		Aliases:  in.Aliases,
+		Upstream: in.Upstream,
+		Email:    in.Email,
+		Staging:  in.Staging,
+	}
+}
+
+// domainScript is the script that serves in on a server behind proxy.
+func domainScript(proxy string, in DomainInput) (string, error) {
+	if proxy == ProxyTraefik {
+		return traefik.Script(in.traefikConfig()), nil
+	}
+	return nginx.Script(in.config())
+}
+
 // toDomain records the input as a stored Domain (without the staging flag, which
 // only affects the one-off certbot run).
 func (in DomainInput) toDomain() Domain {
@@ -118,13 +142,30 @@ func (in DomainInput) toDomain() Domain {
 	}
 }
 
-// PreviewDomain renders the nginx config and setup script for a domain from the
-// input alone, no server, no SSH, no side effects, so the UI can show exactly
-// what configuring the domain would do.
-func (s *ServerService) PreviewDomain(in DomainInput) (DomainArtifacts, error) {
+// PreviewDomain renders what configuring a domain on server id would write and
+// run, from the input alone: no SSH, no side effects. The server only decides
+// which proxy the preview is for; an unknown id previews nginx.
+func (s *ServerService) PreviewDomain(id string, in DomainInput) (DomainArtifacts, error) {
 	in = in.normalize()
 	if err := validateDomain(in); err != nil {
 		return DomainArtifacts{}, err
+	}
+	proxy := ProxyNginx
+	if id != "" {
+		if server, err := s.store.Get(id); err == nil {
+			proxy = server.ProxyOf()
+		}
+	}
+	if proxy == ProxyTraefik {
+		c := in.traefikConfig()
+		return DomainArtifacts{
+			Proxy:      ProxyTraefik,
+			SitePath:   traefik.RoutePath(c),
+			HTTPConfig: traefik.Route(c),
+			TLSConfig:  traefik.Static(c.Email),
+			StaticPath: traefik.StaticPath,
+			Script:     traefik.Script(c),
+		}, nil
 	}
 	cfg := in.config()
 	httpConf, err := nginx.HTTPConfig(cfg)
@@ -140,6 +181,7 @@ func (s *ServerService) PreviewDomain(in DomainInput) (DomainArtifacts, error) {
 		return DomainArtifacts{}, err
 	}
 	return DomainArtifacts{
+		Proxy:      ProxyNginx,
 		SitePath:   nginx.SitePath(cfg),
 		HTTPConfig: httpConf,
 		TLSConfig:  tlsConf,
@@ -166,7 +208,7 @@ func (s *ServerService) AddDomain(ctx context.Context, id string, in DomainInput
 	}
 	defer s.unlock(id)
 
-	script, err := nginx.Script(in.config())
+	script, err := domainScript(server.ProxyOf(), in)
 	if err != nil {
 		return err
 	}
@@ -200,7 +242,11 @@ func (s *ServerService) RemoveDomain(ctx context.Context, id, host string, out i
 	defer s.unlock(id)
 
 	target := SSHTarget{Host: server.IP, Port: server.SSHPort, User: BootstrapUser, PrivateKey: key, Fingerprint: server.Fingerprint}
-	if runErr := s.runner.RunAsRoot(ctx, target, nginx.RemoveScript(nginx.Config{Domain: host}), out); runErr != nil {
+	script := nginx.RemoveScript(nginx.Config{Domain: host})
+	if server.ProxyOf() == ProxyTraefik {
+		script = traefik.RemoveScript(traefik.Config{Domain: host})
+	}
+	if runErr := s.runner.RunAsRoot(ctx, target, script, out); runErr != nil {
 		return fmt.Errorf("remove domain: %w", runErr)
 	}
 
@@ -211,8 +257,63 @@ func (s *ServerService) RemoveDomain(ctx context.Context, id, host string, out i
 	return nil
 }
 
+// SetProxy moves a ready server's domains to another reverse proxy, streaming
+// the log to out. To Traefik: nginx is stopped, Traefik started, and every
+// domain routed (Traefik issues fresh certificates). Back to nginx: Traefik is
+// stopped and each domain set up with nginx again. The server records the new
+// proxy only when every step succeeded, so a failed switch can be retried.
+func (s *ServerService) SetProxy(ctx context.Context, id, proxy string, out io.Writer) error {
+	if proxy != ProxyNginx && proxy != ProxyTraefik {
+		return fmt.Errorf("unknown proxy %q (use %q or %q)", proxy, ProxyNginx, ProxyTraefik)
+	}
+	server, key, err := s.lockReadyServer(id)
+	if err != nil {
+		return err
+	}
+	defer s.unlock(id)
+
+	if server.ProxyOf() == proxy {
+		progress(out, "%s already fronts %s; nothing to do", proxy, server.Name)
+		return nil
+	}
+
+	var script string
+	if proxy == ProxyTraefik {
+		configs := make([]traefik.Config, 0, len(server.Domains))
+		for _, d := range server.Domains {
+			configs = append(configs, traefik.Config{Domain: d.Host, Aliases: d.Aliases, Upstream: d.Upstream, Email: d.Email})
+		}
+		script = traefik.SwitchScript(configs)
+	} else {
+		var b strings.Builder
+		b.WriteString(traefik.StopScript())
+		for _, d := range server.Domains {
+			ns, err := nginx.Script(nginx.Config{Domain: d.Host, Aliases: d.Aliases, Upstream: d.Upstream, Email: d.Email})
+			if err != nil {
+				return err
+			}
+			// Each nginx script is a whole script; run them in subshells so
+			// one's `set -e` scope and variables don't leak into the next.
+			b.WriteString("\n(\n")
+			b.WriteString(ns)
+			b.WriteString("\n)\n")
+		}
+		script = b.String()
+	}
+
+	target := SSHTarget{Host: server.IP, Port: server.SSHPort, User: BootstrapUser, PrivateKey: key, Fingerprint: server.Fingerprint}
+	if runErr := s.runner.RunAsRoot(ctx, target, script, out); runErr != nil {
+		return fmt.Errorf("switch to %s: %w", proxy, runErr)
+	}
+	server.Proxy = proxy
+	if err := s.store.Save(server); err != nil {
+		return fmt.Errorf("save server: %w", err)
+	}
+	return nil
+}
+
 // lockReadyServer claims the per-server work lock, loads the server, checks it is
-// ready, and loads mountabo's key for the SSH connection. The caller must defer
+// ready, and loads berth's key for the SSH connection. The caller must defer
 // s.unlock(id). It mirrors the guard ApplyOptions uses so domain changes never
 // run concurrently with a bootstrap, an apply, or each other.
 func (s *ServerService) lockReadyServer(id string) (Server, string, error) {
@@ -236,7 +337,7 @@ func (s *ServerService) lockReadyServer(id string) (Server, string, error) {
 	key, err := s.vault.LoadSecret(privateKeyKey(id))
 	if err != nil {
 		s.unlock(id)
-		return Server{}, "", fmt.Errorf("load mountabo key: %w", err)
+		return Server{}, "", fmt.Errorf("load berth key: %w", err)
 	}
 	return server, key, nil
 }

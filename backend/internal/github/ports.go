@@ -9,14 +9,14 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 	gogithub "github.com/google/go-github/v88/github"
 	"gopkg.in/yaml.v3"
 )
 
 var _ usecase.PortDetector = (*Client)(nil)
 
-// composeNames are the Compose filenames mountabo looks for, in preference
+// composeNames are the Compose filenames berth looks for, in preference
 // order, when detecting a repo's ports. Matched case-insensitively.
 var composeNames = []string{
 	"docker-compose.yml",
@@ -116,7 +116,7 @@ func join(dir, name string) string {
 	return dir + "/" + name
 }
 
-// composeFile is the slice of a Compose document mountabo reads: each service's
+// composeFile is the slice of a Compose document berth reads: each service's
 // ports list. Items are kept as raw nodes so we can handle both the short
 // string form ("8080:80") and the long mapping form ({target, published}).
 type composeFile struct {
@@ -213,7 +213,7 @@ func splitPortSegments(s string) []string {
 }
 
 // buildPort assembles a ServicePort, detecting whether the host side is an
-// environment variable mountabo can set ("${PORT:-3000}") or a fixed literal.
+// environment variable berth can set ("${PORT:-3000}") or a fixed literal.
 func buildPort(service, host, container string) usecase.ServicePort {
 	sp := usecase.ServicePort{Service: service, Container: strings.TrimSpace(container)}
 	if envVar, def, ok := hostEnvVar(host); ok {

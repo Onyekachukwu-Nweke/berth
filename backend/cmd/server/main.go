@@ -1,4 +1,4 @@
-// Command server runs mountabo's local API: it composes the GitHub connection
+// Command server runs berth's local API: it composes the GitHub connection
 // flow and serves it over a loopback HTTP listener.
 package main
 
@@ -10,17 +10,15 @@ import (
 	nethttp "net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
-	httpadapter "github.com/goodylili/mountabo/internal/adapter/http"
-	"github.com/goodylili/mountabo/internal/adapter/repository"
-	"github.com/goodylili/mountabo/internal/ai"
-	"github.com/goodylili/mountabo/internal/config"
-	"github.com/goodylili/mountabo/internal/github"
-	"github.com/goodylili/mountabo/internal/keychain"
-	"github.com/goodylili/mountabo/internal/ssh"
-	"github.com/goodylili/mountabo/internal/usecase"
+	httpadapter "github.com/Onyekachukwu-Nweke/berth/internal/adapter/http"
+	"github.com/Onyekachukwu-Nweke/berth/internal/adapter/repository"
+	"github.com/Onyekachukwu-Nweke/berth/internal/ai"
+	"github.com/Onyekachukwu-Nweke/berth/internal/config"
+	"github.com/Onyekachukwu-Nweke/berth/internal/github"
+	"github.com/Onyekachukwu-Nweke/berth/internal/ssh"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 func main() {
@@ -32,98 +30,119 @@ func main() {
 
 func run() error {
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 	logger := slog.Default()
 
-	keyStore := keychain.NewStore()
-
-	// Compose the GitHub connection flow: OAuth exchange + account lookup + repo
-	// listing + port detection (all github) + token persistence (keychain),
-	// driven by the connector. One github.Client serves account, repo, and
-	// container-config reads.
-	ghClient := github.NewClient()
-	// The OAuth adapter exchanges authorization codes for the access token; the
-	// keychain store persists it, and every later GitHub request reads it back:
-	// repos, deploy keys, secrets, and workflows.
-	oauth := github.NewOAuth(cfg.GitHub.ClientID, cfg.GitHub.ClientSecret)
-	connector := usecase.NewGitHubConnector(
-		oauth,
-		ghClient,
-		ghClient,
-		ghClient,
-		keyStore,
-	)
-	// Repo tree listing (directory/file picker) reads on the user's behalf with
-	// the same keychain token.
-	treeSvc := usecase.NewTreeService(keyStore, ghClient)
-	// .env.example discovery: read the repo's example env file so the configure
-	// form can pre-fill the env var rows for the operator to fill in.
-	envExampleSvc := usecase.NewEnvExampleService(keyStore, ghClient)
-	// Run-step progress: read the latest deploy run's jobs + steps so the UI can
-	// show each GitHub Actions step's live status, with the same keychain token.
-	runStepsSvc := usecase.NewRunStepsService(keyStore, ghClient)
-	// Branches lister: the new-environment picker on the deployment card reads
-	// this so the operator chooses from the repo's real branches instead of
-	// typing a name.
-	branchesSvc := usecase.NewBranchesService(keyStore, ghClient)
-	githubHandler := httpadapter.NewGitHubHandler(connector, treeSvc, envExampleSvc, runStepsSvc, branchesSvc, logger)
-
-	// Compose the server flow: SSH probe + bootstrap + key generation (all ssh),
-	// JSON-file persistence, and keychain secrets. One ssh.Client serves probe,
-	// bootstrap, keygen, and port inspection.
-	sshClient := ssh.NewClient()
-	serverStore := repository.NewServerFile(filepath.Join(cfg.DataDir, "servers.json"))
-	serverSvc := usecase.NewServerService(serverStore, sshClient, sshClient, sshClient, sshClient, sshClient, sshClient, keyStore)
-	serverPortSvc := usecase.NewServerPortService(serverStore, keyStore, sshClient)
-	serverMetricsSvc := usecase.NewServerMetricsService(serverStore, keyStore, sshClient)
-	serverLogsSvc := usecase.NewServerLogsService(serverStore, keyStore, sshClient)
-	// The dashboard service opens SSH local port-forward tunnels to a server's
-	// loopback monitoring UI (Uptime Kuma) over the same ssh.Client, binding to
-	// this machine's loopback so the browser loads it directly. Tunnels are torn
-	// down on shutdown.
-	serverDashboardSvc := usecase.NewServerDashboardService(serverStore, keyStore, sshClient)
-	// Uptime Kuma has no public HTTP setup endpoint, so mountabo generates a
-	// fresh admin credential pair, seeds it into UK's SQLite from inside the
-	// container, and persists it in the keychain so the dashboard panel can
-	// surface it the next time the page loads.
-	uptimeKumaAdminSvc := usecase.NewUptimeKumaAdminService(serverStore, keyStore, sshClient)
-	defer func() { _ = serverDashboardSvc.Close() }()
-	serversHandler := httpadapter.NewServersHandler(serverSvc, serverPortSvc, serverMetricsSvc, serverLogsSvc, serverDashboardSvc, uptimeKumaAdminSvc, logger)
-
-	// Compose the deploy flow: commit the workflow + deploy.sh and provision the
-	// environment/secrets (all github), reading the server record (JSON store)
-	// and mountabo's stored key (keychain). One github.Client and keychain.Store
-	// already in hand serve these too.
-	//
-	// Deployments persist in SQLite (not JSON) so each deploy is tracked in an
-	// append-only event log queryable over time, not just upserted away.
-	db, err := repository.OpenSQLite(filepath.Join(cfg.DataDir, "mountabo.db"))
+	// All state lives in Postgres: servers, deployments and their release log,
+	// and the vault that seals the platform's own credentials (server SSH keys,
+	// deploy keys, users' GitHub tokens) under BERTH_MASTER_KEY.
+	db, err := repository.OpenPostgres(context.Background(), cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer func() { _ = db.Close() }()
+	keyStore, err := repository.NewVaultSQL(db, cfg.MasterKey)
+	if err != nil {
+		return fmt.Errorf("open vault: %w", err)
+	}
+
+	// Stores. Everything below reads and writes through these.
+	sshClient := ssh.NewClient()
+	serverStore := repository.NewServerSQL(db)
 	deploymentStore := repository.NewDeploymentSQL(db)
+	accessStore := repository.NewAccessSQL(db)
+
+	// GitHub, two ways. As the App: repo operations (deploy keys, Actions
+	// secrets, workflow commits) run on an installation token for the account
+	// that owns the repo. As the signed-in user: identity, and which repos they
+	// can reach, so GitHub stays the source of truth for repo access.
+	ghClient := github.NewClient()
+	app, err := github.NewApp(cfg.GitHub.AppID, cfg.GitHub.AppSlug, cfg.GitHub.AppPrivateKey)
+	if err != nil {
+		return fmt.Errorf("github app: %w", err)
+	}
+	oauth := github.NewOAuth(cfg.GitHub.ClientID, cfg.GitHub.ClientSecret)
+
+	// Who may do what: sessions resolve to users; access combines their GitHub
+	// repo permissions with the placement policy (clients, servers, rules).
+	accessSvc := usecase.NewAccessService(accessStore, serverStore, accessStore, deploymentStore, app)
+	authSvc := usecase.NewAuthService(oauth, ghClient, accessStore, accessStore, accessStore, keyStore, accessSvc, cfg.GitHub.Admins, logger)
+	guard := httpadapter.NewGuard(authSvc, accessSvc, logger)
+	authHandler := httpadapter.NewAuthHandler(authSvc, accessSvc, cfg.GitHub.ClientID, cfg.GitHub.AppSlug, logger)
+	adminHandler := httpadapter.NewAdminHandler(accessSvc, authSvc, app, logger)
+
+	// Repo reads: the person's repo list uses their own token; reads inside one
+	// repo (ports, tree, .env.example, run steps, branches) use the App.
+	connector := usecase.NewGitHubConnector(ghClient, ghClient, app, authSvc, accessSvc)
+	treeSvc := usecase.NewTreeService(app, ghClient)
+	envExampleSvc := usecase.NewEnvExampleService(app, ghClient)
+	runStepsSvc := usecase.NewRunStepsService(app, ghClient)
+	branchesSvc := usecase.NewBranchesService(app, ghClient)
+	githubHandler := httpadapter.NewGitHubHandler(connector, treeSvc, envExampleSvc, runStepsSvc, branchesSvc, usecase.NewRepoFileService(app, ghClient), logger)
+
+	// Compose the server flow: SSH probe + bootstrap + key generation (all ssh),
+	// JSON-file persistence, and vault secrets. One ssh.Client serves probe,
+	// bootstrap, keygen, and port inspection.
+	serverSvc := usecase.NewServerService(serverStore, sshClient, sshClient, sshClient, sshClient, sshClient, sshClient, keyStore)
+	serverPortSvc := usecase.NewServerPortService(serverStore, keyStore, sshClient, deploymentStore)
+	serverMetricsSvc := usecase.NewServerMetricsService(serverStore, keyStore, sshClient)
+	serverLogsSvc := usecase.NewServerLogsService(serverStore, keyStore, sshClient)
+	// Uptime Kuma has no public HTTP setup endpoint, so berth generates a
+	// fresh admin credential pair, seeds it into UK's SQLite from inside the
+	// container, and persists it in the vault so the dashboard panel can
+	// surface it the next time the page loads.
+	uptimeKumaAdminSvc := usecase.NewUptimeKumaAdminService(serverStore, keyStore, sshClient)
+	serversHandler := httpadapter.NewServersHandler(serverSvc, serverPortSvc, serverMetricsSvc, serverLogsSvc, uptimeKumaAdminSvc, accessSvc, logger)
+
+	// Compose the deploy flow: commit the workflow + deploy.sh and provision the
+	// environment/secrets (all github), reading the server record (JSON store)
+	// and berth's stored key (vault). One github.Client and vault.Store
+	// already in hand serve these too.
+	//
+	// Each deploy is tracked in an append-only event log, not just upserted away.
+	// Shared in-process deploy lock: the deploy path acquires it to serialize
+	// deploys per target; the monitor reads it to surface lock state and clears it
+	// for the "clear stuck lock" recovery action.
+	deployLocker := usecase.NewDeployLocker()
 	// The deploy flow also mints a per-repo read-only deploy key: ssh generates
 	// the keypair and installs the private half on the server; github registers
-	// the public half on the repo.
-	deploySvc := usecase.NewDeployService(serverStore, keyStore, keyStore, ghClient, ghClient, ghClient, deploymentStore, sshClient, ghClient, sshClient, ghClient)
+	// the public half on the repo. ghClient also dispatches workflow_dispatch so a
+	// secrets change can redeploy. Constructed before the secrets service, which
+	// re-applies deployments through it (as a DeployReapplier) on secret changes.
+	deploySvc := usecase.NewDeployService(serverStore, keyStore, app, ghClient, ghClient, ghClient, deploymentStore, ghClient, ghClient, ghClient, deployLocker)
 	deployHandler := httpadapter.NewDeployHandler(deploySvc, logger)
 
+	// The secrets service manages an environment's GitHub Actions secrets: GitHub
+	// is the single store — berth lists the configured names (+ updated times),
+	// sets values (write-only), and deletes secrets, but never reads a value back.
+	// On a change it re-applies the deployment (via deploySvc) so the running
+	// container picks it up.
+	secretsSvc := usecase.NewSecretsService(app, deploymentStore, ghClient, ghClient, ghClient, ghClient, deploySvc)
+	secretsHandler := httpadapter.NewSecretsHandler(secretsSvc, logger)
+
 	// Compose the monitor: configured deployments (SQLite store) enriched with
-	// their GitHub Actions runs (github), read with the keychain token, and the
+	// their GitHub Actions runs (github), read with the vault token, and the
 	// server store so each deployment can surface its live app URL. Deleting a
 	// deployment is a real teardown: ssh stops and removes the app's container(s)
-	// on its server (keychain key), github removes the committed deploy workflow +
-	// deploy.sh from the repo (keychain token), and the SQLite store then forgets
+	// on its server (vault key), github removes the committed deploy workflow +
+	// deploy.sh from the repo (vault token), and the SQLite store then forgets
 	// its tracking. Teardown is best-effort and logged.
-	monitorSvc := usecase.NewMonitorService(deploymentStore, deploymentStore, deploymentStore, keyStore, ghClient, serverStore, keyStore, sshClient, ghClient, ghClient, ghClient, logger)
+	monitorSvc := usecase.NewMonitorService(deploymentStore, deploymentStore, deploymentStore, app, ghClient, serverStore, keyStore, sshClient, ghClient, ghClient, ghClient, deploymentStore, deployLocker, logger)
+	// Rollback and redeploy run SSH-direct rather than through Actions: recovery
+	// should not depend on GitHub being reachable and a runner being free, which
+	// is exactly when you least want another moving part.
+	rollbackSvc := usecase.NewRollbackService(deploymentStore, serverStore, keyStore, app, ghClient, sshClient, sshClient, deployLocker, logger)
 	// App health: probe whether a deployed app is responding by curling it from
-	// its own server over SSH (the same ssh.Client + server store + keychain key
+	// its own server over SSH (the same ssh.Client + server store + vault key
 	// the metrics/logs services use), so the card shows real up/down status.
 	appHealthSvc := usecase.NewAppHealthService(deploymentStore, serverStore, keyStore, sshClient)
-	monitorHandler := httpadapter.NewMonitorHandler(monitorSvc, appHealthSvc, logger)
+	monitorHandler := httpadapter.NewMonitorHandler(monitorSvc, appHealthSvc, accessSvc, logger)
+	releaseHandler := httpadapter.NewReleaseHandler(rollbackSvc, logger)
 
 	// Compose the terminal page: run a single operator command on a set-up server
-	// over SSH (the same ssh.Client + server store + keychain key the read-only
+	// over SSH (the same ssh.Client + server store + vault key the read-only
 	// metrics/logs services use), and an AI command helper backed by Anthropic.
 	// The AI client reads ANTHROPIC_API_KEY from config; an empty key makes the
 	// helper return a structured "not configured" result instead of failing. The
@@ -133,7 +152,7 @@ func run() error {
 	aiCommandSvc := usecase.NewAICommandService(aiClient)
 	terminalHandler := httpadapter.NewTerminalHandler(serverExecSvc, aiCommandSvc, logger)
 
-	router := httpadapter.NewRouter(githubHandler, serversHandler, deployHandler, monitorHandler, terminalHandler)
+	router := httpadapter.NewRouter(guard, authHandler, adminHandler, githubHandler, serversHandler, deployHandler, monitorHandler, secretsHandler, releaseHandler, terminalHandler)
 	srv := httpadapter.NewServer(cfg, router)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

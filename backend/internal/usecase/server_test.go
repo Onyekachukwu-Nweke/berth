@@ -49,7 +49,7 @@ func (f *fakeRunner) RunAsRoot(_ context.Context, _ SSHTarget, script string, ou
 type fakeKeyMaker struct{}
 
 func (fakeKeyMaker) Generate(string) (string, string, error) {
-	return "PRIVATE-KEY-PEM", "ssh-ed25519 AAAA mountabo", nil
+	return "PRIVATE-KEY-PEM", "ssh-ed25519 AAAA berth", nil
 }
 
 type fakeLocalKeyProvider struct{ key string }
@@ -182,7 +182,7 @@ func TestSetup_StoresKeyAndKeepsRootPasswordForRecovery(t *testing.T) {
 		t.Error("root password should be kept after setup for break-glass recovery")
 	}
 	if vault.secrets[privateKeyKey(server.ID)] != "PRIVATE-KEY-PEM" {
-		t.Error("mountabo private key should be stored after setup")
+		t.Error("berth private key should be stored after setup")
 	}
 	got, _ := store.Get(server.ID)
 	if got.Status != StatusReady {
@@ -240,5 +240,31 @@ func TestRemove_DestroysAllSecrets(t *testing.T) {
 	}
 	if _, err := store.Get(server.ID); !errors.Is(err, ErrServerNotFound) {
 		t.Errorf("server should be gone, got err=%v", err)
+	}
+}
+
+// TestServerRemove_ClearsEveryCredentialItHolds guards against a leaked secret:
+// the uptime-kuma admin credential is created lazily, so it was easy to miss, and
+// leaving it behind keeps a credential in the keychain for a server that no
+// longer exists.
+func TestServerRemove_ClearsEveryCredentialItHolds(t *testing.T) {
+	store, vault := newMemServerStore(), newFakeVault()
+	if err := store.Save(Server{ID: "s1", Name: "box", IP: "10.0.0.1", Status: StatusReady}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	for _, key := range []string{privateKeyKey("s1"), rootPasswordKey("s1"), uptimeKumaAdminKey("s1")} {
+		if err := vault.SaveSecret(key, "value"); err != nil {
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
+
+	svc := NewServerService(store, fakeProber{}, fakeBootstrapper{}, &fakeApplier{}, &fakeRunner{}, fakeKeyMaker{}, fakeLocalKeyProvider{}, vault)
+	if err := svc.Remove("s1"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	for _, key := range []string{privateKeyKey("s1"), rootPasswordKey("s1"), uptimeKumaAdminKey("s1")} {
+		if v, err := vault.LoadSecret(key); err == nil && v != "" {
+			t.Errorf("%s survived the server removal", key)
+		}
 	}
 }

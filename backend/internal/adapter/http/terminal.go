@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	nethttp "net/http"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // TerminalHandler serves the terminal page's two endpoints: running a single

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { backendURL } from "@/lib/servers";
+import { backendFetch, backendURL } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
 
@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 // backend so the setup UI can present them for the operator to choose.
 export async function GET() {
   try {
-    const resp = await fetch(`${backendURL()}/api/servers/options`, { cache: "no-store" });
+    const resp = await backendFetch(`${backendURL()}/api/servers/options`, { cache: "no-store" });
     const body = await resp.text();
     return new NextResponse(body, { status: resp.status, headers: { "content-type": "application/json" } });
   } catch {

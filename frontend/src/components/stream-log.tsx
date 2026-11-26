@@ -137,7 +137,7 @@ export function StreamLog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3 sm:p-6">
-      <div className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-line bg-surface sm:max-h-[80vh]">
+      <div className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-line bg-surface sm:max-h-[80vh]">
         <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3 sm:px-5">
           <span className="flex min-w-0 items-center gap-2 text-[13px] text-cream">
             <span className="truncate">{title}</span>
@@ -166,7 +166,7 @@ export function StreamLog({
               <span className="shrink-0 text-faint">{l.at.toLocaleTimeString()}</span>
               <span
                 className={
-                  l.kind === "error" ? "text-red-300" : l.kind === "done" ? "text-lime" : "text-body"
+                  l.kind === "error" ? "text-err" : l.kind === "done" ? "text-cream" : "text-body"
                 }
               >
                 {l.kind === "done" ? "✓ " : l.kind === "error" ? "✗ " : ""}

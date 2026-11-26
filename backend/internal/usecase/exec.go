@@ -40,10 +40,10 @@ type ExecResult struct {
 }
 
 // ServerExecService runs an operator-supplied command on a set-up server,
-// connecting as the mountabo user with its stored key. It mirrors the read-only
+// connecting as the berth user with its stored key. It mirrors the read-only
 // metrics/logs services in shape, but this one runs whatever the operator typed:
 // it is the human, on their own authorised infrastructure, who is responsible
-// for the command. mountabo never originates or auto-runs a command here.
+// for the command. berth never originates or auto-runs a command here.
 type ServerExecService struct {
 	servers ServerStore
 	vault   SecretVault
@@ -61,12 +61,12 @@ func NewServerExecService(servers ServerStore, vault SecretVault, runner Command
 // as the very last line so the chance of a stray match is minimal.
 const execEndMarker = "__MOUNTABO_END__"
 
-// Exec runs command on the server as the mountabo user and returns its combined
+// Exec runs command on the server as the berth user and returns its combined
 // output, exit code, and the working directory the shell ended in. cwd is the
 // directory the command starts in: passing the previous response's Cwd makes
 // `cd` (and resolving relative paths) feel persistent across separate calls,
 // even though each call opens a new SSH session. An empty cwd starts in the
-// user's home. The server must be set up (the mountabo key exists). The
+// user's home. The server must be set up (the berth key exists). The
 // command is run under a bounded timeout and its output is capped.
 func (s *ServerExecService) Exec(ctx context.Context, id, command, cwd string) (ExecResult, error) {
 	command = strings.TrimSpace(command)

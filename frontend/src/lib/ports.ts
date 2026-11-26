@@ -1,6 +1,6 @@
-// DetectedPort is one published port mountabo found in a repo's container
+// DetectedPort is one published port berth found in a repo's container
 // config. When editable is true the host port is bound to an environment
-// variable (envVar) that mountabo can set at deploy time, and host carries its
+// variable (envVar) that berth can set at deploy time, and host carries its
 // default; otherwise the port is fixed in the file and shown read-only.
 export type DetectedPort = {
   service: string;

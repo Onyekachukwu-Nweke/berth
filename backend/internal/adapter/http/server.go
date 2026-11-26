@@ -1,4 +1,4 @@
-// Package http is mountabo's HTTP transport adapter: it builds the server,
+// Package http is berth's HTTP transport adapter: it builds the server,
 // routes, and handlers that expose the usecase layer over the local API. It
 // depends inward on internal/usecase and internal/config only.
 package http
@@ -7,7 +7,7 @@ import (
 	nethttp "net/http"
 	"time"
 
-	"github.com/goodylili/mountabo/internal/config"
+	"github.com/Onyekachukwu-Nweke/berth/internal/config"
 )
 
 // NewServer builds the local API server. Timeouts are set defensively even

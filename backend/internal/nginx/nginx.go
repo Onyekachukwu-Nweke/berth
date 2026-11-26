@@ -150,8 +150,12 @@ SITE=%q
 WEBROOT="/var/www/certbot"
 
 log "serving %s over HTTPS, proxying to localhost:%s"
-apt-get update -y
+# Tolerate a broken third-party repository instead of aborting on it.
+apt-get update -y -o Acquire::AllowReleaseInfoChange::Label=true -o Acquire::AllowReleaseInfoChange::Suite=true \
+  || log "warning: apt-get update reported errors; continuing with the package lists it could fetch"
 apt-get install -y nginx certbot
+# Re-enable nginx if the server was switched away to Traefik and back.
+systemctl enable --now nginx
 mkdir -p "$WEBROOT"
 
 `, c.primary(), SitePath(c), c.serverNames(), c.upstream())

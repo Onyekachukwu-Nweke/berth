@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { backendURL } from "@/lib/servers";
+import { backendFetch, backendURL } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
 
@@ -13,9 +13,9 @@ export async function GET(request: Request) {
 
   let resp: Response;
   try {
-    resp = await fetch(target, { cache: "no-store", signal: AbortSignal.timeout(15_000) });
+    resp = await backendFetch(target, { cache: "no-store", signal: AbortSignal.timeout(15_000) });
   } catch {
-    return NextResponse.json({ error: "couldn't reach the mountabo backend" }, { status: 502 });
+    return NextResponse.json({ error: "couldn't reach the berth backend" }, { status: 502 });
   }
   const body = await resp.text();
   return new NextResponse(body, {

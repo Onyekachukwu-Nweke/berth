@@ -1,6 +1,6 @@
-# Contributing to Mountabo
+# Contributing to Berth
 
-Thanks for thinking about pitching in. Mountabo is a local-first deployment tool: a Go backend and a Next.js frontend that ship apps from GitHub to your VPS through GitHub Actions. Contributions of any size are welcome, from a typo fix to a new monitoring tool.
+Thanks for thinking about pitching in. Berth is a local-first deployment tool: a Go backend and a Next.js frontend that ship apps from GitHub to your VPS through GitHub Actions. Contributions of any size are welcome, from a typo fix to a new monitoring tool.
 
 ## Ground rules
 
@@ -12,12 +12,12 @@ Thanks for thinking about pitching in. Mountabo is a local-first deployment tool
 ## Getting set up
 
 ```bash
-git clone https://github.com/goodylili/mountabo
-cd mountabo
+git clone https://github.com/Onyekachukwu-Nweke/berth
+cd berth
 make deps
 cp .env.example .env
 # fill in GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, ANTHROPIC_API_KEY
-make mountabo
+make berth
 ```
 
 Open `http://localhost:4321` and you should see the picker. The backend listens on `127.0.0.1:7778`.

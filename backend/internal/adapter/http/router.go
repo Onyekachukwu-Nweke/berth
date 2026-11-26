@@ -1,79 +1,109 @@
 package http
 
-import nethttp "net/http"
+import (
+	nethttp "net/http"
 
-// NewRouter maps the GitHub connection endpoints the local UI calls:
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
+)
+
+// NewRouter maps every API route to its handler behind an explicit rule. There
+// is no default: a route registered here without a guard is public, and the
+// only public routes are health, sign-in config and sign-in itself.
 //
-//	POST   /api/github/exchange      exchange an OAuth code for a stored token
-//	GET    /api/github/status        report the connected account, if any
-//	GET    /api/github/repos         list the connected account's repositories
-//	GET    /api/github/ports         detect a repo's published ports (compose/Dockerfile)
-//	GET    /api/github/tree          list a repo's file tree (directory/file picker)
-//	GET    /api/github/env-example    variable names from a repo's .env.example
-//	GET    /api/github/run-steps     latest deploy run's jobs + steps (live status)
-//	GET    /api/github/job-logs      one job's full log (what each step printed)
-//	DELETE /api/github/token         forget the stored token
-//	POST   /api/servers              add a server (probe specs over SSH)
-//	GET    /api/servers              list added servers
-//	GET    /api/servers/{id}/setup   run the bootstrap, streaming progress (SSE)
-//	GET    /api/servers/{id}/ports   list ports already listening on the server
-//	GET    /api/servers/{id}/logs    the deployed app's recent logs (over SSH)
-//	POST   /api/servers/{id}/dashboard/{tool}/open  open an SSH local port-forward tunnel to a loopback monitoring dashboard (Uptime Kuma), returning its local URL
-//	GET    /api/servers/domains/preview      render a domain's nginx config + script (no side effects)
-//	GET    /api/servers/{id}/domains/add     point a domain at an app port, streaming (SSE)
-//	GET    /api/servers/{id}/domains/remove  tear a domain's nginx + TLS down, streaming (SSE)
-//	POST   /api/deploy/preview       generate the workflow + deploy.sh + secrets (no side effects)
-//	POST   /api/servers/{id}/deploy  configure deployment of a repo, streaming (SSE)
-//	GET    /api/deployments          deploy history (configured deployments + their Actions runs)
-//	GET    /api/deployments/{app}/health  probe whether the deployed app is responding (curl over SSH), reporting up/down + HTTP status
-//	DELETE /api/deployments/{app}     forget mountabo's tracking of a deployment (its record + deploy history); does not stop the container or remove the workflow
-//	POST   /api/servers/{id}/exec    run one shell command on the server (over SSH), returns output + exit code
-//	POST   /api/ai/command           suggest a shell command for a plain-English request (Claude), advisory only
-//	DELETE /api/servers/{id}         remove a server and destroy its secrets
-func NewRouter(gh *GitHubHandler, sv *ServersHandler, dep *DeployHandler, mon *MonitorHandler, term *TerminalHandler) *nethttp.ServeMux {
+// Rules:
+//
+//	g.User          any signed-in person
+//	g.Repo(read)    can see the repo on GitHub (owner/repo from path or query)
+//	g.Repo(write)   can push to the repo on GitHub
+//	g.Server        the server targets or runs one of the person's repos
+//	g.Deploy        write access + client isolation + the environment's rule
+//	g.Admin         admins (BERTH_ADMINS)
+func NewRouter(g *Guard, au *AuthHandler, ad *AdminHandler, gh *GitHubHandler, sv *ServersHandler, dep *DeployHandler, mon *MonitorHandler, sec *SecretsHandler, rel *ReleaseHandler, term *TerminalHandler) *nethttp.ServeMux {
+	read, write := usecase.PermRead, usecase.PermWrite
 	mux := nethttp.NewServeMux()
-	mux.HandleFunc("POST /api/github/exchange", gh.Exchange)
-	mux.HandleFunc("GET /api/github/status", gh.Status)
-	mux.HandleFunc("GET /api/github/repos", gh.Repos)
-	mux.HandleFunc("GET /api/github/ports", gh.Ports)
-	mux.HandleFunc("GET /api/github/tree", gh.Tree)
-	mux.HandleFunc("GET /api/github/env-example", gh.EnvExample)
-	mux.HandleFunc("GET /api/github/run-steps", gh.RunSteps)
-	mux.HandleFunc("GET /api/repos/{owner}/{repo}/branches", gh.Branches)
-	mux.HandleFunc("GET /api/github/job-logs", gh.JobLogs)
-	mux.HandleFunc("DELETE /api/github/token", gh.Disconnect)
 
-	mux.HandleFunc("POST /api/servers", sv.Add)
-	mux.HandleFunc("GET /api/servers", sv.List)
-	mux.HandleFunc("GET /api/servers/options", sv.Options)
-	mux.HandleFunc("GET /api/servers/{id}/setup", sv.Setup)
-	mux.HandleFunc("GET /api/servers/{id}/ports", sv.Ports)
-	mux.HandleFunc("GET /api/servers/{id}/metrics", sv.Metrics)
-	mux.HandleFunc("GET /api/servers/{id}/logs", sv.Logs)
-	// Opening a dashboard establishes an SSH local port-forward tunnel and returns
-	// the loopback URL the browser loads directly (raw TCP, so HTTP + websockets
-	// both work and the tool is served at root).
-	mux.HandleFunc("POST /api/servers/{id}/dashboard/{tool}/open", sv.OpenDashboard)
-	// Uptime Kuma admin: read the stored credentials, or generate fresh ones and
-	// seed them into UK's SQLite so the operator can actually log in.
-	mux.HandleFunc("GET /api/servers/{id}/dashboard/uptime-kuma/admin", sv.UptimeKumaAdmin)
-	mux.HandleFunc("POST /api/servers/{id}/dashboard/uptime-kuma/admin/reset", sv.ResetUptimeKumaAdmin)
-	mux.HandleFunc("GET /api/servers/{id}/options", sv.ApplyOptions)
-	mux.HandleFunc("GET /api/servers/domains/preview", sv.DomainsPreview)
-	mux.HandleFunc("GET /api/servers/{id}/domains/add", sv.AddDomain)
-	mux.HandleFunc("GET /api/servers/{id}/domains/remove", sv.RemoveDomain)
-	mux.HandleFunc("POST /api/deploy/preview", dep.Preview)
-	mux.HandleFunc("POST /api/servers/{id}/deploy", dep.Deploy)
-	mux.HandleFunc("GET /api/deployments", mon.Deployments)
-	mux.HandleFunc("GET /api/deployments/{app}/health", mon.Health)
-	mux.HandleFunc("DELETE /api/deployments/{app}", mon.Delete)
+	// Public.
+	mux.HandleFunc("GET /healthz", func(w nethttp.ResponseWriter, _ *nethttp.Request) { w.WriteHeader(nethttp.StatusNoContent) })
+	mux.HandleFunc("GET /api/auth/config", au.Config)
+	mux.HandleFunc("POST /api/auth/github", au.Login)
 
-	// Terminal page: run one command on a server, and ask the AI helper for a
-	// command suggestion. The AI endpoint only suggests; the human runs the
-	// command through /exec, so nothing the model returns is ever auto-executed.
-	mux.HandleFunc("POST /api/servers/{id}/exec", term.Exec)
-	mux.HandleFunc("POST /api/ai/command", term.AICommand)
+	// Session.
+	mux.HandleFunc("GET /api/auth/me", g.User(au.Me))
+	mux.HandleFunc("POST /api/auth/logout", g.User(au.Logout))
 
-	mux.HandleFunc("DELETE /api/servers/{id}", sv.Delete)
+	// Repos, read through the App. The list is the person's own; everything
+	// else is scoped to one repo they can see.
+	mux.HandleFunc("GET /api/github/repos", g.User(gh.Repos))
+	mux.HandleFunc("GET /api/github/ports", g.Repo(read, gh.Ports))
+	mux.HandleFunc("GET /api/github/tree", g.Repo(read, gh.Tree))
+	mux.HandleFunc("GET /api/github/env-example", g.Repo(read, gh.EnvExample))
+	mux.HandleFunc("GET /api/github/run-steps", g.Repo(read, gh.RunSteps))
+	mux.HandleFunc("GET /api/github/job-logs", g.Repo(read, gh.JobLogs))
+	mux.HandleFunc("GET /api/repos/{owner}/{repo}/branches", g.Repo(read, gh.Branches))
+	mux.HandleFunc("GET /api/repos/{owner}/{repo}/targets", g.Repo(read, au.Targets))
+	mux.HandleFunc("POST /api/repos/{owner}/{repo}/files", g.Repo(usecase.PermWrite, gh.CommitFiles))
+
+	// Servers. Developers see the servers their repos deploy to; everything
+	// that changes a server, or runs commands on it, is admin-only.
+	mux.HandleFunc("GET /api/servers", g.User(sv.List))
+	mux.HandleFunc("GET /api/servers/options", g.User(sv.Options))
+	mux.HandleFunc("GET /api/servers/{id}/ports", g.Server(sv.Ports))
+	mux.HandleFunc("GET /api/servers/{id}/metrics", g.Server(sv.Metrics))
+	mux.HandleFunc("POST /api/servers", g.Admin(sv.Add))
+	mux.HandleFunc("GET /api/servers/{id}/setup", g.Admin(sv.Setup))
+	mux.HandleFunc("GET /api/servers/{id}/options", g.Admin(sv.ApplyOptions))
+	// A shared server's logs mix several clients' apps, so they stay admin-only.
+	mux.HandleFunc("GET /api/servers/{id}/logs", g.Admin(sv.Logs))
+	mux.HandleFunc("GET /api/servers/{id}/dashboard/uptime-kuma/admin", g.Admin(sv.UptimeKumaAdmin))
+	mux.HandleFunc("POST /api/servers/{id}/dashboard/uptime-kuma/admin/reset", g.Admin(sv.ResetUptimeKumaAdmin))
+	mux.HandleFunc("GET /api/servers/domains/preview", g.Admin(sv.DomainsPreview))
+	mux.HandleFunc("GET /api/servers/{id}/domains/add", g.Admin(sv.AddDomain))
+	mux.HandleFunc("GET /api/servers/{id}/domains/remove", g.Admin(sv.RemoveDomain))
+	mux.HandleFunc("GET /api/servers/{id}/proxy", g.Admin(sv.SetProxy))
+	mux.HandleFunc("POST /api/servers/{id}/exec", g.Admin(term.Exec))
+	mux.HandleFunc("POST /api/ai/command", g.Admin(term.AICommand))
+	mux.HandleFunc("DELETE /api/servers/{id}", g.Admin(sv.Delete))
+
+	// Deploying.
+	mux.HandleFunc("POST /api/deploy/preview", g.User(dep.Preview))
+	mux.HandleFunc("POST /api/servers/{id}/deploy", g.Deploy(dep.Deploy))
+
+	// Deployments: the list is filtered to the person's repos; reading one
+	// needs read access, changing one needs write access.
+	mux.HandleFunc("GET /api/deployments", g.User(mon.Deployments))
+	mux.HandleFunc("GET /api/deployments/{owner}/{repo}/{environment}/health", g.Repo(read, mon.Health))
+	mux.HandleFunc("GET /api/deployments/{owner}/{repo}/{environment}/release", g.Repo(read, rel.State))
+	mux.HandleFunc("GET /api/deployments/{owner}/{repo}/{environment}/secrets", g.Repo(read, sec.List))
+	mux.HandleFunc("PUT /api/deployments/{owner}/{repo}/{environment}/secrets", g.Repo(write, sec.Set))
+	mux.HandleFunc("DELETE /api/deployments/{owner}/{repo}/{environment}/secrets/{name}", g.Repo(write, sec.Delete))
+	mux.HandleFunc("PUT /api/deployments/{owner}/{repo}/{environment}/port", g.Repo(write, mon.SetPort))
+	mux.HandleFunc("DELETE /api/deployments/{owner}/{repo}/{environment}/lock", g.Repo(write, mon.ClearLock))
+	// Release operations. The mutation is a POST that returns an operation id; the
+	// log is a separate GET stream. Driving the mutation from the stream itself
+	// would let an EventSource reconnect — which browsers do automatically on any
+	// dropped connection — silently re-run the rollback.
+	mux.HandleFunc("POST /api/deployments/{owner}/{repo}/{environment}/rollback", g.Repo(write, rel.Rollback))
+	mux.HandleFunc("POST /api/deployments/{owner}/{repo}/{environment}/redeploy", g.Repo(write, rel.Redeploy))
+	mux.HandleFunc("POST /api/deployments/{owner}/{repo}/{environment}/approve", g.Repo(write, rel.Approve))
+	mux.HandleFunc("GET /api/operations/{id}/logs", g.User(rel.Logs))
+	mux.HandleFunc("DELETE /api/deployments/{owner}/{repo}/{environment}", g.Repo(write, mon.Delete))
+
+	// Admin: placement policy, people, and where the App is installed.
+	mux.HandleFunc("GET /api/admin/policy", g.Admin(ad.Policy))
+	mux.HandleFunc("PUT /api/admin/clients/{id}", g.Admin(ad.SaveClient))
+	mux.HandleFunc("DELETE /api/admin/clients/{id}", g.Admin(ad.DeleteClient))
+	mux.HandleFunc("PUT /api/admin/clients/{id}/environments/{environment}", g.Admin(ad.SaveEnvRule))
+	mux.HandleFunc("DELETE /api/admin/clients/{id}/environments/{environment}", g.Admin(ad.DeleteEnvRule))
+	mux.HandleFunc("PUT /api/admin/links", g.Admin(ad.SaveLink))
+	mux.HandleFunc("DELETE /api/admin/links/{owner}/{repo}", g.Admin(ad.DeleteLink))
+	mux.HandleFunc("PUT /api/admin/repo-rules", g.Admin(ad.SaveRepoRule))
+	mux.HandleFunc("DELETE /api/admin/repo-rules/{owner}/{repo}/{environment}", g.Admin(ad.DeleteRepoRule))
+	mux.HandleFunc("PUT /api/admin/servers/{id}/client", g.Admin(ad.SetServerClient))
+	mux.HandleFunc("GET /api/admin/users", g.Admin(ad.Users))
+	mux.HandleFunc("POST /api/admin/users/{id}/remove", g.Admin(ad.RemoveUser))
+	mux.HandleFunc("POST /api/admin/users/{id}/restore", g.Admin(ad.RestoreUser))
+	mux.HandleFunc("PUT /api/admin/sources", g.Admin(ad.SaveSource))
+	mux.HandleFunc("DELETE /api/admin/sources", g.Admin(ad.DeleteSource))
+	mux.HandleFunc("GET /api/admin/installations", g.Admin(ad.Installations))
 	return mux
 }

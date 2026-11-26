@@ -16,12 +16,12 @@ type RepoBranchLister interface {
 // the "add another environment" picker can present the real branch list
 // instead of a free-text field. It reads with the stored OAuth token.
 type BranchesService struct {
-	tokens TokenStore
+	tokens RepoTokens
 	lister RepoBranchLister
 }
 
 // NewBranchesService wires the service to the token store and a branch lister.
-func NewBranchesService(tokens TokenStore, lister RepoBranchLister) *BranchesService {
+func NewBranchesService(tokens RepoTokens, lister RepoBranchLister) *BranchesService {
 	return &BranchesService{tokens: tokens, lister: lister}
 }
 
@@ -31,7 +31,7 @@ func (s *BranchesService) List(ctx context.Context, owner, repo string) ([]strin
 	if owner == "" || repo == "" {
 		return nil, fmt.Errorf("owner and repo are required")
 	}
-	token, err := s.tokens.Load()
+	token, err := s.tokens.TokenFor(ctx, owner)
 	if err != nil {
 		return nil, fmt.Errorf("load token: %w", err)
 	}

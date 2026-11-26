@@ -86,7 +86,7 @@ export function AddServerForm({
       const data = (await resp.json().catch(() => ({}))) as { error?: string };
       setError(data.error ?? "could not add server");
     } catch {
-      setError("could not reach mountabo");
+      setError("could not reach berth");
     } finally {
       setBusy(false);
     }
@@ -115,7 +115,7 @@ export function AddServerForm({
           <input value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="Africa/Lagos" className={inputCls} required />
         </Field>
         <div className="col-span-2">
-          <Field label="root password (used over ssh; kept in your keychain for recovery)">
+          <Field label="root password (used once over SSH to set the server up; kept encrypted for recovery)">
             <input
               type="password"
               value={rootPassword}
@@ -138,12 +138,12 @@ export function AddServerForm({
         </div>
       </div>
 
-      {error && <p className="mt-3 text-[12px] text-red-300">{error}</p>}
+      {error && <p className="mt-3 text-[12px] text-err">{error}</p>}
 
       <button
         type="submit"
         disabled={busy}
-        className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-lime-fill px-4 py-3 text-[13px] font-bold text-black transition-transform hover:-translate-y-0.5 disabled:opacity-60"
+        className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-cream px-4 py-3 text-[13px] font-semibold text-bg transition-opacity hover:opacity-90 disabled:opacity-60"
       >
         {busy ? "connecting & probing…" : "connect & probe specs"}
       </button>

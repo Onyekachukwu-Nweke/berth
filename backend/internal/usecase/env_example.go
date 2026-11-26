@@ -17,13 +17,13 @@ type EnvExampleReader interface {
 // behalf, so the configure UI can pre-fill the env var rows for the operator to
 // fill in. It reads with the stored OAuth token; nothing else is needed.
 type EnvExampleService struct {
-	tokens TokenStore
+	tokens RepoTokens
 	reader EnvExampleReader
 }
 
 // NewEnvExampleService wires the service to the token store and an example
 // reader.
-func NewEnvExampleService(tokens TokenStore, reader EnvExampleReader) *EnvExampleService {
+func NewEnvExampleService(tokens RepoTokens, reader EnvExampleReader) *EnvExampleService {
 	return &EnvExampleService{tokens: tokens, reader: reader}
 }
 
@@ -34,7 +34,7 @@ func (s *EnvExampleService) Keys(ctx context.Context, ref RepoRef) ([]string, er
 	if ref.Owner == "" || ref.Name == "" {
 		return nil, fmt.Errorf("owner and repo are required")
 	}
-	token, err := s.tokens.Load()
+	token, err := s.tokens.TokenFor(ctx, ref.Owner)
 	if err != nil {
 		return nil, fmt.Errorf("load token: %w", err)
 	}

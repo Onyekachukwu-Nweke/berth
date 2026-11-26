@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 	gogithub "github.com/google/go-github/v88/github"
 	"golang.org/x/sync/errgroup"
 )
@@ -18,8 +18,8 @@ import (
 type Client struct{}
 
 var (
-	_ usecase.AccountFetcher = (*Client)(nil)
-	_ usecase.RepoLister     = (*Client)(nil)
+	_ usecase.RepoLister    = (*Client)(nil)
+	_ usecase.UserDirectory = (*Client)(nil)
 )
 
 // NewClient returns a GitHub API client.
@@ -27,19 +27,38 @@ func NewClient() *Client {
 	return &Client{}
 }
 
-// Account returns the GitHub account the token authenticates as. The empty
-// username asks the API for the authenticated user behind the token.
-func (c *Client) Account(ctx context.Context, t usecase.Token) (usecase.Account, error) {
+// Identity returns the GitHub user a user token belongs to. GitHub's numeric id
+// is the stable key; logins can be renamed.
+func (c *Client) Identity(ctx context.Context, t usecase.Token) (usecase.GitHubUser, error) {
 	api, err := gogithub.NewClient(gogithub.WithAuthToken(t.AccessToken))
 	if err != nil {
-		return usecase.Account{}, fmt.Errorf("build github client: %w", err)
+		return usecase.GitHubUser{}, fmt.Errorf("build github client: %w", err)
 	}
-
 	user, _, err := api.Users.Get(ctx, "")
 	if err != nil {
-		return usecase.Account{}, fmt.Errorf("get authenticated user: %w", err)
+		return usecase.GitHubUser{}, fmt.Errorf("get authenticated user: %w", err)
 	}
-	return usecase.Account{Login: user.GetLogin()}, nil
+	return usecase.GitHubUser{ID: user.GetID(), Login: user.GetLogin(), Name: user.GetName(), AvatarURL: user.GetAvatarURL()}, nil
+}
+
+// UserRepos returns the repos a GitHub App user token can reach and the user's
+// permission on each. For an App user token, GET /user/repos is already the
+// intersection of what the user can access and where the App is installed, and
+// it includes repos the person is only an outside collaborator on.
+func (c *Client) UserRepos(ctx context.Context, t usecase.Token) ([]usecase.RepoAccess, error) {
+	api, err := gogithub.NewClient(gogithub.WithAuthToken(t.AccessToken))
+	if err != nil {
+		return nil, fmt.Errorf("build github client: %w", err)
+	}
+	raw, err := listAuthenticatedUserRepos(ctx, api)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]usecase.RepoAccess, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, usecase.RepoAccess{Owner: r.GetOwner().GetLogin(), Repo: r.GetName(), Permission: permissionOf(r.GetPermissions())})
+	}
+	return out, nil
 }
 
 // List returns every repository the OAuth token can access, public and private.
@@ -177,7 +196,7 @@ func containerKind(ctx context.Context, api *gogithub.Client, r usecase.Repo) st
 }
 
 // isComposeName reports whether a root filename is one of the Compose files
-// mountabo recognises (shares the list with port detection).
+// berth recognises (shares the list with port detection).
 func isComposeName(lowerName string) bool {
 	for _, n := range composeNames {
 		if lowerName == n {
@@ -196,5 +215,23 @@ func toRepo(r *gogithub.Repository) usecase.Repo {
 		DefaultBranch: r.GetDefaultBranch(),
 		Language:      r.GetLanguage(),
 		PushedAt:      r.GetPushedAt().Time,
+		Permission:    permissionOf(r.GetPermissions()),
+	}
+}
+
+// permissionOf folds GitHub's per-role booleans into berth's levels:
+// admin/maintain -> admin, push -> write, triage/pull -> read.
+func permissionOf(p *gogithub.RepositoryPermissions) usecase.Permission {
+	switch {
+	case p == nil:
+		return usecase.PermNone
+	case p.GetAdmin() || p.GetMaintain():
+		return usecase.PermAdmin
+	case p.GetPush():
+		return usecase.PermWrite
+	case p.GetTriage() || p.GetPull():
+		return usecase.PermRead
+	default:
+		return usecase.PermNone
 	}
 }

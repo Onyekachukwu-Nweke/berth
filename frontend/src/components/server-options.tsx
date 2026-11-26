@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown } from "@/components/icons";
+import { formatDayTime } from "@/lib/dates";
 import type { OptionParam, ServerView, SetupOption } from "@/lib/servers";
 
 const CATEGORY_ORDER = ["Network", "SSH", "TLS", "Monitoring", "System", "Audit"];
@@ -204,7 +205,7 @@ function ChangeHistory({
           const reversible = ev.status === "applied" && ((ev.added?.length ?? 0) + (ev.removed?.length ?? 0)) > 0;
           return (
             <li key={i} className="flex items-center gap-3 text-[12px]">
-              <span className="w-28 shrink-0 text-faint">{new Date(ev.at).toLocaleString()}</span>
+              <span className="w-28 shrink-0 text-faint">{formatDayTime(ev.at)}</span>
               <span className="min-w-0 flex-1 truncate">
                 {(ev.added ?? []).map((id) => (
                   <span key={id} className="text-cream">

@@ -63,7 +63,7 @@ export async function GET(
       signal: AbortSignal.timeout(25_000),
     });
   } catch {
-    return NextResponse.json({ error: "couldn't reach the mountabo backend" }, { status: 502 });
+    return NextResponse.json({ error: "couldn't reach the berth backend" }, { status: 502 });
   }
   const body = await resp.text();
   return new NextResponse(body, {
@@ -90,7 +90,7 @@ export async function PUT(
       body: requestBody,
     });
   } catch {
-    return NextResponse.json({ error: "couldn't reach the mountabo backend" }, { status: 502 });
+    return NextResponse.json({ error: "couldn't reach the berth backend" }, { status: 502 });
   }
   const responseBody = await resp.text();
   return new NextResponse(responseBody, {

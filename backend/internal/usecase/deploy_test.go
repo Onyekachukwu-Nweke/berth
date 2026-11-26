@@ -114,7 +114,7 @@ func readyDeployFixture(t *testing.T) (*memServerStore, *fakeVault, *fakeRepoWri
 	t.Helper()
 	store, vault := newMemServerStore(), newFakeVault()
 	_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady})
-	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
+	_ = vault.SaveSecret(privateKeyKey("s1"), "BERTH-KEY-PEM")
 	repo, envs, secrets := &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}
 	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, repo, envs, secrets, &fakeDeploymentStore{}, &fakeRepoKeyDeleter{}, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker())
 	return store, vault, repo, envs, secrets, svc
@@ -169,7 +169,7 @@ func TestDeploy_WritesArtifactsProvisionsEnvAndSecrets(t *testing.T) {
 	want := map[string]string{
 		"SERVER_HOST":    "5.6.7.8",
 		"SERVER_USER":    BootstrapUser,
-		"SERVER_SSH_KEY": "MOUNTABO-KEY-PEM",
+		"SERVER_SSH_KEY": "BERTH-KEY-PEM",
 		"DEPLOY_DIR":     "/opt/shop",
 		"DATABASE_URL":   "postgres://secret",
 	}
@@ -184,7 +184,7 @@ func TestDeploy_WritesArtifactsProvisionsEnvAndSecrets(t *testing.T) {
 	}
 
 	// Secret values must never reach the live output stream.
-	if log := out.String(); strings.Contains(log, "MOUNTABO-KEY-PEM") || strings.Contains(log, "postgres://secret") {
+	if log := out.String(); strings.Contains(log, "BERTH-KEY-PEM") || strings.Contains(log, "postgres://secret") {
 		t.Errorf("secret value leaked into stream output:\n%s", log)
 	}
 }
@@ -222,7 +222,7 @@ func TestDeploy_EnvironmentOverridesBranch(t *testing.T) {
 func TestDeploy_RecordsReleaseCommitAndActor(t *testing.T) {
 	store, vault := newMemServerStore(), newFakeVault()
 	_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady})
-	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
+	_ = vault.SaveSecret(privateKeyKey("s1"), "BERTH-KEY-PEM")
 	history := &fakeDeploymentStore{}
 	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, history, &fakeRepoKeyDeleter{}, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker())
 
@@ -240,7 +240,7 @@ func TestDeploy_RecordsReleaseCommitAndActor(t *testing.T) {
 func TestDeploy_ReleaseMetadataFailureIsNonFatal(t *testing.T) {
 	store, vault := newMemServerStore(), newFakeVault()
 	_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady})
-	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
+	_ = vault.SaveSecret(privateKeyKey("s1"), "BERTH-KEY-PEM")
 	history := &fakeDeploymentStore{}
 	// Both the commit resolve and the actor lookup fail; the deploy must still
 	// succeed and record a release, just with the fields left empty.
@@ -261,7 +261,7 @@ func TestDeploy_ReleaseMetadataFailureIsNonFatal(t *testing.T) {
 func TestDeploy_LockRejectsConcurrentAndReleasesAfter(t *testing.T) {
 	store, vault := newMemServerStore(), newFakeVault()
 	_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady})
-	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
+	_ = vault.SaveSecret(privateKeyKey("s1"), "BERTH-KEY-PEM")
 	locker := NewDeployLocker()
 	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{}, &fakeRepoKeyDeleter{}, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, locker)
 	in := deployInput()
@@ -397,7 +397,7 @@ func TestDeploy_RetiresTheOldDeployKeyOnlyWhenSafe(t *testing.T) {
 	} {
 		store, vault := newMemServerStore(), newFakeVault()
 		_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady})
-		_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
+		_ = vault.SaveSecret(privateKeyKey("s1"), "BERTH-KEY-PEM")
 		_ = vault.SaveSecret(deployKeyVaultKey("acme", "shop"), "OLD-DEPLOY-KEY")
 		keys := &fakeRepoKeyDeleter{}
 		svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, &fakeRepoWriter{}, &fakeEnvManager{}, &fakeSecretSetter{}, &fakeDeploymentStore{saved: tc.siblings}, keys, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker())
@@ -502,7 +502,7 @@ func (o orderedSecrets) SetEnvSecrets(_ context.Context, _ Token, _, _, _ string
 func TestDeploy_SecretsExistBeforeTheWorkflowIsCommitted(t *testing.T) {
 	store, vault := newMemServerStore(), newFakeVault()
 	_ = store.Save(Server{ID: "s1", IP: "5.6.7.8", SSHPort: 22, Status: StatusReady})
-	_ = vault.SaveSecret(privateKeyKey("s1"), "MOUNTABO-KEY-PEM")
+	_ = vault.SaveSecret(privateKeyKey("s1"), "BERTH-KEY-PEM")
 	log := &orderLog{}
 	svc := NewDeployService(store, vault, fakeTokenStore{token: Token{AccessToken: "tok"}}, orderedRepo{log}, orderedEnvs{log}, orderedSecrets{log}, &fakeDeploymentStore{}, &fakeRepoKeyDeleter{}, fakeRefResolver{sha: "abc1234def"}, &fakeWorkflowDispatcher{}, NewDeployLocker())
 

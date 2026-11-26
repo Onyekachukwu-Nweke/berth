@@ -18,7 +18,7 @@ type Entry =
   | { kind: "output"; text: string; exitCode: number; truncated: boolean }
   | { kind: "error"; text: string };
 
-// prettyCwd shortens an absolute path under the mountabo user's home to ~/...
+// prettyCwd shortens an absolute path under the berth user's home to ~/...
 // so the prompt reads like a tuned shell instead of a verbose absolute path.
 function prettyCwd(p: string): string {
   if (!p) return "~";
@@ -125,14 +125,14 @@ export function TerminalConsole({ servers }: { servers: ServerView[] }) {
   }
 
   // The window title mirrors the macOS Terminal tab title for an ssh session.
-  const windowTitle = selected ? `${host}  ~  ssh` : "mountabo  ~  no server selected";
+  const windowTitle = selected ? `${host}  ~  ssh` : "berth  ~  no server selected";
 
   return (
     <main className="mx-auto w-full max-w-[1200px] flex-1 px-4 pb-16 pt-6 sm:px-6 lg:px-8 lg:pt-8">
       <div className="border-b border-line pb-5">
         <h1 className="text-[22px] font-semibold tracking-tight text-cream">Terminal</h1>
         <p className="mt-1 max-w-3xl text-[13px] text-muted">
-          Run commands on a server over SSH as the mountabo user. The helper suggests commands; you review and run
+          Run commands on a server over SSH as the berth user. The helper suggests commands; you review and run
           them. Each one is confirmed first unless express mode is on.
         </p>
       </div>
@@ -150,7 +150,7 @@ export function TerminalConsole({ servers }: { servers: ServerView[] }) {
         />
         {selected && (
           <span className="text-[12px] text-muted">
-            connected as <span className="text-cream">mountabo</span> on {selected.ip}
+            connected as <span className="text-cream">berth</span> on {selected.ip}
           </span>
         )}
         <button
@@ -191,7 +191,7 @@ export function TerminalConsole({ servers }: { servers: ServerView[] }) {
           subtitle={selected ? `${selected.name} · ${selected.ip}` : undefined}
           summary={
             <>
-              This will run the command below on the server as the mountabo user over SSH. Review it
+              This will run the command below on the server as the berth user over SSH. Review it
               before confirming: only you decide what runs.
             </>
           }

@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 import { fileURLToPath } from "node:url";
 import { loadEnvConfig } from "@next/env";
 
-// mountabo keeps a single .env at the repository root, shared by the Go backend
+// Berth keeps a single .env at the repository root, shared by the Go backend
 // and this Next app. Next only loads .env files from the project directory, so
 // we load the parent (repo root) here with Next's own loader to populate this
 // config process's environment.
@@ -30,7 +30,7 @@ const nextConfig: NextConfig = {
     ? {}
     : {
         GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID ?? "",
-        MOUNTABO_BACKEND: process.env.MOUNTABO_BACKEND ?? "",
+        BERTH_BACKEND: process.env.BERTH_BACKEND ?? process.env.MOUNTABO_BACKEND ?? "",
       },
 };
 

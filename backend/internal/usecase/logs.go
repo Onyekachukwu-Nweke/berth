@@ -20,7 +20,7 @@ type LogInspector interface {
 }
 
 // ServerLogsService reports a set-up server's deployed app logs, connecting as
-// the mountabo user with its stored key. It only reads, mirroring the metrics
+// the berth user with its stored key. It only reads, mirroring the metrics
 // service.
 type ServerLogsService struct {
 	servers   ServerStore
@@ -34,7 +34,7 @@ func NewServerLogsService(servers ServerStore, vault SecretVault, inspector LogI
 }
 
 // Logs returns the server's deployed app logs, the most recent tail lines. The
-// server must be set up (the mountabo key exists). tail is clamped to a sensible
+// server must be set up (the berth key exists). tail is clamped to a sensible
 // default when zero or negative and capped at logsMaxTail. ErrServerNotFound
 // propagates from the store.
 func (s *ServerLogsService) Logs(ctx context.Context, id string, tail int) ([]string, error) {

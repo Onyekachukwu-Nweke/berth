@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 	"golang.org/x/crypto/ssh"
 )
 

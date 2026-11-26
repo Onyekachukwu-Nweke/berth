@@ -11,13 +11,13 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/goodylili/mountabo/internal/workflow"
+	"github.com/Onyekachukwu-Nweke/berth/internal/workflow"
 )
 
 // ErrDeploymentNotFound is returned when no tracked deployment matches an app.
 var ErrDeploymentNotFound = errors.New("deployment not found")
 
-// Deployment is a repo+branch mountabo has configured to deploy to a server. It
+// Deployment is a repo+branch berth has configured to deploy to a server. It
 // is persisted on a successful deploy so the monitor can show its history.
 type Deployment struct {
 	ID           string `json:"id"`
@@ -71,7 +71,7 @@ type DeploymentStore interface {
 // DeploymentDeleter forgets a tracked deployment by its identity (owner, repo,
 // environment): it removes the deployment record and its append-only event
 // history, returning whether a record existed to remove. It only drops
-// mountabo's tracking; it never touches the running app or the committed workflow.
+// berth's tracking; it never touches the running app or the committed workflow.
 type DeploymentDeleter interface {
 	Delete(owner, repo, environment string) (removed bool, err error)
 }
@@ -86,7 +86,7 @@ type DeploymentPortSetter interface {
 }
 
 // ContainerTeardown removes the resources one deployment owns on a server over
-// SSH — its containers (compose stack or plain container), the images mountabo
+// SSH — its containers (compose stack or plain container), the images berth
 // built for it, and its staging directory — so the deployment stops existing.
 //
 // It is keyed on the deployment id and selects by ownership label, never by
@@ -135,8 +135,8 @@ type RepoEnvironmentDeleter interface {
 	DeleteEnvironment(ctx context.Context, t Token, owner, repo, name string) error
 }
 
-// RepoKeyDeleter removes mountabo's deploy keys from a repo. It matches keys by
-// title prefix so it only removes the ones mountabo added (the title carries a
+// RepoKeyDeleter removes berth's deploy keys from a repo. It matches keys by
+// title prefix so it only removes the ones berth added (the title carries a
 // "mountabo deploy" prefix); keys the operator created for other tools are
 // untouched. No matching key is a no-op success.
 type RepoKeyDeleter interface {
@@ -291,9 +291,9 @@ type MonitorService struct {
 // also used to clear the stored deploy key when the deployment is removed; the
 // teardown stops the container; repoFiles removes the committed workflow and
 // deploy script; repoEnvs removes the GitHub deployment environment (and its
-// scoped secrets); repoKeys removes the deploy key mountabo added to the repo.
+// scoped secrets); repoKeys removes the deploy key berth added to the repo.
 // Together they undo everything the deploy created on GitHub. The deleter then
-// forgets mountabo's tracking. locker is the shared deploy lock, read to surface
+// forgets berth's tracking. locker is the shared deploy lock, read to surface
 // lock state and cleared by the recovery action.
 func NewMonitorService(deployments DeploymentStore, releases ReleaseReader, deleter DeploymentDeleter, tokens RepoTokens, runs WorkflowRunLister, servers ServerStore, vault SecretVault, purger AppPurger, repoFiles RepoFileDeleter, repoEnvs RepoEnvironmentDeleter, repoKeys RepoKeyDeleter, ports DeploymentPortSetter, locker *DeployLocker, log *slog.Logger) *MonitorService {
 	if log == nil {
@@ -311,7 +311,7 @@ func (s *MonitorService) ClearLock(owner, repo, environment string) bool {
 
 // SetPort records the published port for the deployment identified by its full
 // identity (owner, repo, environment). It is how a domain attached after deploy
-// tells mountabo which port the app serves on, so the domain associates with the
+// tells berth which port the app serves on, so the domain associates with the
 // deployment. ErrDeploymentNotFound when no such deployment exists (including if
 // it vanished between the store write and now).
 func (s *MonitorService) SetPort(owner, repo, environment string, port int) error {
@@ -328,14 +328,14 @@ func (s *MonitorService) SetPort(owner, repo, environment string, port int) erro
 // Delete tears a deployment down by its identity (owner, repo, environment): it
 // disables the trigger, removes what the deployment owns on its server, drops the
 // GitHub environment and (when nothing else needs it) the repo deploy key, then
-// forgets mountabo's tracking.
+// forgets berth's tracking.
 //
 // The server-side work is best-effort and reports what it could not remove rather
 // than failing the delete: a user must never be stuck with an undeletable
 // deployment, but must also never be told "done" while containers and a plaintext
 // .env are still on the box.
 //
-// It holds the deploy lock throughout. Deleting while a deploy mountabo started is
+// It holds the deploy lock throughout. Deleting while a deploy berth started is
 // mid-flight would race the very resources being removed.
 // ErrDeploymentNotFound is returned when no such deployment exists.
 func (s *MonitorService) Delete(ctx context.Context, owner, repo, environment string, opts DeleteOptions, out io.Writer) error {
@@ -349,7 +349,7 @@ func (s *MonitorService) Delete(ctx context.Context, owner, repo, environment st
 		return ErrDeploymentNotFound
 	}
 
-	// Serialize against mountabo's own deploys. The tombstone the purge leaves
+	// Serialize against berth's own deploys. The tombstone the purge leaves
 	// behind is what stops a push-triggered run recreating the app afterwards.
 	key := lockKey(owner, repo, environment)
 	if !s.locker.TryAcquire(key) {
@@ -475,7 +475,7 @@ func (s *MonitorService) purgeServer(ctx context.Context, dep Deployment, opts D
 	}
 }
 
-// removeEnvironment deletes the GitHub deployment environment mountabo created
+// removeEnvironment deletes the GitHub deployment environment berth created
 // for this deployment, which also drops the encrypted secrets scoped to it
 // (SERVER_HOST/USER/SSH_KEY/DEPLOY_DIR and the operator's variables). Skipped
 // (with a log) when no token is stored or the deployment has no environment
@@ -494,7 +494,7 @@ func (s *MonitorService) removeEnvironment(ctx context.Context, dep Deployment) 
 	}
 }
 
-// removeDeployKey removes mountabo's read-only deploy keys from the repo (by
+// removeDeployKey removes berth's read-only deploy keys from the repo (by
 // title prefix) and clears the matching private key from the local vault so the
 // stored secret does not outlive the GitHub side. Skipped (with a log) when no
 // token is stored. Vault clearing is best-effort: a missing entry is fine.
@@ -532,7 +532,7 @@ func (s *MonitorService) removeWorkflowFiles(ctx context.Context, dep Deployment
 		paths = append(paths, teardownWorkflowDir+dep.WorkflowFile)
 	}
 	for _, path := range paths {
-		if err := s.repoFiles.DeleteFile(ctx, token, dep.Owner, dep.Repo, dep.Branch, path, "mountabo: remove deploy on teardown"); err != nil {
+		if err := s.repoFiles.DeleteFile(ctx, token, dep.Owner, dep.Repo, dep.Branch, path, "berth: remove deploy on teardown"); err != nil {
 			s.log.Warn("teardown: delete repo file failed", "app", dep.App, "repo", dep.Owner+"/"+dep.Repo, "path", path, "err", err)
 		}
 	}

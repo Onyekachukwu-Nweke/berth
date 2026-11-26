@@ -7,7 +7,7 @@ import (
 	nethttp "net/http"
 	"strings"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // MonitorHandler serves deploy history (the configured deployments with their
@@ -39,7 +39,7 @@ func (h *MonitorHandler) Deployments(w nethttp.ResponseWriter, r *nethttp.Reques
 	}
 	history, err := h.svc.History(r.Context(), keep)
 	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
+		h.writeError(w, nethttp.StatusFailedDependency, "the berth GitHub App is not installed on this repository's account")
 		return
 	}
 	if err != nil {
@@ -120,7 +120,7 @@ func (h *MonitorHandler) Delete(w nethttp.ResponseWriter, r *nethttp.Request) {
 }
 
 // SetPort records the published port for the deployment named in the path
-// (owner, repo, environment), so a domain attached after deploy can tell mountabo
+// (owner, repo, environment), so a domain attached after deploy can tell berth
 // which port the app serves on and the domain associates with the deployment.
 // 404 when no such deployment; 400 on a missing/invalid port.
 func (h *MonitorHandler) SetPort(w nethttp.ResponseWriter, r *nethttp.Request) {

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // Sample `ss -Hltnp` lines, as root sees them.

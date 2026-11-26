@@ -157,7 +157,7 @@ export function NewDeployment({
     );
   }
 
-  // Removes the server: destroys its keychain secrets (mountabo key + any
+  // Removes the server: destroys its keychain secrets (berth key + any
   // retained root password) on the backend, then drops it from the list. Only
   // ever called from the confirmation gate. Clears the selection if it was this
   // server so the deploy bar doesn't point at a server that no longer exists.
@@ -529,7 +529,7 @@ export function NewDeployment({
                   <>no sources match “{query}”.</>
                 ) : (
                   <>
-                    no repositories yet. you see the repos you can reach on GitHub that mountabo is installed on;
+                    no repositories yet. you see the repos you can reach on GitHub that berth is installed on;
                     ask an admin if one is missing.
                   </>
                 )}
@@ -624,7 +624,7 @@ export function NewDeployment({
                     <button
                       onClick={() => setConfirmDelete(s)}
                       disabled={s.status === "setting_up"}
-                      title={`remove ${s.name} from mountabo`}
+                      title={`remove ${s.name} from berth`}
                       aria-label={`remove ${s.name}`}
                       className="shrink-0 rounded-md border border-line px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:border-err/50 hover:text-err disabled:opacity-50"
                     >
@@ -814,19 +814,19 @@ export function NewDeployment({
         subtitle={confirmSetup.ip}
         summary={
           <>
-            mountabo will connect to <span className="text-cream">{confirmSetup.ip}</span>{" "}as root once
+            berth will connect to <span className="text-cream">{confirmSetup.ip}</span>{" "}as root once
             and prepare it for deployments. it creates an unprivileged{" "}
-            <span className="text-cream">mountabo</span>{" "}user, generates and installs a dedicated
+            <span className="text-cream">berth</span>{" "}user, generates and installs a dedicated
             ed25519 SSH key, and applies the base hardening. you can add or remove hardening later.
             nothing runs until you confirm.
           </>
         }
         steps={[
           "connect to the server as root over SSH using the password you provided",
-          "create the unprivileged mountabo user with sudo and a locked password",
-          "generate an ed25519 SSH key and install its public key for the mountabo user",
-          "store the private key encrypted in Mountabo's vault; the server only gets the public half in authorized_keys",
-          "apply the base hardening and confirm mountabo can log in with the new key",
+          "create the unprivileged berth user with sudo and a locked password",
+          "generate an ed25519 SSH key and install its public key for the berth user",
+          "store the private key encrypted in Berth's vault; the server only gets the public half in authorized_keys",
+          "apply the base hardening and confirm berth can log in with the new key",
         ]}
         confirmLabel={confirmSetup.status === "failed" ? "retry setup" : "set up server"}
         onConfirm={() => {
@@ -848,8 +848,8 @@ export function NewDeployment({
           const removed = (confirmApply.server.options ?? []).filter((id) => !desired.has(id));
           return (
             <>
-              mountabo will connect to <span className="text-cream">{confirmApply.server.name}</span>{" "}as
-              the mountabo user (with sudo) and change its hardening:{" "}
+              berth will connect to <span className="text-cream">{confirmApply.server.name}</span>{" "}as
+              the berth user (with sudo) and change its hardening:{" "}
               {added.length > 0 && (
                 <span className="text-cream">install {added.map(optionName).join(", ")}</span>
               )}
@@ -867,7 +867,7 @@ export function NewDeployment({
           const desired = new Set(confirmApply.desired);
           const added = confirmApply.desired.filter((id) => !prev.has(id));
           const removed = (confirmApply.server.options ?? []).filter((id) => !desired.has(id));
-          const lines = ["connect to the server as the mountabo user over SSH (with sudo)"];
+          const lines = ["connect to the server as the berth user over SSH (with sudo)"];
           for (const id of added) lines.push(`install and enable: ${optionName(id)}`);
           for (const id of removed) lines.push(`disable and remove: ${optionName(id)}`);
           return lines;
@@ -887,7 +887,7 @@ export function NewDeployment({
         subtitle={confirmDomain.server.ip}
         summary={
           <>
-            mountabo will configure <span className="text-cream">{confirmDomain.server.name}</span>{" "}to
+            berth will configure <span className="text-cream">{confirmDomain.server.name}</span>{" "}to
             front <span className="text-cream">{confirmDomain.value.host}</span>{" "}on https, proxying to
             your app on port <span className="text-cream">{confirmDomain.value.upstream}</span>. it
             {confirmDomain.server.proxy === "traefik" ? "routes it through Traefik, which obtains" : "installs nginx if needed, writes the vhost below, and obtains"}{" "}a Let&apos;s Encrypt
@@ -903,7 +903,7 @@ export function NewDeployment({
             : domainPreviewLoading
               ? undefined
               : [
-                  "connect to the server as the mountabo user over SSH (with sudo)",
+                  "connect to the server as the berth user over SSH (with sudo)",
                   "install nginx if it is not already present",
                   `write the nginx vhost for ${confirmDomain.value.host}`,
                   "obtain a Let's Encrypt certificate over http and enable https",
@@ -926,14 +926,14 @@ export function NewDeployment({
         destructive
         summary={
           <>
-            mountabo will stop fronting <span className="text-cream">{confirmDomain.host}</span> on{" "}
+            berth will stop fronting <span className="text-cream">{confirmDomain.host}</span> on{" "}
             <span className="text-cream">{confirmDomain.server.name}</span>: it removes the nginx vhost
             and its certificate, then reloads nginx. your app keeps running on its local port. nothing
             runs until you confirm.
           </>
         }
         steps={[
-          "connect to the server as the mountabo user over SSH (with sudo)",
+          "connect to the server as the berth user over SSH (with sudo)",
           `remove the nginx vhost for ${confirmDomain.host}`,
           "delete the Let's Encrypt certificate for the domain",
           "reload nginx so it stops serving the domain",
@@ -954,15 +954,15 @@ export function NewDeployment({
         destructive
         summary={
           <>
-            mountabo will remove <span className="text-cream">{confirmDelete.name}</span>{" "}from mountabo
-            and destroy its stored secrets. this revokes mountabo&apos;s access to the server. it does
+            berth will remove <span className="text-cream">{confirmDelete.name}</span>{" "}from berth
+            and destroy its stored secrets. this revokes berth&apos;s access to the server. it does
             not stop or delete anything already deployed on the server itself. this cannot be undone.
           </>
         }
         steps={[
-          "delete the server's mountabo key from the vault",
+          "delete the server's berth key from the vault",
           "delete any retained root password for the server from the vault",
-          "delete the server from mountabo's records, along with its domains and history",
+          "delete the server from berth's records, along with its domains and history",
         ]}
         confirmLabel="remove server"
         onConfirm={() => {

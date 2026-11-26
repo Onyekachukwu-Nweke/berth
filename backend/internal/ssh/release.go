@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 var (

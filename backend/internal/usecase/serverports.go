@@ -22,13 +22,13 @@ type ServerPortService struct {
 }
 
 // NewServerPortService wires the service to its ports. deployments tells it
-// which ports mountabo's own deployments on a server have claimed.
+// which ports berth's own deployments on a server have claimed.
 func NewServerPortService(servers ServerStore, vault SecretVault, inspector PortInspector, deployments DeploymentStore) *ServerPortService {
 	return &ServerPortService{servers: servers, vault: vault, inspector: inspector, deployments: deployments}
 }
 
 // PortsView is what a deploy form needs to pick a host port without a
-// collision: what is listening on the server now, the ports mountabo's other
+// collision: what is listening on the server now, the ports berth's other
 // deployments there have claimed (even if stopped right now), and this
 // deployment's own current port, which is not a collision on a redeploy.
 type PortsView struct {
@@ -75,7 +75,7 @@ func (s *ServerPortService) Ports(ctx context.Context, id, owner, repo, environm
 }
 
 // Listening returns the ports already bound on the server, connecting as the
-// mountabo user with its stored key. The server must be set up (the key
+// berth user with its stored key. The server must be set up (the key
 // exists). ErrServerNotFound propagates from the store.
 func (s *ServerPortService) Listening(ctx context.Context, id string) ([]int, error) {
 	server, err := s.servers.Get(id)

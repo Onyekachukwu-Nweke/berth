@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // ErrSecretNotFound is returned by LoadSecret when no value is stored under key.
@@ -58,7 +58,7 @@ func (v *VaultSQL) open(key string, sealed []byte) (string, error) {
 	}
 	plain, err := v.aead.Open(nil, sealed[:n], sealed[n:], []byte(key))
 	if err != nil {
-		return "", fmt.Errorf("secret %q: cannot decrypt (wrong MOUNTABO_MASTER_KEY?)", key)
+		return "", fmt.Errorf("secret %q: cannot decrypt (wrong BERTH_MASTER_KEY?)", key)
 	}
 	return string(plain), nil
 }

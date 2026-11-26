@@ -1,6 +1,6 @@
 # How environment variables reach the container
 
-This walks through how an environment variable you enter in Mountabo ends up inside
+This walks through how an environment variable you enter in Berth ends up inside
 the running application container at deploy time.
 
 **The one-line summary:** only the variable **names** are baked into the committed
@@ -45,7 +45,7 @@ func deploySecrets(server Server, sshKey string, in DeployInput) []NamedSecret {
 
 `SetEnvSecrets` uploads these to the GitHub deployment environment, each value
 encrypted with the environment's public key. **This is the only moment the value
-`val` leaves Mountabo.** Everything downstream references secrets *by name only*,
+`val` leaves Berth.** Everything downstream references secrets *by name only*,
 because GitHub Actions secret values are write-only.
 
 ### 2. The workflow bakes in the names and exposes them on the deploy step
@@ -120,7 +120,7 @@ At runtime `${!k}` expands the forwarded shell var named by `$k`, so the loop wr
 
 ```
 UI  VAR=val
- └─► GitHub env secret  VAR  (encrypted; only place the value leaves Mountabo)
+ └─► GitHub env secret  VAR  (encrypted; only place the value leaves Berth)
       └─► workflow step  env: VAR: ${{ secrets.VAR }}   (on the runner)
            └─► appleboy/ssh-action  envs: VAR   (forwarded over SSH)
                 └─► remote shell  $VAR=val

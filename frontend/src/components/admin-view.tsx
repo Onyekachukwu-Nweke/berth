@@ -74,7 +74,7 @@ export function AdminView({ initial }: { initial: AdminData }) {
       router.refresh();
       return true;
     } catch {
-      setError("couldn't reach mountabo");
+      setError("couldn't reach berth");
       return false;
     } finally {
       setBusy(false);
@@ -102,7 +102,7 @@ export function AdminView({ initial }: { initial: AdminData }) {
 
       <Card
         title="github app"
-        hint="people see the repos they can reach on GitHub, but only where the mountabo app is installed, and developers only those inside “deploy from” below."
+        hint="people see the repos they can reach on GitHub, but only where the berth app is installed, and developers only those inside “deploy from” below."
       >
         <div className="flex flex-wrap items-center gap-2 text-[13px]">
           {installations === null ? (
@@ -344,7 +344,7 @@ export function AdminView({ initial }: { initial: AdminData }) {
 
       <Card
         title="people"
-        hint="everyone who has signed in. admins come from MOUNTABO_ADMINS; everyone else's access is their access on GitHub. remove signs someone out at once and keeps them out until you restore them."
+        hint="everyone who has signed in. admins come from BERTH_ADMINS; everyone else's access is their access on GitHub. remove signs someone out at once and keeps them out until you restore them."
       >
         <ul className="divide-y divide-line text-[13px]">
           {users.map((u) => (

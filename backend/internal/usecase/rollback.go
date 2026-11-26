@@ -32,8 +32,8 @@ var (
 
 // ReleaseState is the deployment's state document as the server holds it. It is
 // the authority on which artifact is active, which preceded it and which is in
-// flight — mountabo observes it rather than tracking those itself, because a
-// push-triggered deploy happens with mountabo closed.
+// flight — berth observes it rather than tracking those itself, because a
+// push-triggered deploy happens with berth closed.
 type ReleaseState struct {
 	Generation  int    `json:"generation"`
 	Lifecycle   string `json:"lifecycle"`
@@ -134,7 +134,7 @@ func (s *RollbackService) run(ctx context.Context, in RollbackInput, kind string
 		return ErrLegacyDeployment
 	}
 
-	// Serialize against mountabo's own operations. The lock on the server is what
+	// Serialize against berth's own operations. The lock on the server is what
 	// serializes against a push-triggered run, which this cannot see.
 	key := lockKey(in.Owner, in.Repo, in.Environment)
 	if !s.locker.TryAcquire(key) {
@@ -268,7 +268,7 @@ func ParseReleaseState(raw string) (ReleaseState, error) {
 	return st, nil
 }
 
-// rollbackScript is the small wrapper mountabo pipes to bash on the server. It
+// rollbackScript is the small wrapper berth pipes to bash on the server. It
 // sets the mode markers and then execs the deployment's own committed script.
 //
 // It execs the copy of the deploy script kept inside the TARGET release's own
@@ -297,7 +297,7 @@ artifact=%s
 script="$HOME/.mountabo/releases/$deployment/$artifact/runner.sh"
 if [ ! -f "$script" ]; then
   echo "error: release $artifact is no longer retained on this server" >&2
-  echo "       mountabo keeps the active release and the one before it" >&2
+  echo "       berth keeps the active release and the one before it" >&2
   exit 1
 fi
 exec bash "$script" %s

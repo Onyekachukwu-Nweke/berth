@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 	gogithub "github.com/google/go-github/v88/github"
 )
 
 var _ usecase.RepoKeyDeleter = (*Client)(nil)
 
 // DeleteDeployKey removes every deploy key on owner/repo whose title starts
-// with titlePrefix (mountabo names its keys "mountabo deploy (<server>)" so the
+// with titlePrefix (older versions named their keys "mountabo deploy (<server>)" so the
 // teardown finds and removes its own without touching keys the operator added
 // for other tools). No matching key is a normal "already gone" no-op; an error
 // from one delete still lets the rest run. Pages through ListKeys so a repo

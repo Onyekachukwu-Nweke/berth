@@ -49,7 +49,7 @@ func (f *fakeRunner) RunAsRoot(_ context.Context, _ SSHTarget, script string, ou
 type fakeKeyMaker struct{}
 
 func (fakeKeyMaker) Generate(string) (string, string, error) {
-	return "PRIVATE-KEY-PEM", "ssh-ed25519 AAAA mountabo", nil
+	return "PRIVATE-KEY-PEM", "ssh-ed25519 AAAA berth", nil
 }
 
 type fakeLocalKeyProvider struct{ key string }
@@ -182,7 +182,7 @@ func TestSetup_StoresKeyAndKeepsRootPasswordForRecovery(t *testing.T) {
 		t.Error("root password should be kept after setup for break-glass recovery")
 	}
 	if vault.secrets[privateKeyKey(server.ID)] != "PRIVATE-KEY-PEM" {
-		t.Error("mountabo private key should be stored after setup")
+		t.Error("berth private key should be stored after setup")
 	}
 	got, _ := store.Get(server.ID)
 	if got.Status != StatusReady {

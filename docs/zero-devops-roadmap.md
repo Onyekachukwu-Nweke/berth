@@ -1,17 +1,17 @@
 # Zero DevOps Roadmap
 
-Mountabo is already close to zero DevOps for solo developers: local app, GitHub OAuth, VPS bootstrap, Docker deployments, nginx domains, monitoring, logs, terminal access, and optional hardening.
+Berth is already close to zero DevOps for solo developers: local app, GitHub OAuth, VPS bootstrap, Docker deployments, nginx domains, monitoring, logs, terminal access, and optional hardening.
 
-The immediate goal is not the whole platform vision. The goal is to ship the features that make Mountabo useful for startup teams and tech agencies while keeping the implementation safe, secure, and compatible with the current local first architecture.
+The immediate goal is not the whole platform vision. The goal is to ship the features that make Berth useful for startup teams and tech agencies while keeping the implementation safe, secure, and compatible with the current local first architecture.
 
 ## Architectural Starting Point (read first)
 
-Every feature below has to survive contact with what Mountabo actually is today. Design against these facts, not around them:
+Every feature below has to survive contact with what Berth actually is today. Design against these facts, not around them:
 
 - **Single user, single machine.** The backend binds `127.0.0.1` and runs under one GitHub OAuth identity. There is no auth boundary inside the app.
 - **State is split and machine-local.** Servers live in a JSON file, deployments and an append-only `deploy_events` log live in local SQLite, and tokens/secrets live in the OS keychain. None of it is portable, shareable, or reconciled across machines today.
-- **Deployment is Actions-driven.** Deploying commits a generated GitHub Actions workflow into the user's repo; the workflow SSHes into a root VPS and runs Docker or Compose. Mountabo does not run the deploy itself, so it cannot assume it holds a lock or sees every trigger.
-- **GitHub Actions secret *values* are write-only, but their *names* are readable.** Mountabo can set a secret's value but never read it back. It *can* enumerate an environment's configured secret names and their last-updated times (`Actions.ListEnvSecrets`). So GitHub is ground truth for "which secrets are configured", and it is the *only* store — Mountabo keeps no second copy of any value, so no value is ever revealed.
+- **Deployment is Actions-driven.** Deploying commits a generated GitHub Actions workflow into the user's repo; the workflow SSHes into a root VPS and runs Docker or Compose. Berth does not run the deploy itself, so it cannot assume it holds a lock or sees every trigger.
+- **GitHub Actions secret *values* are write-only, but their *names* are readable.** Berth can set a secret's value but never read it back. It *can* enumerate an environment's configured secret names and their last-updated times (`Actions.ListEnvSecrets`). So GitHub is ground truth for "which secrets are configured", and it is the *only* store — Berth keeps no second copy of any value, so no value is ever revealed.
 
 Two rules fall out of this and govern the whole roadmap:
 
@@ -29,7 +29,7 @@ Focus on six features, sequenced so the load-bearing data and safety work lands 
 5. Rollback and Redeploy.
 6. Migrations and Release Hooks.
 
-Application Blueprints and Team Workspaces are still in scope for the near term but move out of the critical path; see [Adjacent Work](#adjacent-work). These features turn Mountabo from a repo to server deployment helper into a small team deployment workspace, and they build on existing GitHub, server, deployment, workflow, and UI flows.
+Application Blueprints and Team Workspaces are still in scope for the near term but move out of the critical path; see [Adjacent Work](#adjacent-work). These features turn Berth from a repo to server deployment helper into a small team deployment workspace, and they build on existing GitHub, server, deployment, workflow, and UI flows.
 
 ## 1. Release History with Artifact References
 
@@ -48,7 +48,7 @@ The current `deploy_events` table records that a deploy happened but stores **no
 - health check result when available
 - previous release reference
 
-Treat a release as an immutable record keyed to an artifact, not a pointer to "whatever building this branch produces now." Mountabo should show deployments as releases, not just GitHub Actions runs.
+Treat a release as an immutable record keyed to an artifact, not a pointer to "whatever building this branch produces now." Berth should show deployments as releases, not just GitHub Actions runs.
 
 Deliverable for this phase: the schema migration on `deploy_events` (or a new `releases` table), the deploy path populating it, and a read-only release history view. No rollback actions yet, they come in phase 5 once artifacts are retained.
 
@@ -101,7 +101,7 @@ For startup teams, staging and production separation is the minimum bar. For age
 
 ## 4. Secrets and Configuration UI
 
-Add a proper configuration surface for environment variables and deployment settings, designed around the value-write-only / name-readable reality of GitHub Actions secrets. **Mountabo is a GitHub Actions environment-secrets manager, not a secret vault** — it never stores a second copy of any value.
+Add a proper configuration surface for environment variables and deployment settings, designed around the value-write-only / name-readable reality of GitHub Actions secrets. **Berth is a GitHub Actions environment-secrets manager, not a secret vault** — it never stores a second copy of any value.
 
 Core capabilities:
 
@@ -111,9 +111,9 @@ Core capabilities:
 - compare staging and production variable **names** without exposing values
 - classify system-managed connection secrets vs the operator's application variables
 
-**Source of truth — GitHub Actions is the single store (implemented).** GitHub is authoritative for *which secrets are configured*: their names and last-updated times are read live from `Actions.ListEnvSecrets`, so there is no Mountabo-side registry to drift. Secret **values are write-only**: Mountabo can set (`CreateOrUpdateEnvSecret`) and delete (`DeleteEnvSecret`) them, but GitHub never returns a value, and Mountabo keeps no local copy. So the UI shows a name, its managed classification, and its updated time — never a value, and there is no reveal or copy. Editing a secret means overwriting it with a new value, not viewing the current one.
+**Source of truth — GitHub Actions is the single store (implemented).** GitHub is authoritative for *which secrets are configured*: their names and last-updated times are read live from `Actions.ListEnvSecrets`, so there is no Berth-side registry to drift. Secret **values are write-only**: Berth can set (`CreateOrUpdateEnvSecret`) and delete (`DeleteEnvSecret`) them, but GitHub never returns a value, and Berth keeps no local copy. So the UI shows a name, its managed classification, and its updated time — never a value, and there is no reveal or copy. Editing a secret means overwriting it with a new value, not viewing the current one.
 
-The four managed connection secrets (`SERVER_HOST`, `SERVER_USER`, `SERVER_SSH_KEY`, `DEPLOY_DIR`) are set by Mountabo when it configures the deploy and are shown read-only, under a disclosure, so operators see they are system connection secrets rather than application variables.
+The four managed connection secrets (`SERVER_HOST`, `SERVER_USER`, `SERVER_SSH_KEY`, `DEPLOY_DIR`) are set by Berth when it configures the deploy and are shown read-only, under a disclosure, so operators see they are system connection secrets rather than application variables.
 
 **Deploy-key rotation is a distributed transaction, treat it as one.** Rotating a deploy key touches three systems: the VPS `authorized_keys`, the repo deploy key, and the Actions secret. Design it with an explicit order of operations and a rollback path for partial failure. It is not a single button; it gets its own small design note before implementation. Defer rotation to the end of this phase if it threatens the timeline.
 
@@ -181,7 +181,7 @@ go run ./cmd/migrate
 
 **Confront the expand/contract problem.** A `migration` hook and a `rollback` hook are not symmetric: an applied migration usually cannot be undone by redeploying old code (a dropped column, a changed type). The docs and UI must be explicit that rolling back code does not roll back the database, and should steer users toward backward-compatible (expand/contract) migrations. Do not imply that "rollback" reverses a migration.
 
-**Specify the production confirmation gate concretely.** "Production requires confirmation" is meaningless when the actor is a `git push`. Define: *where* the human confirms (a Mountabo action, not the push), and *what blocks the Actions run* while it waits (a manual-approval environment gate or a hold step). Until that is designed, production migrations should default to not running automatically.
+**Specify the production confirmation gate concretely.** "Production requires confirmation" is meaningless when the actor is a `git push`. Define: *where* the human confirms (a Berth action, not the push), and *what blocks the Actions run* while it waits (a manual-approval environment gate or a hold step). Until that is designed, production migrations should default to not running automatically.
 
 Each environment can override hook commands. Hook settings should include:
 
@@ -215,7 +215,7 @@ Blueprints help users configure a repository faster by choosing a known stack in
 
 Each blueprint provides **editable seed defaults** (not hidden config) for: deploy strategy, app port, health check path, root directory hints, build and start command hints, environment variable examples, migration command examples, recommended release hooks. Users select a blueprint, review the generated settings, and edit before saving.
 
-Treat baked-in env and migration examples as seeds that go stale, present them as starting points, not guarantees. Keep this scoped to presets inside Mountabo: no marketplace, remote registry, or provider specific provisioning yet.
+Treat baked-in env and migration examples as seeds that go stale, present them as starting points, not guarantees. Keep this scoped to presets inside Berth: no marketplace, remote registry, or provider specific provisioning yet.
 
 ### Team Workspaces
 
@@ -231,19 +231,19 @@ Workspace
         Environment
 ```
 
-This lets Mountabo organize work the way agencies think, clients, projects, staging links, production links, and handoffs, using fields like workspace name, workspace type (startup, agency, personal), and client/project labels. **Roles with real enforcement (Owner, Admin, Developer, Viewer, Client Viewer) wait for hosted collaboration**, below, where there is a server to enforce them.
+This lets Berth organize work the way agencies think, clients, projects, staging links, production links, and handoffs, using fields like workspace name, workspace type (startup, agency, personal), and client/project labels. **Roles with real enforcement (Owner, Admin, Developer, Viewer, Client Viewer) wait for hosted collaboration**, below, where there is a server to enforce them.
 
 ### One Click Server Provisioning
 
 Add provider integrations later: Hetzner, DigitalOcean, AWS Lightsail, Vultr, Linode, Contabo.
 
 ```text
-Choose provider -> choose size -> choose region -> Mountabo creates VPS -> bootstraps it -> deploys app
+Choose provider -> choose size -> choose region -> Berth creates VPS -> bootstraps it -> deploys app
 ```
 
 ### Managed Databases and Add Ons
 
-Add VPS hosted add ons later: PostgreSQL, MySQL, Redis, MinIO, Meilisearch, Uptime Kuma, Plausible or Umami, n8n. Mountabo should eventually install, secure, expose internally, back up, and inject connection strings into GitHub Actions secrets.
+Add VPS hosted add ons later: PostgreSQL, MySQL, Redis, MinIO, Meilisearch, Uptime Kuma, Plausible or Umami, n8n. Berth should eventually install, secure, expose internally, back up, and inject connection strings into GitHub Actions secrets.
 
 ### Preview Deployments
 
@@ -251,7 +251,7 @@ Full pull request preview deployments (the prerequisite for a real `preview` env
 
 ### Backups and Restore
 
-Add scheduled backups later for databases, app volumes, uploaded files, and Mountabo local state. Destinations: S3 compatible storage, Backblaze B2, Cloudflare R2, local download.
+Add scheduled backups later for databases, app volumes, uploaded files, and Berth local state. Destinations: S3 compatible storage, Backblaze B2, Cloudflare R2, local download.
 
 ### Health, Alerts, and Self Healing
 

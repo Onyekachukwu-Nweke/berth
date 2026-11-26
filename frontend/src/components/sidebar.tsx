@@ -52,7 +52,7 @@ export function Sidebar({ login, isAdmin }: { login: string; isAdmin: boolean })
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-line bg-surface lg:flex">
         <Link href="/" className="flex h-14 items-center gap-2 border-b border-line px-4 text-cream">
           <LogoMark className="text-lime" width={22} height={22} />
-          <span className="text-[15px] font-semibold tracking-tight">Mountabo</span>
+          <span className="text-[15px] font-semibold tracking-tight">Berth</span>
         </Link>
 
         <div className="px-3 pt-4">
@@ -108,7 +108,7 @@ export function Sidebar({ login, isAdmin }: { login: string; isAdmin: boolean })
         <div className="flex h-12 items-center gap-3 px-4">
           <Link href="/" className="flex items-center gap-2 text-cream">
             <LogoMark className="text-lime" width={20} height={20} />
-            <span className="text-[14px] font-semibold">Mountabo</span>
+            <span className="text-[14px] font-semibold">Berth</span>
           </Link>
           <div className="ml-auto flex items-center gap-3 text-muted">
             <Link href="/new" className="flex items-center gap-1.5 rounded-md bg-cream px-2.5 py-1 text-[12px] font-medium text-bg">

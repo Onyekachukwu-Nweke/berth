@@ -1,4 +1,4 @@
-// Package usecase holds mountabo's application logic and the ports it depends
+// Package usecase holds berth's application logic and the ports it depends
 // on. It owns the interfaces it consumes; adapters in internal/github and
 // internal/vault satisfy them. No HTTP, OAuth, or GitHub library types leak
 // across this boundary, only the domain types defined here.
@@ -19,7 +19,7 @@ import (
 const repoCacheTTL = 60 * time.Second
 
 // ErrNotConnected is returned when the GitHub App is not installed on the
-// account that owns a repo, so mountabo has no credential to act there.
+// account that owns a repo, so berth has no credential to act there.
 var ErrNotConnected = errors.New("github app not installed for this account")
 
 // Token is a GitHub credential: an App installation token for repo operations,
@@ -62,19 +62,19 @@ type RepoRef struct {
 	Dir   string
 }
 
-// ServicePort is one published port mountabo detected in a repo's container
+// ServicePort is one published port berth detected in a repo's container
 // configuration. When EnvVar is set, the compose file binds the host port to
-// that environment variable (e.g. "${FRONTEND_PORT:-3000}:3000"), so mountabo
+// that environment variable (e.g. "${FRONTEND_PORT:-3000}:3000"), so berth
 // can choose the value and inject it at deploy time; Editable is true and Host
 // carries the default. When EnvVar is empty the host port is a literal in the
-// file (or a Dockerfile EXPOSE line) that mountabo cannot remap, so it is shown
+// file (or a Dockerfile EXPOSE line) that berth cannot remap, so it is shown
 // read-only.
 type ServicePort struct {
 	Service   string // compose service name; empty for a Dockerfile EXPOSE port
 	EnvVar    string // host-port env var, empty when the host port is a literal
 	Host      string // host port value or env-var default; empty if auto-assigned
 	Container string // container port
-	Editable  bool   // true when mountabo can set the host port via EnvVar
+	Editable  bool   // true when berth can set the host port via EnvVar
 }
 
 // RepoTokens mints the credential for acting on an owner's repositories: the

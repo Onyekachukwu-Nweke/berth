@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/goodylili/mountabo/internal/workflow"
+	"github.com/Onyekachukwu-Nweke/berth/internal/workflow"
 )
 
 // Hook phases, in the order the deploy runs them.
@@ -60,7 +60,7 @@ var (
 //
 // It runs on the operator's own server, as their own deploy user, who is in the
 // docker group — which is effectively root on that box. That is the same trust
-// model as the terminal page, and worth stating rather than implying: mountabo
+// model as the terminal page, and worth stating rather than implying: berth
 // never originates a hook command, it only runs what the operator wrote.
 type Hook struct {
 	ID   string `json:"id"`

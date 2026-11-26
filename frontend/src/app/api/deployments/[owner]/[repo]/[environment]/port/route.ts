@@ -18,6 +18,6 @@ export async function PUT(
     );
     return new NextResponse(null, { status: resp.status });
   } catch {
-    return NextResponse.json({ error: "couldn't reach the mountabo backend" }, { status: 502 });
+    return NextResponse.json({ error: "couldn't reach the berth backend" }, { status: 502 });
   }
 }

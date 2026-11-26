@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 
-// ConfirmAction is the single confirmation gate for everything mountabo runs on
+// ConfirmAction is the single confirmation gate for everything berth runs on
 // a server. Nothing touches a server until the operator confirms here. It shows
 // a plain-English summary of what will happen and the exact steps that will run
 // (a preformatted script/command string, or a list of step strings) in a

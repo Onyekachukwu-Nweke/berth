@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goodylili/mountabo/internal/nginx"
-	"github.com/goodylili/mountabo/internal/traefik"
+	"github.com/Onyekachukwu-Nweke/berth/internal/nginx"
+	"github.com/Onyekachukwu-Nweke/berth/internal/traefik"
 )
 
 // hostname matches a fully-qualified domain name (at least one dot, valid label
@@ -313,7 +313,7 @@ func (s *ServerService) SetProxy(ctx context.Context, id, proxy string, out io.W
 }
 
 // lockReadyServer claims the per-server work lock, loads the server, checks it is
-// ready, and loads mountabo's key for the SSH connection. The caller must defer
+// ready, and loads berth's key for the SSH connection. The caller must defer
 // s.unlock(id). It mirrors the guard ApplyOptions uses so domain changes never
 // run concurrently with a bootstrap, an apply, or each other.
 func (s *ServerService) lockReadyServer(id string) (Server, string, error) {
@@ -337,7 +337,7 @@ func (s *ServerService) lockReadyServer(id string) (Server, string, error) {
 	key, err := s.vault.LoadSecret(privateKeyKey(id))
 	if err != nil {
 		s.unlock(id)
-		return Server{}, "", fmt.Errorf("load mountabo key: %w", err)
+		return Server{}, "", fmt.Errorf("load berth key: %w", err)
 	}
 	return server, key, nil
 }

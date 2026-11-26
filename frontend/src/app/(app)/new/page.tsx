@@ -11,7 +11,7 @@ export default async function NewDeploymentPage() {
     <Page>
       <PageHeader
         title="New deployment"
-        description="Pick a repository you can push to, then where it runs. Mountabo writes the workflow, sets the secrets and prepares the server."
+        description="Pick a repository you can push to, then where it runs. Berth writes the workflow, sets the secrets and prepares the server."
       />
       <NewDeployment servers={servers} account={user?.login ?? null} mode="repos" isAdmin={Boolean(user?.isAdmin)} />
     </Page>

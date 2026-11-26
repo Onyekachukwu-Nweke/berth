@@ -40,7 +40,7 @@ If you roll back past a migration that only expanded, nothing breaks. That is th
 whole point of doing it in that order.
 
 The `rollback` hook is for **compensating** actions — clearing a cache, flipping a
-feature flag back. It is not a down-migration, and mountabo will not pretend it is.
+feature flag back. It is not a down-migration, and berth will not pretend it is.
 
 ## The confirmation gate
 
@@ -54,7 +54,7 @@ When a push reaches a gated migration, the run:
 - leaves the previous release serving,
 - and marks the deployment as awaiting confirmation.
 
-You then review the exact command in mountabo and approve it. Approving runs the
+You then review the exact command in berth and approve it. Approving runs the
 migration and continues the deploy that halted.
 
 Skipping the migration and carrying on would activate new code against a schema
@@ -105,7 +105,7 @@ or a later phase.
 
 ## Timeouts and unknown outcomes
 
-Every hook has a timeout (15 minutes by default). When it fires, mountabo stops
+Every hook has a timeout (15 minutes by default). When it fires, berth stops
 the hook's **container**, not just its own connection — abandoning a migration
 that is still writing to your database is the worst of both outcomes.
 

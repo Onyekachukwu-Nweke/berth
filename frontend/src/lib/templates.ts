@@ -1,5 +1,5 @@
 // The Docker template library: starting points that already follow the
-// conventions Mountabo's deploys rely on. Edit them in the UI, hand them to an
+// conventions Berth's deploys rely on. Edit them in the UI, hand them to an
 // AI with the generated prompt, or commit them straight into a repo.
 
 export type TemplateFile = { path: string; content: string };
@@ -132,12 +132,12 @@ export const ADDONS: Addon[] = [
   },
 ];
 
-// Every compose file publishes the app as ${APP_PORT:-<port>} (Mountabo sets
+// Every compose file publishes the app as ${APP_PORT:-<port>} (Berth sets
 // the host port per environment) and reads .env, which deploy.sh writes from
 // the environment's GitHub secrets. The .env is optional so the image still
 // builds on the Actions runner, where it doesn't exist. Add-ons are appended
 // as services; the app gets their connection settings as defaults it can
-// override from Mountabo, and waits until they are healthy.
+// override from Berth, and waits until they are healthy.
 function compose(port: number, containerPort = port, extra = "", addons: Addon[] = [], style: "url" | "laravel" = "url"): string {
   const env = addons.flatMap((a) => a.appEnv[style]);
   let out = `services:
@@ -161,7 +161,7 @@ ${extra}    ports:
 
 // templateFiles is a template's files with the chosen add-ons applied: the
 // compose file gains their services, and a .env.example lists the passwords
-// to set (Mountabo's Configure page pre-fills its keys).
+// to set (Berth's Configure page pre-fills its keys).
 export function templateFiles(t: Template, addonIds: AddonId[]): TemplateFile[] {
   const addons = ADDONS.filter((a) => addonIds.includes(a.id));
   const files = t.files.map((f) =>
@@ -173,7 +173,7 @@ export function templateFiles(t: Template, addonIds: AddonId[]): TemplateFile[] 
     files.push({
       path: ".env.example",
       content: [
-        "# Variables the add-ons in docker-compose.yml need. Set them in Mountabo.",
+        "# Variables the add-ons in docker-compose.yml need. Set them in Berth.",
         "# Use letters and digits only (they go inside connection URLs), e.g.: openssl rand -hex 24",
         ...addons.flatMap((a) => a.envExample),
         "",
@@ -350,7 +350,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     port: 8000,
     notes: [
       'Replace "config" with your project package (the folder with wsgi.py).',
-      "Run migrations as a Mountabo deploy hook (python manage.py migrate), not in the image.",
+      "Run migrations as a Berth deploy hook (python manage.py migrate), not in the image.",
       "Serve static files with WhiteNoise, or point a domain path at them.",
     ],
     files: [
@@ -382,7 +382,7 @@ CMD ["sh", "-c", "python manage.py collectstatic --noinput && exec gunicorn conf
     port: 8080,
     notes: [
       "Set APP_KEY (php artisan key:generate --show) and your DB_* variables as environment variables.",
-      "Run migrations as a Mountabo deploy hook (php artisan migrate --force), not in the image.",
+      "Run migrations as a Berth deploy hook (php artisan migrate --force), not in the image.",
       "Config, routes and views are cached at start, when the real environment is present.",
       "No frontend? Delete the assets stage and its COPY line.",
       "Queues or the scheduler run as extra compose services from the same image (php artisan queue:work, schedule:work).",
@@ -579,21 +579,21 @@ export function suggestTemplate(paths: string[]): Template | undefined {
 }
 
 // buildAIPrompt asks an AI to adapt the (possibly edited) template to a real
-// repo, spelling out what Mountabo needs so the answer deploys first time.
+// repo, spelling out what Berth needs so the answer deploys first time.
 export function buildAIPrompt(t: Template, files: TemplateFile[], repo?: { name: string; branch: string; paths: string[] }) {
   const fence = (f: TemplateFile) => `--- ${f.path} ---\n${f.content.trimEnd()}\n`;
   const tree = repo?.paths.length
     ? `\nThe repository's files (first ${Math.min(repo.paths.length, 300)}):\n${repo.paths.slice(0, 300).join("\n")}\n`
     : "";
-  return `I need a Docker setup for ${repo ? `the repository ${repo.name} (branch ${repo.branch})` : "my project"} so it can be deployed with Mountabo. Adapt the starting files below to the project. Read the project's own files (package manifest, lockfile, entry point, build output, framework config) instead of guessing.
+  return `I need a Docker setup for ${repo ? `the repository ${repo.name} (branch ${repo.branch})` : "my project"} so it can be deployed with Berth. Adapt the starting files below to the project. Read the project's own files (package manifest, lockfile, entry point, build output, framework config) instead of guessing.
 
-What Mountabo needs:
+What Berth needs:
 1. A Dockerfile and a docker-compose.yml at the project root. GitHub Actions builds the images on an ubuntu runner with \`docker compose build\`, ships them to the server, and starts them with \`docker compose up -d\`.
-2. The app's service publishes its port as "\${APP_PORT:-<default>}:<container port>". Mountabo sets APP_PORT per environment, so keep that exact form.
-3. Configuration comes from environment variables only. Mountabo writes them to a .env file from GitHub secrets, and compose loads it with \`env_file: [{path: .env, required: false}]\`. Never bake secrets into the image, and keep .env in .dockerignore.
+2. The app's service publishes its port as "\${APP_PORT:-<default>}:<container port>". Berth sets APP_PORT per environment, so keep that exact form.
+3. Configuration comes from environment variables only. Berth writes them to a .env file from GitHub secrets, and compose loads it with \`env_file: [{path: .env, required: false}]\`. Never bake secrets into the image, and keep .env in .dockerignore.
 4. The app listens on 0.0.0.0, not localhost.
 5. Run as a non-root user, use multi-stage builds where it helps, and pin base image major versions.
-6. Database migrations don't belong in the image or the start command. Mountabo runs them as deploy hooks, so tell me the command instead.
+6. Database migrations don't belong in the image or the start command. Berth runs them as deploy hooks, so tell me the command instead.
 7. If the app needs a database or cache, add it as another compose service with a named volume. Don't publish its port, and read its credentials from .env.
 
 Starting point: the "${t.name}" template (${t.stack}).

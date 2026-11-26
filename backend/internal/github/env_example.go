@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 	gogithub "github.com/google/go-github/v88/github"
 )
 
 var _ usecase.EnvExampleReader = (*Client)(nil)
 
-// envExampleNames are the example env filenames mountabo looks for, in
+// envExampleNames are the example env filenames berth looks for, in
 // preference order. Matched case-insensitively.
 var envExampleNames = []string{
 	".env.example",

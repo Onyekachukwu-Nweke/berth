@@ -6,7 +6,7 @@ import { SESSION_COOKIE } from "@/lib/session-cookie";
 // signed-in person's session as a bearer token, so the API can decide what they
 // may do. Server-side only (it reads the request's cookies).
 export function backendURL(): string {
-  return process.env.MOUNTABO_BACKEND || "http://localhost:7778";
+  return process.env.BERTH_BACKEND || process.env.MOUNTABO_BACKEND || "http://localhost:7778";
 }
 
 export async function sessionToken(): Promise<string | undefined> {

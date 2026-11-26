@@ -97,7 +97,7 @@ func (o *operation) stream(ctx context.Context, out io.Writer) error {
 
 // operationStore holds in-flight and recently finished operations.
 //
-// In memory on purpose: mountabo is a local, single-user process, and an
+// In memory on purpose: berth is a local, single-user process, and an
 // operation that did not survive a restart is one whose outcome is on the server
 // anyway — the release state document, not this store, is the record of what
 // happened.

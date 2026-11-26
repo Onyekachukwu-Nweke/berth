@@ -18,7 +18,7 @@ const (
 	sessionTTL = 7 * 24 * time.Hour
 	// repoSyncInterval is how stale a user's cached repo access may get before
 	// it is re-read from GitHub. Removing someone from a repo on GitHub takes
-	// effect in mountabo within this window.
+	// effect in berth within this window.
 	repoSyncInterval = 10 * time.Minute
 	// repoSyncGrace is how long cached access keeps working while GitHub cannot
 	// be reached; past it the session is refused rather than trusted blindly.
@@ -91,7 +91,7 @@ type AuthService struct {
 }
 
 // NewAuthService wires sign-in. admins are GitHub logins that are always
-// admins (MOUNTABO_ADMINS); everyone else is a developer, who may sign in only
+// admins (BERTH_ADMINS); everyone else is a developer, who may sign in only
 // with a repo the gate allows (nil allows any).
 func NewAuthService(authorizer UserAuthorizer, directory UserDirectory, users UserStore, sessions SessionStore, access RepoAccessWriter, vault SecretVault, gate RepoGate, admins []string, log *slog.Logger) *AuthService {
 	set := map[string]bool{}
@@ -205,7 +205,7 @@ func anyReadable(repos []RepoAccess) bool {
 }
 
 // Authenticate resolves a session token to its user, re-reading the user's repo
-// access from GitHub when it is stale. Admin status follows MOUNTABO_ADMINS on
+// access from GitHub when it is stale. Admin status follows BERTH_ADMINS on
 // every request, so removing an admin takes effect immediately.
 func (s *AuthService) Authenticate(ctx context.Context, token string) (User, error) {
 	if token == "" {
@@ -305,7 +305,7 @@ func (s *AuthService) Users() ([]User, error) {
 
 // Remove signs someone out everywhere, forgets their GitHub token and repo
 // access, and stops them signing in until an admin restores them. Admins in
-// MOUNTABO_ADMINS can't be removed here, and nobody can remove themselves.
+// BERTH_ADMINS can't be removed here, and nobody can remove themselves.
 func (s *AuthService) Remove(actor User, userID int64) error {
 	if actor.ID == userID {
 		return forbidden("you can't remove yourself")
@@ -315,7 +315,7 @@ func (s *AuthService) Remove(actor User, userID int64) error {
 		return forbidden("no such person")
 	}
 	if s.isAdmin(target.Login) {
-		return forbidden("%s is an admin through MOUNTABO_ADMINS; take them out of it first", target.Login)
+		return forbidden("%s is an admin through BERTH_ADMINS; take them out of it first", target.Login)
 	}
 	now := s.now()
 	if err := s.users.SetRevoked(userID, &now); err != nil {

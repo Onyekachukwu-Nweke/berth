@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 func TestDeploymentSQL_UpsertsStateAndTracksEvents(t *testing.T) {

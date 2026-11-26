@@ -8,7 +8,7 @@ import (
 	nethttp "net/http"
 	"strings"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // ReleaseHandler exposes a deployment's release state and the two operations that

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // The deployment identity is (owner, repo, environment): a repo can have several

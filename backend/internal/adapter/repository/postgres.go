@@ -1,4 +1,4 @@
-// Package repository holds mountabo's concrete persistence: Postgres-backed
+// Package repository holds berth's concrete persistence: Postgres-backed
 // stores for servers, deployments and their release log, and the encrypted vault
 // for the platform's own credentials. Each type satisfies a port declared in
 // usecase.
@@ -19,7 +19,7 @@ import (
 )
 
 // migrations holds the schema history, one file per version, named
-// NNNN_description.sql. Mountabo is a hosted service whose database holds real
+// NNNN_description.sql. Berth is a hosted service whose database holds real
 // team state, so the schema evolves forward through migrations; a migration that
 // has shipped is never edited, only followed by a new one.
 //
@@ -142,7 +142,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("read schema version: %w", err)
 	}
 	if latest := all[len(all)-1].version; current > latest {
-		return fmt.Errorf("database is at schema v%d but this build only knows up to v%d; run a newer mountabo", current, latest)
+		return fmt.Errorf("database is at schema v%d but this build only knows up to v%d; run a newer berth", current, latest)
 	}
 
 	for _, m := range all {

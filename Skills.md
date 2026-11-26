@@ -1,23 +1,23 @@
-# Skills.md — Agent Guide to Mountabo
+# Skills.md — Agent Guide to Berth
 
 This file is the entry point for any AI agent working in this repository. Read it before touching code. It is exhaustive on purpose: layout, conventions, commands, gotchas. When the rules here conflict with general training instincts, this file wins.
 
-## 1. What Mountabo is
+## 1. What Berth is
 
-Mountabo is a **local-first deploy tool**. A user runs it on their laptop, connects GitHub, registers a VPS, and configures a repo once. Pushes to the chosen branch then deploy through a generated GitHub Actions workflow straight to the user's server. Mountabo does not sit in the request path of deploys; it only sets them up and observes them.
+Berth is a **local-first deploy tool**. A user runs it on their laptop, connects GitHub, registers a VPS, and configures a repo once. Pushes to the chosen branch then deploy through a generated GitHub Actions workflow straight to the user's server. Berth does not sit in the request path of deploys; it only sets them up and observes them.
 
 Surfaces:
 - **Backend** — Go HTTP server on `127.0.0.1:7778` (hexagonal architecture).
 - **Frontend** — Next.js 16 + React 19 + Tailwind v4 on `http://localhost:4321`.
 - Single root `.env` feeds both processes (`godotenv` upward search for Go, Next `loadEnvConfig` with `forceReload`).
 
-Run everything together: `make mountabo` (from repo root). Stop with Ctrl-C.
+Run everything together: `make berth` (from repo root). Stop with Ctrl-C.
 
 ## 2. Repo layout
 
 ```
-mountabo/
-  Makefile               # `mountabo`, `backend`, `frontend`, `deps`
+berth/
+  Makefile               # `berth`, `backend`, `frontend`, `deps`
   PRD.md                 # product spec, source of truth for intent
   README.md              # user-facing docs
   skills-lock.json       # pinned Vercel/Next agent skills (do not hand-edit)
@@ -112,8 +112,8 @@ When in doubt, re-read copy aloud: it should sound like a paragraph in a manual,
 - UI mirrors a Vercel-style add/list/remove flow (`ServerDomains` component).
 
 ### Server bootstrap
-- Add server (with SSH probe) → JSON persist → SSE-streamed bootstrap that creates the `mountabo` user and manages an ed25519 key lifecycle (generate / store / wipe / destroy).
-- Keys are sealed with AES-GCM under `MOUNTABO_MASTER_KEY` in Postgres (`repository.VaultSQL`), never stored in plaintext.
+- Add server (with SSH probe) → JSON persist → SSE-streamed bootstrap that creates the `berth` user and manages an ed25519 key lifecycle (generate / store / wipe / destroy).
+- Keys are sealed with AES-GCM under `BERTH_MASTER_KEY` in Postgres (`repository.VaultSQL`), never stored in plaintext.
 
 ### GitHub auth
 - Classic OAuth App (scopes: `repo`, `workflow`) so every repo is visible. The earlier GitHub App approach was abandoned; do not re-introduce it.
@@ -121,7 +121,7 @@ When in doubt, re-read copy aloud: it should sound like a paragraph in a manual,
 
 ### Local env loading
 - A single root `.env`. The Go process uses `godotenv` with upward search. Next picks it up via `loadEnvConfig` with `forceReload` and a matching env key. Don't add per-package `.env` files.
-- Dropboy reserves port 7777; Mountabo backend uses 7778, frontend uses 4321.
+- Dropboy reserves port 7777; Berth backend uses 7778, frontend uses 4321.
 
 ## 7. AI helper (terminal page)
 

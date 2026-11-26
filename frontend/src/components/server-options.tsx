@@ -81,7 +81,7 @@ export function ServerOptions({
     <div className="border-t border-line px-4 py-5">
       <p className="text-[13px] leading-6 text-body">
         hardening settings: tick to add, untick to remove. changes are applied over SSH (as
-        mountabo, with sudo) only after you confirm.
+        berth, with sudo) only after you confirm.
       </p>
 
       <div className="mt-4 space-y-2">

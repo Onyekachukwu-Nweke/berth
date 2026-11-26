@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	nethttp "net/http"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // DeployHandler configures continuous deployment of a repo to a server and

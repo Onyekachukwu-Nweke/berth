@@ -7,7 +7,7 @@ Filed: 2026-07-22.
 
 Server bootstrap fails at the very first `apt-get update -y` on servers that are
 not freshly provisioned. Any single broken/stale apt repository — even one
-mountabo never added — makes `apt-get update` abort with exit status 100, which
+berth never added — makes `apt-get update` abort with exit status 100, which
 aborts the whole bootstrap. The UI shows only a bare `Process exited with status
 100`, giving the operator nothing to act on.
 
@@ -29,7 +29,7 @@ plugin, or any later step — the script dies on the package-list refresh.
 `apt-get update` exits non-zero if *any* configured repository is unreachable or
 inconsistent, and `set -euo pipefail` then aborts the bootstrap. The bootstrap
 header assumes "fresh Ubuntu → Docker-ready", but on an older, previously-managed
-server there are leftover third-party repos mountabo neither created nor needs.
+server there are leftover third-party repos berth neither created nor needs.
 
 Two real instances observed on the same server (`dev-test-server`, 164.92.116.48):
 
@@ -43,16 +43,16 @@ Two real instances observed on the same server (`dev-test-server`, 164.92.116.48
    Two source entries for the Docker repo, each pinned to a different keyring
    (`docker.gpg` from an old manual install, `docker.asc` from a later
    `get.docker.com` run). apt refuses to read sources with conflicting
-   `Signed-By`. Note: mountabo's own scripts never write either keyring — it
+   `Signed-By`. Note: berth's own scripts never write either keyring — it
    relies entirely on `get.docker.com` — so the `docker.gpg` entry came from
-   outside mountabo.
+   outside berth.
 
 2. **Retired NodeSource repo**
    ```
    E: The repository 'https://deb.nodesource.com/node_18.x jammy Release'
       no longer has a Release file.
    ```
-   NodeSource retired the `node_18.x` per-distro repo (Node 18 EOL). mountabo
+   NodeSource retired the `node_18.x` per-distro repo (Node 18 EOL). berth
    never installs Node; this is pure leftover state.
 
 Both are the *same class* of failure: a stale third-party apt source the operator
@@ -97,14 +97,14 @@ Rejected alternatives:
 ```bash
 log "updating package lists"
 # apt-get update aborts (status 100) if ANY configured repository is broken,
-# including stale third-party repos mountabo never added (e.g. a removed
+# including stale third-party repos berth never added (e.g. a removed
 # NodeSource distro, a Docker repo with mismatched signing keys). On a non-fresh
 # server that is the most common bootstrap failure, and a bare "status 100" tells
 # the operator nothing. Catch it and surface the offending repos + how to fix.
 if ! apt-get update -y >/tmp/mountabo-apt-update.log 2>&1; then
   cat /tmp/mountabo-apt-update.log
   echo "==> ERROR: apt-get update failed on a pre-existing apt repository." >&2
-  echo "==> mountabo did not add these; they are leftover on this server and must" >&2
+  echo "==> berth did not add these; they are leftover on this server and must" >&2
   echo "==> be fixed before setup can continue. Offending repositories:" >&2
   grep -iE "^(E:|W:|Err:)" /tmp/mountabo-apt-update.log >&2 || true
   echo "==> Find the source file (use the host shown above):" >&2

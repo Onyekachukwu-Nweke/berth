@@ -3,7 +3,7 @@ package http
 import (
 	nethttp "net/http"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // NewRouter maps every API route to its handler behind an explicit rule. There
@@ -17,7 +17,7 @@ import (
 //	g.Repo(write)   can push to the repo on GitHub
 //	g.Server        the server targets or runs one of the person's repos
 //	g.Deploy        write access + client isolation + the environment's rule
-//	g.Admin         admins (MOUNTABO_ADMINS)
+//	g.Admin         admins (BERTH_ADMINS)
 func NewRouter(g *Guard, au *AuthHandler, ad *AdminHandler, gh *GitHubHandler, sv *ServersHandler, dep *DeployHandler, mon *MonitorHandler, sec *SecretsHandler, rel *ReleaseHandler, term *TerminalHandler) *nethttp.ServeMux {
 	read, write := usecase.PermRead, usecase.PermWrite
 	mux := nethttp.NewServeMux()

@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	nethttp "net/http"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // SecretsHandler serves a deployment environment's GitHub Actions secrets:
@@ -29,7 +29,7 @@ func (h *SecretsHandler) List(w nethttp.ResponseWriter, r *nethttp.Request) {
 	owner, repo, environment := r.PathValue("owner"), r.PathValue("repo"), r.PathValue("environment")
 	view, err := h.svc.List(r.Context(), owner, repo, environment)
 	if errors.Is(err, usecase.ErrNotConnected) {
-		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
+		h.writeError(w, nethttp.StatusFailedDependency, "the berth GitHub App is not installed on this repository's account")
 		return
 	}
 	if err != nil {
@@ -72,7 +72,7 @@ func (h *SecretsHandler) Set(w nethttp.ResponseWriter, r *nethttp.Request) {
 	result, err := h.svc.Set(r.Context(), owner, repo, environment, secrets)
 	switch {
 	case errors.Is(err, usecase.ErrManagedSecret):
-		h.writeError(w, nethttp.StatusBadRequest, "that secret is managed by mountabo and can't be edited")
+		h.writeError(w, nethttp.StatusBadRequest, "that secret is managed by berth and can't be edited")
 		return
 	case errors.Is(err, usecase.ErrInvalidSecretName):
 		h.writeError(w, nethttp.StatusBadRequest, "secret names must be letters, digits, or underscores and can't start with a digit")
@@ -81,7 +81,7 @@ func (h *SecretsHandler) Set(w nethttp.ResponseWriter, r *nethttp.Request) {
 		h.writeError(w, nethttp.StatusBadRequest, "secret values can't contain line breaks (multiline values aren't supported)")
 		return
 	case errors.Is(err, usecase.ErrNotConnected):
-		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
+		h.writeError(w, nethttp.StatusFailedDependency, "the berth GitHub App is not installed on this repository's account")
 		return
 	case err != nil:
 		h.log.Error("set env secrets failed", "repo", owner+"/"+repo, "environment", environment, "err", err)
@@ -98,10 +98,10 @@ func (h *SecretsHandler) Delete(w nethttp.ResponseWriter, r *nethttp.Request) {
 	result, err := h.svc.Delete(r.Context(), owner, repo, environment, name)
 	switch {
 	case errors.Is(err, usecase.ErrManagedSecret):
-		h.writeError(w, nethttp.StatusBadRequest, "that secret is managed by mountabo and can't be deleted")
+		h.writeError(w, nethttp.StatusBadRequest, "that secret is managed by berth and can't be deleted")
 		return
 	case errors.Is(err, usecase.ErrNotConnected):
-		h.writeError(w, nethttp.StatusFailedDependency, "the mountabo GitHub App is not installed on this repository's account")
+		h.writeError(w, nethttp.StatusFailedDependency, "the berth GitHub App is not installed on this repository's account")
 		return
 	case err != nil:
 		h.log.Error("delete env secret failed", "repo", owner+"/"+repo, "environment", environment, "err", err)

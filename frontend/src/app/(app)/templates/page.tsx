@@ -14,7 +14,7 @@ export default async function TemplatesPage({
     <Page>
       <PageHeader
         title="Templates"
-        description="Dockerfile and compose starting points that work with Mountabo deploys. Edit them here, give them to your AI, or commit them to a repo."
+        description="Dockerfile and compose starting points that work with Berth deploys. Edit them here, give them to your AI, or commit them to a repo."
       />
       <TemplatesView account={user?.login ?? ""} initialRepo={repo} initialBranch={branch} initialTemplate={template} />
     </Page>

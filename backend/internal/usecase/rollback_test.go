@@ -151,7 +151,7 @@ func TestRedeploy_TargetsTheActiveArtifact(t *testing.T) {
 }
 
 // TestRollback_HoldsAndReleasesTheLock keeps a rollback from racing a deploy
-// mountabo starts, and — just as important — makes sure a failure still frees the
+// berth starts, and — just as important — makes sure a failure still frees the
 // lock rather than wedging the deployment.
 func TestRollback_HoldsAndReleasesTheLock(t *testing.T) {
 	svc, _, _ := rollbackFixture(t, ReleaseState{Active: "art-2", Previous: "art-1"})

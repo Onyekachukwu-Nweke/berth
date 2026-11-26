@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goodylili/mountabo/internal/usecase"
+	"github.com/Onyekachukwu-Nweke/berth/internal/usecase"
 )
 
 // publicRoutes are the only routes reachable without a session.

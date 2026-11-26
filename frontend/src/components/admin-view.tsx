@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState, type ReactNode } from "react";
+import { formatDay } from "@/lib/dates";
 
 type Client = { id: string; name: string };
 type RepoLink = { owner: string; repo: string; clientId: string };
@@ -352,7 +353,7 @@ export function AdminView({ initial }: { initial: AdminData }) {
               {u.name && <span className="text-muted">{u.name}</span>}
               {u.isAdmin && <span className="rounded border border-line px-1.5 text-[11px] text-cream">admin</span>}
               {u.revokedAt && <span className="rounded border border-err/40 px-1.5 text-[11px] text-err">removed</span>}
-              <span className="ml-auto text-faint">last in {new Date(u.lastLoginAt).toLocaleDateString()}</span>
+              <span className="ml-auto text-faint">last in {formatDay(u.lastLoginAt)}</span>
               {!u.isAdmin && u.login !== me &&
                 (u.revokedAt ? (
                   <button className="text-muted hover:text-cream" disabled={busy} onClick={() => call("POST", `/api/admin/users/${u.id}/restore`)}>
